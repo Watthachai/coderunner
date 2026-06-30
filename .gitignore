@@ -16,9 +16,11 @@ node_modules/
 frontend/.next/
 frontend/out/
 frontend/node_modules/
+frontend/next-env.d.ts
 npm-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+*.tsbuildinfo
 
 # ---- editor / OS ----
 .DS_Store
@@ -29,4 +31,3 @@ yarn-error.log*
 # ---- local data ----
 /projects/
 *.local
-tsbuildinfo

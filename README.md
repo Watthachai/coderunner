@@ -42,11 +42,10 @@ docker compose up -d
 # or: make db-up
 
 # 2) configure
-cp .env.example .env        # edit CRN_DOCKER_USER + CRN_CLAUDE_BIN
-set -a && source .env && set +a
+cp .env.example .env        # set CRN_CLAUDE_BIN (Apple Silicon: /opt/homebrew/bin/claude) + CRN_DOCKER_USER
 
-# 3) run the backend  (http + ws on :8080)
-make run                    # == go run ./cmd/server
+# 3) run the backend  (http + ws on :8080) — `make run` auto-loads .env
+make run
 
 # 4) run the dashboard  (separate terminal)
 make frontend-dev           # == cd frontend && npm install && npm run dev  (:3000)

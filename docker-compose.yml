@@ -19,7 +19,11 @@ services:
       POSTGRES_PASSWORD: crn_dev_password
       POSTGRES_DB: crn
     ports:
-      - "5432:5432"
+      # Host 5433 (not 5432) so we don't collide with a host-installed
+      # Postgres (e.g. Homebrew postgresql@14, which binds localhost:5432 and
+      # would shadow this container for localhost connections). Container-side
+      # stays 5432. DSN: postgres://crn:...@localhost:5433/crn
+      - "5433:5432"
     volumes:
       - crn_pgdata:/var/lib/postgresql/data
       # Auto-apply the init migration on first boot of a fresh volume.

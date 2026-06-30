@@ -1,8 +1,8 @@
 # CRN Makefile. Targets are thin wrappers around the canonical commands so the
 # README stays short. Override DATABASE_URL etc. via env or a .env you source.
 
-# Default local DSN matching docker-compose.yml.
-DATABASE_URL ?= postgres://crn:crn_dev_password@localhost:5432/crn?sslmode=disable
+# Default local DSN matching docker-compose.yml (host port 5433 -> container 5432).
+DATABASE_URL ?= postgres://crn:crn_dev_password@localhost:5433/crn?sslmode=disable
 MIGRATIONS_DIR ?= migrations
 
 .PHONY: help build run vet tidy test migrate db-up db-down fmt frontend-dev
@@ -14,7 +14,9 @@ help: ## Show this help.
 build: ## Compile the Go backend to ./bin/crn-server.
 	go build -o bin/crn-server ./cmd/server
 
-run: ## Run the Go backend (loads config from env).
+run: ## Run the Go backend (auto-loads .env if present).
+	@if [ -f .env ]; then set -a; . ./.env; set +a; else \
+		echo "warning: no .env found — run: cp .env.example .env"; fi; \
 	go run ./cmd/server
 
 vet: ## go vet the whole module.
@@ -35,10 +37,10 @@ db-up: ## Start Postgres + Mongo via docker compose.
 db-down: ## Stop and remove the dev datastores (keeps volumes).
 	docker compose down
 
-migrate: ## Apply migrations/0001_init.sql to Postgres ($(DATABASE_URL)).
-	# Uses the postgres client inside the compose container so no host psql needed.
-	docker compose exec -T postgres psql "$(DATABASE_URL)" -f /docker-entrypoint-initdb.d/0001_init.sql || \
-		psql "$(DATABASE_URL)" -f $(MIGRATIONS_DIR)/0001_init.sql
+migrate: ## Apply migrations/0001_init.sql to Postgres (inside the compose container).
+	# Runs psql inside the container via its local connection, so it is immune to
+	# the host-side port (5433) and needs no host psql.
+	docker compose exec -T postgres psql -U crn -d crn -f /docker-entrypoint-initdb.d/0001_init.sql
 
 frontend-dev: ## Run the Next.js dashboard dev server.
 	cd frontend && npm install && npm run dev
