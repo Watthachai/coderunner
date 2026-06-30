@@ -38,6 +38,12 @@ func run() error {
 	slog.SetDefault(logger)
 	logger.Info("starting CRN", "env", cfg.Environment, "addr", cfg.ListenAddr)
 
+	// Ensure the per-project working-dir root exists so file materialization and
+	// git pushes can write into it.
+	if err := os.MkdirAll(cfg.ProjectsDir, 0o755); err != nil {
+		return err
+	}
+
 	// rootCtx is cancelled on the first SIGINT/SIGTERM and used for shutdown.
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -62,12 +68,14 @@ func run() error {
 	runner := claude.NewRunner(cfg.ClaudeBinPath, cfg.ProjectsDir, logger)
 
 	// --- Job manager (queue + lifecycle + per-org advisory lock) ---
-	// TODO(jobs): jobs.NewManager composes store + runner + notifier.
-	jobManager := jobs.NewManager(st, runner, notifier, logger)
+	// jobs.NewManager composes store + runner + notifier and the build-step
+	// config (projects dir, git remote, run-Claude toggle).
+	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.RunClaude)
 
 	// --- HTTP / WebSocket server (chi router) ---
-	// TODO(api): api.NewServer registers all routes and returns an http.Handler.
-	handler := api.NewServer(logger, st, jobManager)
+	// api.NewServer registers all routes and returns an http.Handler. The git
+	// remote is echoed back to FBD in the ingest response.
+	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote)
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,

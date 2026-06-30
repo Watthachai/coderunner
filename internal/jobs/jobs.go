@@ -27,11 +27,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 )
 
@@ -49,6 +52,14 @@ type manager struct {
 	notifier domain.Notifier
 	logger   *slog.Logger
 
+	// projectsDir is the absolute root under which each project's working dir
+	// (projectsDir/<project_id>) is materialized and git-pushed.
+	projectsDir string
+	// gitRemote is the push target for every build's branch. Empty -> push skipped.
+	gitRemote string
+	// runClaude toggles invoking Claude Code after files are materialized.
+	runClaude bool
+
 	mu   sync.Mutex
 	subs map[uuid.UUID][]*subscriber // jobID -> live listeners
 }
@@ -64,22 +75,30 @@ type subscriber struct {
 var _ domain.JobManager = (*manager)(nil)
 
 // NewManager returns a domain.JobManager composed of the store, Claude runner,
-// and notifier. Signature is fixed by cmd/server/main.go.
+// and notifier. projectsDir is the absolute root for per-project working dirs;
+// gitRemote is the push target (empty skips the push); runClaude toggles the
+// Claude Code step. Signature is kept in lockstep with cmd/server/main.go.
 func NewManager(
 	store domain.Store,
 	runner domain.ClaudeRunner,
 	notifier domain.Notifier,
 	logger *slog.Logger,
+	projectsDir string,
+	gitRemote string,
+	runClaude bool,
 ) domain.JobManager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &manager{
-		store:    store,
-		runner:   runner,
-		notifier: notifier,
-		logger:   logger.With("component", "jobs"),
-		subs:     make(map[uuid.UUID][]*subscriber),
+		store:       store,
+		runner:      runner,
+		notifier:    notifier,
+		logger:      logger.With("component", "jobs"),
+		projectsDir: projectsDir,
+		gitRemote:   gitRemote,
+		runClaude:   runClaude,
+		subs:        make(map[uuid.UUID][]*subscriber),
 	}
 }
 
@@ -266,60 +285,92 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		Timestamp: time.Now().UTC(),
 	})
 
-	// --- run Claude Code ---
-	spec := domain.RunSpec{
-		JobID:     job.ID,
-		ProjectID: job.ProjectID,
-		// The claude runner joins WorkDir under its configured projectsDir; we
-		// pass the per-project directory name. (jobs is not given ProjectsDir —
-		// see the review notes for this assumption.)
-		WorkDir:         job.ProjectID.String(),
-		Prompt:          promptFromPayload(job.Payload),
-		ResumeSessionID: job.SessionID,
-	}
+	// The absolute per-project working dir: every file write, Claude run, and
+	// git push targets the same directory.
+	workDir := filepath.Join(m.projectsDir, job.ProjectID.String())
 
-	emit := func(ev domain.ClaudeEvent) error {
-		// Persist the session id as soon as it appears so a future build can
-		// --resume even if this run later fails.
-		if ev.SessionID != "" && ev.SessionID != job.SessionID {
-			job.SessionID = ev.SessionID
-			if err := m.store.SetJobSession(ctx, job.ID, ev.SessionID); err != nil {
-				log.Warn("persist session id failed", "err", err)
-			}
-		}
-		m.publish(job.ID, translate(job.ID, ev))
-		return nil
-	}
-
-	result, runErr := m.runner.Run(ctx, spec, emit)
-
-	// Persist the terminal session id from the result line if not already stored.
-	if result.SessionID != "" && result.SessionID != job.SessionID {
-		job.SessionID = result.SessionID
-		if err := m.store.SetJobSession(ctx, job.ID, result.SessionID); err != nil {
-			log.Warn("persist terminal session id failed", "err", err)
-		}
-	}
-
-	// --- terminal: failed ---
-	if runErr != nil || !result.Success {
-		errMsg := "claude run reported failure"
-		if runErr != nil {
-			errMsg = runErr.Error()
-		}
-		log.Error("build failed", "err", errMsg, "cost_usd", result.CostUSD)
-		m.finishFailed(ctx, job, errMsg, result.CostUSD)
+	// --- materialize: write the incoming payload files to disk ---
+	spec := parsePayload(job.Payload)
+	m.publishPhase(job.ID, "materialize")
+	if err := buildstep.WriteFiles(workDir, spec.Files); err != nil {
+		log.Error("materialize files failed", "err", err)
+		m.finishFailed(ctx, job, "materialize files failed: "+err.Error(), 0)
 		return
 	}
+	log.Info("materialized files", "count", len(spec.Files), "workdir", workDir)
 
-	// --- success ---
-	// TODO(crn): git commit-per-build + docker build/push, then record the tag.
-	// Image tag convention is {docker_user}/{project_id}:v{build_no}
-	// (config.DockerRegistryUser; migrations docker_tag comment). The docker user
-	// is not injected into jobs yet, so the full tag cannot be built here; the
-	// docker pipeline (and store.SetJobDockerTag) lands with that dependency:
-	//   dockerTag := fmt.Sprintf("%s/%s:v%d", dockerUser, job.ProjectID, job.BuildNo)
-	//   build+push, then m.store.SetJobDockerTag(ctx, job.ID, dockerTag).
+	// --- run Claude Code (optional) ---
+	var result domain.RunResult
+	if m.runClaude {
+		runSpec := domain.RunSpec{
+			JobID:           job.ID,
+			ProjectID:       job.ProjectID,
+			WorkDir:         workDir,
+			Prompt:          spec.Prompt,
+			ResumeSessionID: job.SessionID,
+		}
+
+		emit := func(ev domain.ClaudeEvent) error {
+			// Persist the session id as soon as it appears so a future build can
+			// --resume even if this run later fails.
+			if ev.SessionID != "" && ev.SessionID != job.SessionID {
+				job.SessionID = ev.SessionID
+				if err := m.store.SetJobSession(ctx, job.ID, ev.SessionID); err != nil {
+					log.Warn("persist session id failed", "err", err)
+				}
+			}
+			m.publish(job.ID, translate(job.ID, ev))
+			return nil
+		}
+
+		var runErr error
+		result, runErr = m.runner.Run(ctx, runSpec, emit)
+
+		// Persist the terminal session id from the result line if not already stored.
+		if result.SessionID != "" && result.SessionID != job.SessionID {
+			job.SessionID = result.SessionID
+			if err := m.store.SetJobSession(ctx, job.ID, result.SessionID); err != nil {
+				log.Warn("persist terminal session id failed", "err", err)
+			}
+		}
+
+		// --- terminal: failed ---
+		if runErr != nil || !result.Success {
+			errMsg := "claude run reported failure"
+			if runErr != nil {
+				errMsg = runErr.Error()
+			}
+			log.Error("build failed", "err", errMsg, "cost_usd", result.CostUSD)
+			m.finishFailed(ctx, job, errMsg, result.CostUSD)
+			return
+		}
+	} else {
+		log.Info("claude step skipped (CRN_RUN_CLAUDE=false)")
+		m.publishPhase(job.ID, "claude_skipped")
+	}
+
+	// --- success: git commit + force-push the build branch ---
+	branch := "crn/" + job.ProjectID.String()
+	if m.gitRemote != "" {
+		m.publishPhase(job.ID, "git")
+		m.publishPhase(job.ID, "push")
+		msg := fmt.Sprintf("crn: build %d for project %s", job.BuildNo, job.ProjectID)
+		commit, err := buildstep.GitCommitAndPush(ctx, workDir, m.gitRemote, branch, msg, m.logger)
+		if err != nil {
+			log.Error("git push failed", "err", err)
+			m.finishFailed(ctx, job, "git push failed: "+err.Error(), result.CostUSD)
+			return
+		}
+		log.Info("git pushed", "branch", branch, "commit", commit, "remote", m.gitRemote)
+		// Reuse docker_tag to record the produced branch (no docker pipeline yet).
+		if err := m.store.SetJobDockerTag(ctx, job.ID, "branch:"+branch); err != nil {
+			log.Warn("persist branch tag failed", "err", err)
+		}
+		job.DockerTag = "branch:" + branch
+	} else {
+		log.Info("git push skipped (CRN_GIT_REMOTE empty)", "branch", branch)
+		m.publishPhase(job.ID, "push_skipped")
+	}
 
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobDone, ""); err != nil {
 		log.Error("mark done failed", "err", err)
@@ -328,18 +379,29 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		return
 	}
 	job.Status = domain.JobDone
-	log.Info("build done", "cost_usd", result.CostUSD, "session_id", result.SessionID)
+	log.Info("build done", "cost_usd", result.CostUSD, "session_id", result.SessionID, "branch", job.DockerTag)
 
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSResult,
 		Phase:     string(domain.JobDone),
 		CostUSD:   result.CostUSD,
 		SessionID: result.SessionID,
+		File:      job.DockerTag, // carries "branch:crn/<project_id>" for the dashboard
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result))
 	m.closeSubscribers(job.ID)
+}
+
+// publishPhase fans a lifecycle phase marker out to live subscribers.
+func (m *manager) publishPhase(jobID uuid.UUID, phase string) {
+	m.publish(jobID, domain.BuildEventMsg{
+		Kind:      domain.WSBuildPhase,
+		Phase:     phase,
+		JobID:     jobID.String(),
+		Timestamp: time.Now().UTC(),
+	})
 }
 
 // finishFailed records the failure, notifies the central DB, pushes a terminal
@@ -436,6 +498,59 @@ func (s *subscriber) closeLocked() {
 }
 
 // --- internal: payload + event translation helpers -------------------------
+
+// payloadSpec is the parsed view of a job payload the build needs: the files to
+// materialize and the prompt to (optionally) hand to Claude Code.
+type payloadSpec struct {
+	Files  []buildstep.FileEntry
+	Prompt string
+}
+
+// ingestPayload mirrors the FBD -> CRN ingest body (api.ingestBody). Only the
+// fields the build consumes are decoded; unknown fields are ignored here (the
+// strict decode happens at the API boundary).
+type ingestPayload struct {
+	BRD     string                `json:"brd"`
+	PRD     string                `json:"prd"`
+	Prompts []string              `json:"prompts"`
+	Files   []buildstep.FileEntry `json:"files"`
+}
+
+// parsePayload extracts the files and a composed Claude prompt from a job's JSON
+// payload. The prompt is built from brd/prd/prompts; when none are present it
+// falls back to promptFromPayload (raw JSON / legacy "prompt"/"change" shapes).
+func parsePayload(payload json.RawMessage) payloadSpec {
+	var p ingestPayload
+	_ = json.Unmarshal(payload, &p) // best-effort; an unknown shape yields zero values
+
+	spec := payloadSpec{Files: p.Files}
+
+	var b strings.Builder
+	if p.BRD != "" {
+		b.WriteString("# BRD\n")
+		b.WriteString(p.BRD)
+		b.WriteString("\n\n")
+	}
+	if p.PRD != "" {
+		b.WriteString("# PRD\n")
+		b.WriteString(p.PRD)
+		b.WriteString("\n\n")
+	}
+	for _, m := range p.Prompts {
+		if m == "" {
+			continue
+		}
+		b.WriteString("# Requirement\n")
+		b.WriteString(m)
+		b.WriteString("\n\n")
+	}
+
+	spec.Prompt = strings.TrimSpace(b.String())
+	if spec.Prompt == "" {
+		spec.Prompt = promptFromPayload(payload)
+	}
+	return spec
+}
 
 // promptFromPayload extracts the change description handed to Claude Code from a
 // job's JSON payload. The payload shape is { "prompt": "...", ... } (or the

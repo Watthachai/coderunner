@@ -16,24 +16,24 @@ export const WS_BASE = API_BASE.replace(/^http/, "ws");
 /**
  * Build the live-log WebSocket URL for a given project + build number.
  *
- * The backend mounts this under the API-key-authenticated /api/v1 group:
- *   GET /api/v1/projects/{id}/jobs/{build_no}/logs
+ * The dashboard connects to the NO-AUTH internal endpoint so it works without
+ * an org API key (browsers cannot set the X-API-Key header on a WS handshake):
+ *   GET /internal/projects/{id}/jobs/{build_no}/logs
  *
- * Browsers cannot set the X-API-Key request header on a WebSocket handshake,
- * so when an API key is supplied we pass it as the `api_key` query parameter.
- * TODO(crn): confirm the api package accepts the key via query string for WS
- * (the REST auth middleware reads the X-API-Key header).
+ * The apiKey arg is kept for call-site compatibility but is unused here; the
+ * tenant-facing /api/v1 variant (which does require the key) is not used by the
+ * internal dashboard.
  */
 export function jobLogsWsUrl(
   projectId: string,
   buildNo: number,
   apiKey?: string,
 ): string {
-  const path = `/api/v1/projects/${encodeURIComponent(
+  void apiKey; // unused: internal endpoint is no-auth
+  const path = `/internal/projects/${encodeURIComponent(
     projectId,
   )}/jobs/${buildNo}/logs`;
   const url = new URL(WS_BASE + path);
-  if (apiKey) url.searchParams.set("api_key", apiKey);
   return url.toString();
 }
 

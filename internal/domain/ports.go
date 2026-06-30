@@ -21,6 +21,12 @@ import (
 // take a context for cancellation/deadlines. Implementations must be safe for
 // concurrent use by multiple goroutines.
 type Store interface {
+	// --- Orgs ---
+	// EnsureOrg upserts an org by id (INSERT ... ON CONFLICT (id) DO UPDATE SET
+	// name = EXCLUDED.name). A zero id is replaced with gen_random_uuid(). The
+	// persisted row (id, name, created_at) is read back into org.
+	EnsureOrg(ctx context.Context, org *Org) error
+
 	// --- Projects ---
 	CreateProject(ctx context.Context, p *Project) error
 	GetProject(ctx context.Context, id uuid.UUID) (*Project, error)
@@ -31,6 +37,10 @@ type Store interface {
 	// --- Jobs ---
 	CreateJob(ctx context.Context, j *Job) error
 	GetJob(ctx context.Context, id uuid.UUID) (*Job, error)
+	// JobByBuildNo resolves the job for a project's build number (used by the
+	// live-logs WS to turn {project_id, build_no} into a job to subscribe to).
+	// Returns ErrNotFound when no such build exists.
+	JobByBuildNo(ctx context.Context, projectID uuid.UUID, buildNo int) (*Job, error)
 	// UpdateJobStatus moves a job to a new status. errMsg is stored only for
 	// JobFailed; pass "" otherwise.
 	UpdateJobStatus(ctx context.Context, id uuid.UUID, status JobStatus, errMsg string) error

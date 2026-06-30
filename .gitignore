@@ -30,4 +30,5 @@ yarn-error.log*
 
 # ---- local data ----
 /projects/
+.crn-workspaces/
 *.local

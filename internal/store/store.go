@@ -84,6 +84,27 @@ func (s *pgStore) Close() {
 	s.pool.Close()
 }
 
+// --- Orgs --------------------------------------------------------------------
+
+// EnsureOrg upserts an org by id. A zero id falls back to gen_random_uuid();
+// on a primary-key conflict the name is refreshed from the incoming value. The
+// persisted row is read back into org.
+func (s *pgStore) EnsureOrg(ctx context.Context, org *domain.Org) error {
+	const q = `
+		INSERT INTO orgs (id, name)
+		VALUES (
+			COALESCE(NULLIF($1, '00000000-0000-0000-0000-000000000000'::uuid), gen_random_uuid()),
+			$2
+		)
+		ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id, name, created_at`
+	if err := s.pool.QueryRow(ctx, q, org.ID, org.Name).
+		Scan(&org.ID, &org.Name, &org.CreatedAt); err != nil {
+		return mapErr(err, "store: ensure org")
+	}
+	return nil
+}
+
 // --- Projects ---------------------------------------------------------------
 
 // CreateProject inserts a project. Zero-valued id/status fall back to DB
@@ -187,6 +208,24 @@ func (s *pgStore) GetJob(ctx context.Context, id uuid.UUID) (*domain.Job, error)
 		FROM project_jobs WHERE id = $1`
 	j := &domain.Job{}
 	if err := scanJob(s.pool.QueryRow(ctx, q, id), j); err != nil {
+		return nil, err
+	}
+	return j, nil
+}
+
+// JobByBuildNo resolves the job for a project's build number, returning
+// domain.ErrNotFound if absent. build_no is unique per project (BumpBuildNo),
+// so at most one row matches.
+func (s *pgStore) JobByBuildNo(ctx context.Context, projectID uuid.UUID, buildNo int) (*domain.Job, error) {
+	const q = `
+		SELECT id, project_id, org_id, status, build_no,
+		       payload,
+		       COALESCE(session_id, ''), COALESCE(docker_tag, ''), COALESCE(error_msg, ''),
+		       queued_at, started_at, finished_at
+		FROM project_jobs WHERE project_id = $1 AND build_no = $2
+		ORDER BY queued_at DESC LIMIT 1`
+	j := &domain.Job{}
+	if err := scanJob(s.pool.QueryRow(ctx, q, projectID, buildNo), j); err != nil {
 		return nil, err
 	}
 	return j, nil

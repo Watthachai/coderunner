@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,15 @@ type Config struct {
 	// ProjectsDir is the root holding per-project working dirs (.git + src).
 	ProjectsDir string
 
+	// GitRemote is the HTTPS remote the per-build branch is force-pushed to
+	// (https://github.com/<owner>/<repo>.git). Optional: when empty the
+	// git-push step is skipped (logged notice) and builds still complete.
+	GitRemote string
+
+	// RunClaude toggles whether the build invokes Claude Code after the files
+	// are materialized. Default false: materialize + push only.
+	RunClaude bool
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -58,6 +68,8 @@ type Config struct {
 //	CRN_CENTRAL_DATABASE_URL (falls back to CRN_DATABASE_URL)
 //	CRN_MONGO_URL          ("mongodb://localhost:27017")
 //	CRN_PROJECTS_DIR       ("/projects")
+//	CRN_GIT_REMOTE         ("" — when empty the git-push step is skipped)
+//	CRN_RUN_CLAUDE         (false — "true"/"1" to run Claude Code post-materialize)
 //	CRN_LOG_LEVEL          ("info")
 //	CRN_SHUTDOWN_TIMEOUT   ("15s")
 //	CRN_ENV                ("development")
@@ -70,6 +82,8 @@ func Load() (*Config, error) {
 		ClaudeBinPath:      os.Getenv("CRN_CLAUDE_BIN"),
 		DockerRegistryUser: os.Getenv("CRN_DOCKER_USER"),
 		ProjectsDir:        getEnv("CRN_PROJECTS_DIR", "/projects"),
+		GitRemote:          os.Getenv("CRN_GIT_REMOTE"),
+		RunClaude:          getEnvBool("CRN_RUN_CLAUDE", false),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 	}
@@ -144,3 +158,20 @@ func getEnvInt(key string, def int) (int, error) {
 }
 
 var _ = getEnvInt // silence unused until an implementer needs it
+
+// getEnvBool parses a boolean tunable. "true" / "1" (case-insensitive) are true;
+// everything else — including an unset or unparseable value — yields def.
+func getEnvBool(key string, def bool) bool {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "1":
+		return true
+	case "false", "0":
+		return false
+	default:
+		return def
+	}
+}

@@ -47,15 +47,21 @@ const (
 // server holds the transport dependencies. It is unexported; NewServer returns
 // the http.Handler (the chi router), not this concrete type.
 type server struct {
-	logger *slog.Logger
-	store  domain.Store
-	jm     domain.JobManager
+	logger    *slog.Logger
+	store     domain.Store
+	jm        domain.JobManager
+	gitRemote string // advertised back to FBD in the ingest response
 }
 
+// defaultOrgID is the org an ingest call is attributed to when the body carries
+// no org_id (FBD single-tenant dev). It is a fixed, valid UUID.
+var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
+
 // NewServer constructs the chi router with all CRN routes registered and
-// returns it as an http.Handler. Signature is fixed by cmd/server/main.go.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager) http.Handler {
-	s := &server{logger: logger, store: store, jm: jm}
+// returns it as an http.Handler. gitRemote is echoed back to FBD in the ingest
+// response so the caller knows where the build will be pushed.
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote string) http.Handler {
+	s := &server{logger: logger, store: store, jm: jm, gitRemote: gitRemote}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -71,6 +77,15 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager) ht
 	// TODO(crn): lock down POST /internal/trigger by network policy and/or a
 	// shared secret header; today it is open within the trusted network.
 	r.Post("/internal/trigger", s.handleTrigger)
+
+	// Internal ingest from FBD (via the Next proxy /api/fittcore). No API-key
+	// auth — it is a service-to-service call within the trusted network, like
+	// /internal/trigger. Materializes a full project payload into a build.
+	r.Post("/internal/projects", s.handleIngest)
+
+	// No-auth internal live-log WebSocket so the CRN dashboard can watch a build
+	// without an org API key. Same stream as the /api/v1 variant, no auth.
+	r.Get("/internal/projects/{id}/jobs/{build_no}/logs", s.handleInternalLogsWS)
 
 	// Tenant-facing API, guarded by per-org API key.
 	r.Route("/api/v1", func(r chi.Router) {
@@ -192,6 +207,119 @@ func (s *server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, r, http.StatusAccepted, map[string]string{"status": "accepted"})
+}
+
+// ingestFile is one file in an ingest payload.
+type ingestFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// ingestBody is the full FBD -> CRN ingest payload (the wire contract). The
+// strict decoder (DisallowUnknownFields) requires EVERY field to be declared.
+type ingestBody struct {
+	OrgID     string       `json:"org_id"`
+	OrgName   string       `json:"org_name"`
+	ProjectID string       `json:"project_id"`
+	Name      string       `json:"name"`
+	BRD       string       `json:"brd"`
+	PRD       string       `json:"prd"`
+	Prompts   []string     `json:"prompts"`
+	Files     []ingestFile `json:"files"`
+}
+
+// handleIngest accepts a full project payload from FBD, ensures the org and
+// project exist, and enqueues a build whose payload is the full ingest body
+// (so the jobs layer can materialize files + compose the Claude prompt).
+func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
+	var body ingestBody
+	if err := decodeJSON(r, &body); err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// --- org: parse or default, then upsert ---
+	orgID := defaultOrgID
+	if body.OrgID != "" {
+		id, err := uuid.Parse(body.OrgID)
+		if err != nil {
+			s.writeError(w, r, http.StatusBadRequest, "invalid org_id")
+			return
+		}
+		orgID = id
+	}
+	orgName := body.OrgName
+	if orgName == "" {
+		orgName = "FBD Default"
+	}
+	org := &domain.Org{ID: orgID, Name: orgName}
+	if err := s.store.EnsureOrg(r.Context(), org); err != nil {
+		s.logger.Error("ensure org failed", "err", err, "org_id", orgID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not ensure org")
+		return
+	}
+	orgID = org.ID // EnsureOrg may have generated the id
+
+	// --- project: parse or mint, create if missing (re-export reuses it) ---
+	projectID := uuid.New()
+	if body.ProjectID != "" {
+		id, err := uuid.Parse(body.ProjectID)
+		if err != nil {
+			s.writeError(w, r, http.StatusBadRequest, "invalid project_id")
+			return
+		}
+		projectID = id
+	}
+
+	_, err := s.store.GetProject(r.Context(), projectID)
+	if errors.Is(err, domain.ErrNotFound) {
+		name := body.Name
+		if name == "" {
+			name = "Untitled project"
+		}
+		proj := &domain.Project{
+			ID:     projectID,
+			OrgID:  orgID,
+			Name:   name,
+			Status: domain.ProjectActive,
+		}
+		if err := s.store.CreateProject(r.Context(), proj); err != nil {
+			s.logger.Error("create project failed", "err", err, "project_id", projectID)
+			s.writeError(w, r, http.StatusInternalServerError, "could not create project")
+			return
+		}
+		projectID = proj.ID // CreateProject may have generated the id
+	} else if err != nil {
+		s.logger.Error("get project failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+
+	// Re-encode the FULL ingest body (incl files) as the job payload so the jobs
+	// layer materializes the files and composes the prompt from brd/prd/prompts.
+	payloadBytes, err := json.Marshal(body)
+	if err != nil {
+		s.logger.Error("marshal job payload failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not encode payload")
+		return
+	}
+
+	job, err := s.jm.Enqueue(r.Context(), projectID, orgID, payloadBytes)
+	if err != nil {
+		s.logger.Error("enqueue job failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not enqueue build")
+		return
+	}
+
+	s.writeJSON(w, r, http.StatusAccepted, map[string]any{
+		"project_id": projectID,
+		"job_id":     job.ID,
+		"build_no":   job.BuildNo,
+		"org_id":     orgID,
+		"git_remote": s.gitRemote,
+		"git_branch": "crn/" + projectID.String(),
+		"status":     job.Status,
+	})
 }
 
 // editRequestBody is the POST /projects/{id}/edit-request payload.
@@ -319,9 +447,8 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, r, http.StatusOK, view)
 }
 
-// handleLogsWS upgrades to a WebSocket and streams the live BuildEventMsg
-// stream for the job identified by {id}/{build_no} until the channel closes or
-// the client disconnects.
+// handleLogsWS is the tenant-facing (API-key-authenticated) live-log WebSocket.
+// It enforces that the project belongs to the calling org, then streams.
 func (s *server) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 	org, ok := orgFromContext(r.Context())
 	if !ok {
@@ -334,14 +461,9 @@ func (s *server) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusBadRequest, "invalid project id")
 		return
 	}
-	buildNo, err := parseBuildNo(chi.URLParam(r, "build_no"))
-	if err != nil {
-		s.writeError(w, r, http.StatusBadRequest, "invalid build_no")
-		return
-	}
 
-	// Resolve the job before upgrading so we can answer with a clean HTTP error
-	// (you cannot send a meaningful HTTP status after the WS handshake).
+	// Resolve the project up front so we can return a clean HTTP error and
+	// enforce tenant isolation before upgrading.
 	project, err := s.store.GetProject(r.Context(), projectID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -354,6 +476,45 @@ func (s *server) handleLogsWS(w http.ResponseWriter, r *http.Request) {
 	}
 	if project.OrgID != org.ID {
 		s.writeError(w, r, http.StatusNotFound, "project not found")
+		return
+	}
+
+	s.streamJobLogsWS(w, r, projectID)
+}
+
+// handleInternalLogsWS is the no-auth internal variant used by the CRN
+// dashboard. It skips the org check (service-to-service / trusted network) but
+// shares the exact streaming body with the tenant-facing route.
+func (s *server) handleInternalLogsWS(w http.ResponseWriter, r *http.Request) {
+	projectID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid project id")
+		return
+	}
+
+	// Confirm the project exists so a bad id returns a clean 404 pre-upgrade.
+	if _, err := s.store.GetProject(r.Context(), projectID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "project not found")
+			return
+		}
+		s.logger.Error("get project failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+
+	s.streamJobLogsWS(w, r, projectID)
+}
+
+// streamJobLogsWS resolves the job for {build_no}, upgrades the connection, and
+// streams the live BuildEventMsg feed until the job ends or the client
+// disconnects. Both the tenant and internal WS handlers funnel through here so
+// the upgrade + fan-out loop lives in one place. The caller has already
+// resolved (and authorized) the project.
+func (s *server) streamJobLogsWS(w http.ResponseWriter, r *http.Request, projectID uuid.UUID) {
+	buildNo, err := parseBuildNo(chi.URLParam(r, "build_no"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid build_no")
 		return
 	}
 
@@ -447,18 +608,14 @@ func (s *server) handleRollback(w http.ResponseWriter, r *http.Request) {
 
 // --- Helpers ---
 
-// findJobByBuildNo resolves the job id for a project's build number.
-//
-// TODO(crn): the Store port has no GetJobByBuildNo method, so this scaffold
-// cannot resolve a job id from (project_id, build_no) yet. Wire this once the
-// store exposes a lookup (or the WS route is keyed by job_id instead). Until
-// then it reports ErrNotFound so the handler returns a clean 404 rather than
-// streaming a bogus subscription.
+// findJobByBuildNo resolves the job id for a project's build number via the
+// store, returning domain.ErrNotFound (-> 404) when the build does not exist.
 func (s *server) findJobByBuildNo(ctx context.Context, projectID uuid.UUID, buildNo int) (uuid.UUID, error) {
-	_ = ctx
-	_ = projectID
-	_ = buildNo
-	return uuid.Nil, domain.ErrNotFound
+	job, err := s.store.JobByBuildNo(ctx, projectID, buildNo)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return job.ID, nil
 }
 
 // parseBuildNo parses the {build_no} path segment, tolerating an optional 'v'
