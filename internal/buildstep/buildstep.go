@@ -62,6 +62,76 @@ func WriteFiles(dir string, files []FileEntry) error {
 	return nil
 }
 
+// SkillFile is one Claude Agent Skill to inject into a build's working dir: a
+// skill name, its SKILL.md body, and an OPTIONAL set of extra files (scripts/,
+// references/, ...) keyed by path relative to the skill dir. SKILL.md is NOT in
+// Files — it is written from Body.
+type SkillFile struct {
+	Name  string
+	Body  string
+	Files map[string]string
+}
+
+// InjectSkills writes each skill to {dir}/.claude/skills/{name}/, creating
+// parent directories as needed. SKILL.md is written from Body; every entry in
+// Files is written to its relative path under the same skill dir.
+//
+// A skill name is treated as a single path segment; any name that is empty or
+// escapes the skills root (absolute, or containing a path separator / "..") is
+// rejected. Each extra-file relative path is cleaned and must stay within the
+// skill dir (no absolute path, no ".." escape) so a malicious name or path
+// cannot write outside the injected dir. The caller is responsible for removing
+// {dir}/.claude before committing so it is never pushed.
+func InjectSkills(dir string, skills []SkillFile) error {
+	skillsRoot := filepath.Join(dir, ".claude", "skills")
+	for _, sk := range skills {
+		if sk.Name == "" {
+			return fmt.Errorf("buildstep: empty skill name")
+		}
+		clean := filepath.Clean(sk.Name)
+		if clean != sk.Name || filepath.IsAbs(clean) ||
+			strings.ContainsRune(clean, filepath.Separator) ||
+			clean == ".." || clean == "." {
+			return fmt.Errorf("buildstep: invalid skill name %q", sk.Name)
+		}
+
+		skillDir := filepath.Join(skillsRoot, clean)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return fmt.Errorf("buildstep: mkdir for skill %q: %w", sk.Name, err)
+		}
+		target := filepath.Join(skillDir, "SKILL.md")
+		if err := os.WriteFile(target, []byte(sk.Body), 0o644); err != nil {
+			return fmt.Errorf("buildstep: write skill %q: %w", sk.Name, err)
+		}
+
+		// Extra files (scripts/, references/, ...). Each path is relative to the
+		// skill dir; reject any escape so a crafted path cannot leave skillDir.
+		for relPath, content := range sk.Files {
+			if relPath == "" {
+				return fmt.Errorf("buildstep: empty file path in skill %q", sk.Name)
+			}
+			cleanRel := filepath.Clean(relPath)
+			if filepath.IsAbs(cleanRel) || cleanRel == ".." ||
+				strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("buildstep: file path %q in skill %q escapes skill dir", relPath, sk.Name)
+			}
+			fileTarget := filepath.Join(skillDir, cleanRel)
+			// Defense in depth: ensure the joined target is still within skillDir.
+			rel, err := filepath.Rel(skillDir, fileTarget)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("buildstep: file path %q in skill %q escapes skill dir", relPath, sk.Name)
+			}
+			if err := os.MkdirAll(filepath.Dir(fileTarget), 0o755); err != nil {
+				return fmt.Errorf("buildstep: mkdir for skill %q file %q: %w", sk.Name, relPath, err)
+			}
+			if err := os.WriteFile(fileTarget, []byte(content), 0o644); err != nil {
+				return fmt.Errorf("buildstep: write skill %q file %q: %w", sk.Name, relPath, err)
+			}
+		}
+	}
+	return nil
+}
+
 // GitCommitAndPush stages everything in dir, commits it, and force-pushes HEAD
 // to <remote> as refs/heads/<branch>. It initializes the repo (git init +
 // local user identity) and (re)points origin at remote on first use. The host's
@@ -83,6 +153,15 @@ func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, 
 		}
 	} else if err != nil {
 		return "", fmt.Errorf("buildstep: stat .git: %w", err)
+	}
+
+	// Keep build artifacts out of the commit regardless of whether the project
+	// ships its own .gitignore. .git/info/exclude is local-only (never pushed),
+	// so it doesn't pollute the project's tree. Claude's `npm install` produces a
+	// node_modules/ that would otherwise be force-pushed.
+	excludeBody := "node_modules/\ndist/\nbuild/\n.next/\n.claude/\n*.log\n.DS_Store\n"
+	if err := os.MkdirAll(filepath.Join(gitDir, "info"), 0o755); err == nil {
+		_ = os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte(excludeBody), 0o644)
 	}
 
 	// Local identity so commits never depend on a global git config being set.

@@ -40,3 +40,25 @@ export function jobLogsWsUrl(
 export function projectStatusUrl(projectId: string): string {
   return `${API_BASE}/api/v1/projects/${encodeURIComponent(projectId)}/status`;
 }
+
+// Operator-console snapshot (no auth): vitals, in-flight builds, queue,
+// projects, recent activity — polled by the dashboard.
+export function dashboardUrl(): string {
+  return `${API_BASE}/internal/dashboard`;
+}
+
+// Skill management (no auth): the harness Agent Skills injected into builds.
+//   GET  /internal/skills          -> list
+//   PUT  /internal/skills/{name}   -> upsert
+//   DELETE /internal/skills/{name} -> remove (non-builtin only)
+export function skillsUrl(): string {
+  return `${API_BASE}/internal/skills`;
+}
+
+export function skillUrl(name: string): string {
+  return `${API_BASE}/internal/skills/${encodeURIComponent(name)}`;
+}
+
+// Optional: the git remote builds are pushed to. When set, project branches
+// in the table link to GitHub. Empty -> branches render as plain text.
+export const GIT_REMOTE = process.env.NEXT_PUBLIC_CRN_GIT_REMOTE ?? "";

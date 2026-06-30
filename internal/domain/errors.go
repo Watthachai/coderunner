@@ -19,4 +19,9 @@ var (
 	// ErrUnauthorized is returned by auth middleware / Store on a bad or revoked
 	// API key.
 	ErrUnauthorized = errors.New("domain: unauthorized")
+
+	// ErrSkillBuiltin is returned by Store.DeleteSkill when the target skill is
+	// built-in (is_builtin = true) and therefore not deletable. The api layer
+	// maps it to HTTP 409.
+	ErrSkillBuiltin = errors.New("domain: skill is built-in and cannot be deleted")
 )

@@ -71,6 +71,19 @@ go vet ./...     # type-checks the whole module
 > git-commit-per-build, `LISTEN/NOTIFY`), not panic stubs — the binary builds and
 > runs. Do not change the constructor signatures or the `domain` interfaces.
 
+## Skills (Claude Agent Skills harness)
+
+Enabled skills are injected into each build's working dir as
+`{workdir}/.claude/skills/{name}/` (SKILL.md from `body`, plus any extra files
+from the `files` JSONB map — `scripts/`, `references/`, …) before Claude runs,
+then removed before the git push.
+
+The built-in `fitt-build` harness is the **code's** source of truth
+(`cmd/server/builtin_skill.go`): on every startup `EnsureBuiltinSkill` re-applies
+its body/description/files (`ON CONFLICT (name) DO UPDATE`), but **preserves the
+operator's `enabled` flag** — restarting CRN refreshes the canonical harness
+while enable/disable stays an operator decision via `PUT /internal/skills/{name}`.
+
 ## Frontend
 
 `frontend/` is a minimal Next.js app (App Router). The dashboard — overview,

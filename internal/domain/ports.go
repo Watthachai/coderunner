@@ -71,6 +71,29 @@ type Store interface {
 	// called to unlock; it is safe to call multiple times.
 	AcquireOrgLock(ctx context.Context, orgID uuid.UUID) (release func(), err error)
 
+	// --- Skills (Claude Agent Skills registry) ---
+	// ListSkills returns every skill, name-ordered (each skill's Files map is
+	// always non-nil). SetSkillEnabled flips the enabled flag. DeleteSkill refuses
+	// built-in skills (returns an error the api layer maps to 409).
+	// EnsureBuiltinSkill (re)seeds a built-in skill from code: ON CONFLICT (name)
+	// it UPDATEs body/description/files and forces is_builtin = true, but PRESERVES
+	// the operator's enabled flag — so restart re-applies the canonical harness
+	// while enable/disable stays an operator decision.
+	ListSkills(ctx context.Context) ([]*Skill, error)
+	GetSkill(ctx context.Context, name string) (*Skill, error)
+	UpsertSkill(ctx context.Context, s *Skill) error
+	SetSkillEnabled(ctx context.Context, name string, enabled bool) error
+	DeleteSkill(ctx context.Context, name string) error
+	EnsureBuiltinSkill(ctx context.Context, s *Skill) error
+
+	// --- Dashboard (operator console read model) ---
+	// DashboardSnapshot returns a single point-in-time read model for the
+	// operator console: vitals (counts), the in-flight builds, the FIFO queue,
+	// every project with its latest-job summary, and a recent activity feed.
+	// It is computed from a handful of parameter-free queries; slices are always
+	// non-nil (so JSON renders [] not null).
+	DashboardSnapshot(ctx context.Context) (*DashboardSnapshot, error)
+
 	// Ping verifies connectivity (used by /healthz and startup checks).
 	Ping(ctx context.Context) error
 	// Close releases the connection pool.

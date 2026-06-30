@@ -16,6 +16,7 @@ import (
 	"github.com/Watthachai/fitt-coderunner/internal/api"
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/config"
+	"github.com/Watthachai/fitt-coderunner/internal/domain"
 	"github.com/Watthachai/fitt-coderunner/internal/jobs"
 	"github.com/Watthachai/fitt-coderunner/internal/store"
 )
@@ -55,6 +56,21 @@ func run() error {
 		return err
 	}
 	defer st.Close()
+
+	// (Re)seed the built-in `fitt-build` harness skill. The code is the source of
+	// truth: EnsureBuiltinSkill re-applies this body/description/files on every
+	// restart (ON CONFLICT DO UPDATE) so the canonical harness is always current,
+	// while PRESERVING the operator's enabled flag (enable/disable stays an
+	// operator decision). fitt-build ships SKILL.md-only (no extra files).
+	if err := st.EnsureBuiltinSkill(rootCtx, &domain.Skill{
+		Name:        builtinSkillName,
+		Description: builtinSkillDescription,
+		Body:        builtinSkillBody,
+		Enabled:     true,
+		IsBuiltin:   true,
+	}); err != nil {
+		return err
+	}
 
 	// --- Notifier (writes build_events to the central DB) ---
 	// TODO(store): store.NewNotifier targets the central DSN for fan-out.

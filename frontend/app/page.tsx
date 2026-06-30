@@ -1,34 +1,67 @@
-import { API_BASE } from "./lib/config";
-import { JobMonitor } from "./components/JobMonitor";
-import { ProjectStatusPanel } from "./components/ProjectStatusPanel";
+"use client";
 
-// CRN Dashboard (CRN-architecture.md §2.4).
-//
-// This is the operator console for the Go daemon. Two live tools are wired:
-//   - Project Status: GET /api/v1/projects/{id}/status (read model)
-//   - Live Job Monitor: WebSocket /api/v1/projects/{id}/jobs/{build_no}/logs,
-//     rendering the streamed BuildEventMsg feed in real time.
-//
-// There is no list-projects REST endpoint in the backend contract yet, so the
-// operator supplies a project id. When that endpoint lands, the Project Status
-// panel becomes a list with per-row badges + a "watch" action into the monitor.
+// CRN operator console (CRN-architecture.md §2.4) — "mission control" for the
+// build daemon. Polls GET /internal/dashboard for the snapshot (vitals, queue,
+// projects, activity) and opens a live WS per in-flight build so the phase
+// track and streamed Claude events update in real time.
+
+import Link from "next/link";
+import { API_BASE, GIT_REMOTE } from "./lib/config";
+import { useDashboard } from "./lib/useDashboard";
+import { VitalsRail } from "./components/VitalsRail";
+import { NowBuilding } from "./components/NowBuilding";
+import { QueuePanel } from "./components/QueuePanel";
+import { ProjectsTable } from "./components/ProjectsTable";
+import { ActivityFeed } from "./components/ActivityFeed";
+
 export default function Home() {
+  const { data, error, loading } = useDashboard(2500);
+
+  const conn = error ? "down" : loading ? "wait" : "live";
+  const connLabel = error ? "disconnected" : loading ? "connecting" : "live";
+
   return (
-    <main className="page">
+    <main className="console">
       <header className="page-head">
         <div className="brand">
           <span className="brand-mark" />
           <div>
             <h1>FITT Code Runner</h1>
-            <p className="brand-sub">build daemon · operator dashboard</p>
+            <p className="brand-sub">mission control · build orchestrator</p>
           </div>
         </div>
-        <code className="api-base">{API_BASE}</code>
+        <div className="head-right">
+          <Link className="navlink" href="/skills">
+            skills
+          </Link>
+          <span className={`conn conn--${conn}`}>
+            <span className="conn-dot" />
+            {connLabel}
+          </span>
+          <code className="api-base">{API_BASE}</code>
+        </div>
       </header>
 
-      <div className="grid">
-        <ProjectStatusPanel />
-        <JobMonitor />
+      {error ? (
+        <p className="alert">
+          Can’t reach the daemon at {API_BASE} — {error}. Is{" "}
+          <code>make run</code> up?
+        </p>
+      ) : null}
+
+      <VitalsRail vitals={data?.vitals ?? null} />
+
+      <div className="row row--two">
+        <NowBuilding
+          building={data?.building ?? []}
+          queued={data?.vitals?.queued ?? 0}
+        />
+        <QueuePanel queue={data?.queue ?? []} />
+      </div>
+
+      <div className="row row--two">
+        <ProjectsTable projects={data?.projects ?? []} remote={GIT_REMOTE} />
+        <ActivityFeed activity={data?.activity ?? []} />
       </div>
     </main>
   );

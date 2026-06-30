@@ -23,6 +23,7 @@ package store
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -324,6 +325,211 @@ func (s *pgStore) QueueDepth(ctx context.Context, projectID uuid.UUID) (int, err
 	return n, nil
 }
 
+// --- Dashboard (operator console read model) --------------------------------
+
+// stripBranchPrefix turns a job's docker_tag into a display branch. The
+// pipeline stores "branch:crn/<project_id>" in docker_tag; the console wants
+// just the branch, and an unset tag renders as empty.
+func stripBranchPrefix(dockerTag string) string {
+	const prefix = "branch:"
+	if len(dockerTag) >= len(prefix) && dockerTag[:len(prefix)] == prefix {
+		return dockerTag[len(prefix):]
+	}
+	return ""
+}
+
+// DashboardSnapshot assembles the operator-console read model from a handful of
+// parameter-free queries against the pool. All slices are initialized non-nil
+// so the JSON renders [] rather than null. generated_at is the server time.
+func (s *pgStore) DashboardSnapshot(ctx context.Context) (*domain.DashboardSnapshot, error) {
+	snap := &domain.DashboardSnapshot{
+		Building:    []domain.BuildingJob{},
+		Queue:       []domain.QueuedJob{},
+		Projects:    []domain.ProjectRow{},
+		Activity:    []domain.ActivityRow{},
+		GeneratedAt: time.Now().UTC(),
+	}
+
+	if err := s.dashboardVitals(ctx, &snap.Vitals); err != nil {
+		return nil, err
+	}
+	if err := s.dashboardBuilding(ctx, snap); err != nil {
+		return nil, err
+	}
+	if err := s.dashboardQueue(ctx, snap); err != nil {
+		return nil, err
+	}
+	if err := s.dashboardProjects(ctx, snap); err != nil {
+		return nil, err
+	}
+	if err := s.dashboardActivity(ctx, snap); err != nil {
+		return nil, err
+	}
+	return snap, nil
+}
+
+// dashboardVitals fills the headline counts in one round-trip. done_today /
+// failed_today count terminal jobs whose finished_at falls on the current date.
+func (s *pgStore) dashboardVitals(ctx context.Context, v *domain.DashboardVitals) error {
+	const q = `
+		SELECT
+			(SELECT count(*) FROM projects),
+			(SELECT count(*) FROM project_jobs WHERE status = 'queued'),
+			(SELECT count(*) FROM project_jobs WHERE status = 'building'),
+			(SELECT count(*) FROM project_jobs
+			   WHERE status = 'done'   AND finished_at::date = CURRENT_DATE),
+			(SELECT count(*) FROM project_jobs
+			   WHERE status = 'failed' AND finished_at::date = CURRENT_DATE)`
+	if err := s.pool.QueryRow(ctx, q).Scan(
+		&v.Projects, &v.Queued, &v.Building, &v.DoneToday, &v.FailedToday,
+	); err != nil {
+		return fmt.Errorf("store: dashboard vitals: %w", err)
+	}
+	return nil
+}
+
+// dashboardBuilding lists all in-flight builds (newest first), joined to
+// projects + orgs for display names. branch is derived from docker_tag.
+func (s *pgStore) dashboardBuilding(ctx context.Context, snap *domain.DashboardSnapshot) error {
+	const q = `
+		SELECT j.id, j.project_id, p.name, o.name, j.build_no,
+		       COALESCE(j.docker_tag, ''), j.started_at
+		FROM project_jobs j
+		JOIN projects p ON p.id = j.project_id
+		JOIN orgs o     ON o.id = j.org_id
+		WHERE j.status = 'building'
+		ORDER BY j.started_at DESC NULLS LAST, j.queued_at DESC`
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return fmt.Errorf("store: dashboard building: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var b domain.BuildingJob
+		var dockerTag string
+		if err := rows.Scan(
+			&b.JobID, &b.ProjectID, &b.ProjectName, &b.OrgName, &b.BuildNo,
+			&dockerTag, &b.StartedAt,
+		); err != nil {
+			return fmt.Errorf("store: dashboard building scan: %w", err)
+		}
+		b.Branch = stripBranchPrefix(dockerTag)
+		snap.Building = append(snap.Building, b)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: dashboard building: %w", err)
+	}
+	return nil
+}
+
+// dashboardQueue lists waiting builds FIFO (queued_at ASC), joined for names.
+func (s *pgStore) dashboardQueue(ctx context.Context, snap *domain.DashboardSnapshot) error {
+	const q = `
+		SELECT j.id, j.project_id, p.name, o.name, j.build_no, j.queued_at
+		FROM project_jobs j
+		JOIN projects p ON p.id = j.project_id
+		JOIN orgs o     ON o.id = j.org_id
+		WHERE j.status = 'queued'
+		ORDER BY j.queued_at ASC`
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return fmt.Errorf("store: dashboard queue: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var qj domain.QueuedJob
+		if err := rows.Scan(
+			&qj.JobID, &qj.ProjectID, &qj.ProjectName, &qj.OrgName, &qj.BuildNo, &qj.QueuedAt,
+		); err != nil {
+			return fmt.Errorf("store: dashboard queue scan: %w", err)
+		}
+		snap.Queue = append(snap.Queue, qj)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: dashboard queue: %w", err)
+	}
+	return nil
+}
+
+// dashboardProjects lists every project (newest created first) with its org
+// name and a summary of its latest job. A LATERAL join pulls each project's
+// most recent job (by queued_at); last_* are empty/null when there is no job.
+// last_activity_at prefers finished_at, falling back to queued_at.
+func (s *pgStore) dashboardProjects(ctx context.Context, snap *domain.DashboardSnapshot) error {
+	const q = `
+		SELECT p.id, p.name, o.name, p.status, p.current_build,
+		       COALESCE(lj.status, ''),
+		       COALESCE(lj.docker_tag, ''),
+		       COALESCE(lj.finished_at, lj.queued_at)
+		FROM projects p
+		JOIN orgs o ON o.id = p.org_id
+		LEFT JOIN LATERAL (
+			SELECT j.status, j.docker_tag, j.finished_at, j.queued_at
+			FROM project_jobs j
+			WHERE j.project_id = p.id
+			ORDER BY j.queued_at DESC
+			LIMIT 1
+		) lj ON true
+		ORDER BY p.created_at DESC`
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return fmt.Errorf("store: dashboard projects: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var pr domain.ProjectRow
+		var lastDockerTag string
+		if err := rows.Scan(
+			&pr.ID, &pr.Name, &pr.OrgName, &pr.Status, &pr.CurrentBuild,
+			&pr.LastStatus, &lastDockerTag, &pr.LastActivityAt,
+		); err != nil {
+			return fmt.Errorf("store: dashboard projects scan: %w", err)
+		}
+		pr.LastBranch = stripBranchPrefix(lastDockerTag)
+		snap.Projects = append(snap.Projects, pr)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: dashboard projects: %w", err)
+	}
+	return nil
+}
+
+// dashboardActivity lists the ~30 most recent build_events (newest first),
+// joined to the originating job for build_no and to its project for the name.
+// build_no defaults to 0 if the job cannot be resolved.
+func (s *pgStore) dashboardActivity(ctx context.Context, snap *domain.DashboardSnapshot) error {
+	const q = `
+		SELECT e.event_type, p.id, p.name,
+		       COALESCE(j.build_no, 0), e.created_at
+		FROM build_events e
+		JOIN project_jobs j ON j.id = e.job_id
+		JOIN projects p     ON p.id = j.project_id
+		ORDER BY e.created_at DESC
+		LIMIT 30`
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return fmt.Errorf("store: dashboard activity: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a domain.ActivityRow
+		if err := rows.Scan(
+			&a.Type, &a.ProjectID, &a.ProjectName, &a.BuildNo, &a.At,
+		); err != nil {
+			return fmt.Errorf("store: dashboard activity scan: %w", err)
+		}
+		snap.Activity = append(snap.Activity, a)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: dashboard activity: %w", err)
+	}
+	return nil
+}
+
 // --- Edit requests ----------------------------------------------------------
 
 // CreateEditRequest inserts an edit request and reads back generated columns.
@@ -401,6 +607,136 @@ func (s *pgStore) CreateAPIKey(ctx context.Context, k *domain.APIKey) error {
 	if err := s.pool.QueryRow(ctx, q, k.ID, k.OrgID, k.Hash, k.RevokedAt).
 		Scan(&k.ID, &k.OrgID, &k.CreatedAt, &k.RevokedAt); err != nil {
 		return mapErr(err, "store: create api key")
+	}
+	return nil
+}
+
+// --- Skills (Claude Agent Skills registry) ----------------------------------
+
+// ListSkills returns every skill ordered by name.
+func (s *pgStore) ListSkills(ctx context.Context) ([]*domain.Skill, error) {
+	const q = `
+		SELECT name, description, body, files, enabled, is_builtin, updated_at
+		FROM skills ORDER BY name ASC`
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: list skills: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*domain.Skill
+	for rows.Next() {
+		sk := &domain.Skill{}
+		if err := scanSkill(rows, sk); err != nil {
+			return nil, err
+		}
+		out = append(out, sk)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list skills: %w", err)
+	}
+	return out, nil
+}
+
+// GetSkill fetches a skill by name, returning domain.ErrNotFound if absent.
+func (s *pgStore) GetSkill(ctx context.Context, name string) (*domain.Skill, error) {
+	const q = `
+		SELECT name, description, body, files, enabled, is_builtin, updated_at
+		FROM skills WHERE name = $1`
+	sk := &domain.Skill{}
+	if err := scanSkill(s.pool.QueryRow(ctx, q, name), sk); err != nil {
+		return nil, err
+	}
+	return sk, nil
+}
+
+// UpsertSkill creates or updates a skill by name (an operator edit). is_builtin
+// is never changed here (a new row defaults to false; an existing row keeps its
+// flag). The extra Files map is persisted as JSONB. The persisted row is read
+// back into s, stamping updated_at.
+func (s *pgStore) UpsertSkill(ctx context.Context, sk *domain.Skill) error {
+	files, err := marshalSkillFiles(sk.Files)
+	if err != nil {
+		return fmt.Errorf("store: upsert skill: %w", err)
+	}
+	const q = `
+		INSERT INTO skills (name, description, body, files, enabled)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (name) DO UPDATE SET
+			description = EXCLUDED.description,
+			body        = EXCLUDED.body,
+			files       = EXCLUDED.files,
+			enabled     = EXCLUDED.enabled,
+			updated_at  = now()
+		RETURNING name, description, body, files, enabled, is_builtin, updated_at`
+	row := s.pool.QueryRow(ctx, q, sk.Name, sk.Description, sk.Body, files, sk.Enabled)
+	if err := scanSkill(row, sk); err != nil {
+		return mapErr(err, "store: upsert skill")
+	}
+	return nil
+}
+
+// SetSkillEnabled flips the enabled flag for a skill by name.
+func (s *pgStore) SetSkillEnabled(ctx context.Context, name string, enabled bool) error {
+	const q = `UPDATE skills SET enabled = $2, updated_at = now() WHERE name = $1`
+	tag, err := s.pool.Exec(ctx, q, name, enabled)
+	if err != nil {
+		return mapErr(err, "store: set skill enabled")
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: set skill enabled: %w", domain.ErrNotFound)
+	}
+	return nil
+}
+
+// DeleteSkill removes a non-built-in skill by name. It returns
+// domain.ErrSkillBuiltin when the skill is built-in and domain.ErrNotFound when
+// no skill matches. The DELETE is guarded by is_builtin = false, so a built-in
+// row is never removed; we then disambiguate the zero-row result.
+func (s *pgStore) DeleteSkill(ctx context.Context, name string) error {
+	const q = `DELETE FROM skills WHERE name = $1 AND is_builtin = false`
+	tag, err := s.pool.Exec(ctx, q, name)
+	if err != nil {
+		return mapErr(err, "store: delete skill")
+	}
+	if tag.RowsAffected() == 0 {
+		// Either the skill is absent or it is built-in; check which to return the
+		// right sentinel.
+		var isBuiltin bool
+		if err := s.pool.QueryRow(ctx, `SELECT is_builtin FROM skills WHERE name = $1`, name).
+			Scan(&isBuiltin); err != nil {
+			return mapErr(err, "store: delete skill")
+		}
+		if isBuiltin {
+			return fmt.Errorf("store: delete skill %q: %w", name, domain.ErrSkillBuiltin)
+		}
+		return fmt.Errorf("store: delete skill %q: %w", name, domain.ErrNotFound)
+	}
+	return nil
+}
+
+// EnsureBuiltinSkill (re)seeds a built-in skill so the code is the source of
+// truth for the canonical harness. On a fresh row it inserts with the supplied
+// enabled flag and is_builtin = true. ON CONFLICT (name) it UPDATEs body,
+// description, files, is_builtin = true, and updated_at, but PRESERVES the
+// existing row's `enabled` flag — so restarting CRN re-applies the canonical
+// SKILL.md/files while leaving enable/disable entirely to the operator.
+func (s *pgStore) EnsureBuiltinSkill(ctx context.Context, sk *domain.Skill) error {
+	files, err := marshalSkillFiles(sk.Files)
+	if err != nil {
+		return fmt.Errorf("store: ensure builtin skill: %w", err)
+	}
+	const q = `
+		INSERT INTO skills (name, description, body, files, enabled, is_builtin)
+		VALUES ($1, $2, $3, $4, $5, true)
+		ON CONFLICT (name) DO UPDATE SET
+			description = EXCLUDED.description,
+			body        = EXCLUDED.body,
+			files       = EXCLUDED.files,
+			is_builtin  = true,
+			updated_at  = now()`
+	if _, err := s.pool.Exec(ctx, q, sk.Name, sk.Description, sk.Body, files, sk.Enabled); err != nil {
+		return fmt.Errorf("store: ensure builtin skill: %w", err)
 	}
 	return nil
 }
@@ -581,6 +917,36 @@ func scanEditRequest(r scannable, e *domain.EditRequest) error {
 	e.Priority = domain.EditPriority(priority)
 	e.Status = domain.EditRequestStatus(status)
 	return nil
+}
+
+func scanSkill(r scannable, sk *domain.Skill) error {
+	// pgx decodes a jsonb column into map[string]string directly. A SQL NULL is
+	// not possible (the column is NOT NULL DEFAULT '{}'), but normalize a nil map
+	// to an empty non-nil map so callers never see nil.
+	var files map[string]string
+	if err := r.Scan(
+		&sk.Name, &sk.Description, &sk.Body, &files, &sk.Enabled, &sk.IsBuiltin, &sk.UpdatedAt,
+	); err != nil {
+		return mapErr(err, "store: scan skill")
+	}
+	if files == nil {
+		files = map[string]string{}
+	}
+	sk.Files = files
+	return nil
+}
+
+// marshalSkillFiles serializes a skill's extra-files map to a jsonb-ready []byte.
+// A nil map is persisted as an empty JSON object so the column never holds null.
+func marshalSkillFiles(files map[string]string) ([]byte, error) {
+	if files == nil {
+		files = map[string]string{}
+	}
+	b, err := json.Marshal(files)
+	if err != nil {
+		return nil, fmt.Errorf("marshal skill files: %w", err)
+	}
+	return b, nil
 }
 
 // mapErr converts pgx.ErrNoRows to domain.ErrNotFound and wraps everything else

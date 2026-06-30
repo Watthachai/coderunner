@@ -7,8 +7,12 @@
 //
 // Routes registered by NewServer:
 //
-//	GET  /healthz                                   -> store.Ping
-//	POST /internal/trigger                          -> jm.HandleTrigger   (FTC DV signal)
+//	GET    /healthz                                 -> store.Ping
+//	POST   /internal/trigger                        -> jm.HandleTrigger   (FTC DV signal)
+//	GET    /internal/skills                         -> store.ListSkills
+//	GET    /internal/skills/{name}                  -> store.GetSkill
+//	PUT    /internal/skills/{name}                  -> store.UpsertSkill
+//	DELETE /internal/skills/{name}                  -> store.DeleteSkill  (409 if built-in)
 //	Route /api/v1 (group, apiKeyAuth):
 //	  POST /projects/{id}/edit-request              -> store.CreateEditRequest + jm.Enqueue
 //	  GET  /projects/{id}/status                    -> jm.Status
@@ -24,6 +28,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -67,6 +73,7 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
+	r.Use(devCORS)
 	r.Use(s.requestLogger)
 
 	// Health check — no auth.
@@ -87,6 +94,18 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	// without an org API key. Same stream as the /api/v1 variant, no auth.
 	r.Get("/internal/projects/{id}/jobs/{build_no}/logs", s.handleInternalLogsWS)
 
+	// No-auth operator-console read model. A single snapshot of vitals, the
+	// in-flight builds, the queue, all projects, and a recent activity feed.
+	r.Get("/internal/dashboard", s.handleDashboard)
+
+	// No-auth skills CRUD for the operator console. Skills are the SKILL.md
+	// bodies injected into every build; built-in skills are editable but not
+	// deletable.
+	r.Get("/internal/skills", s.handleListSkills)
+	r.Get("/internal/skills/{name}", s.handleGetSkill)
+	r.Put("/internal/skills/{name}", s.handlePutSkill)
+	r.Delete("/internal/skills/{name}", s.handleDeleteSkill)
+
 	// Tenant-facing API, guarded by per-org API key.
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(s.apiKeyAuth)
@@ -101,6 +120,32 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 }
 
 // --- Middleware ---
+
+// devCORS adds permissive CORS headers so the operator dashboard (served from a
+// different origin/port than the API in dev, and same-origin-agnostic in prod)
+// can call the API from the browser. A simple cross-origin GET is otherwise
+// blocked by the browser when the response lacks Access-Control-Allow-Origin.
+//
+// TODO(crn): in production restrict Access-Control-Allow-Origin to the known
+// dashboard origin(s) rather than reflecting any Origin.
+func devCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", origin)
+		h.Add("Vary", "Origin")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // requestLogger logs each request via slog with method, path, status, and the
 // chi request id.
@@ -168,6 +213,143 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleDashboard returns the operator-console read model: vitals, in-flight
+// builds, the FIFO queue, all projects with their latest status, and a recent
+// activity feed. No auth — it is an internal, trusted-network console.
+func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	snap, err := s.store.DashboardSnapshot(r.Context())
+	if err != nil {
+		s.logger.Error("dashboard snapshot failed", "err", err,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "dashboard failed")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, snap)
+}
+
+// --- Skills (no-auth operator console CRUD) ---
+
+// handleListSkills returns every skill as {"skills":[...]}.
+func (s *server) handleListSkills(w http.ResponseWriter, r *http.Request) {
+	skills, err := s.store.ListSkills(r.Context())
+	if err != nil {
+		s.logger.Error("list skills failed", "err", err,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "list skills failed")
+		return
+	}
+	// Always render [] rather than null when there are no skills.
+	if skills == nil {
+		skills = []*domain.Skill{}
+	}
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"skills": skills})
+}
+
+// handleGetSkill returns one skill by name (404 if absent).
+func (s *server) handleGetSkill(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	skill, err := s.store.GetSkill(r.Context(), name)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "skill not found")
+			return
+		}
+		s.logger.Error("get skill failed", "err", err, "name", name,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "get skill failed")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, skill)
+}
+
+// putSkillBody is the PUT /internal/skills/{name} payload. The name comes from
+// the path; the body carries the editable fields. Files is the OPTIONAL set of
+// extra files (scripts/, references/, ...) keyed by path relative to the skill
+// dir; SKILL.md is carried in Body, not here.
+type putSkillBody struct {
+	Description string            `json:"description"`
+	Body        string            `json:"body"`
+	Files       map[string]string `json:"files"`
+	Enabled     bool              `json:"enabled"`
+}
+
+// handlePutSkill upserts a skill by name and returns the persisted Skill.
+func (s *server) handlePutSkill(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		s.writeError(w, r, http.StatusBadRequest, "skill name is required")
+		return
+	}
+
+	var body putSkillBody
+	if err := decodeJSON(r, &body); err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// Validate every extra-file path: relative only, no absolute path, no ".."
+	// escape — these are written under {workdir}/.claude/skills/{name}/ at build
+	// time and must not break out of the skill dir.
+	for relPath := range body.Files {
+		if !validSkillFilePath(relPath) {
+			s.writeError(w, r, http.StatusBadRequest, "invalid file path: "+relPath)
+			return
+		}
+	}
+
+	skill := &domain.Skill{
+		Name:        name,
+		Description: body.Description,
+		Body:        body.Body,
+		Files:       body.Files,
+		Enabled:     body.Enabled,
+	}
+	if err := s.store.UpsertSkill(r.Context(), skill); err != nil {
+		s.logger.Error("upsert skill failed", "err", err, "name", name,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "upsert skill failed")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, skill)
+}
+
+// validSkillFilePath reports whether p is a safe relative path for a skill's
+// extra file: non-empty, not absolute, and not climbing above the skill dir via
+// "..". Mirrors the buildstep.InjectSkills check so a bad path is rejected at
+// the API boundary rather than at build time.
+func validSkillFilePath(p string) bool {
+	if p == "" {
+		return false
+	}
+	clean := filepath.Clean(p)
+	if filepath.IsAbs(clean) || clean == ".." ||
+		strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// handleDeleteSkill removes a non-built-in skill by name (204), returning 409
+// for a built-in skill and 404 when absent.
+func (s *server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if err := s.store.DeleteSkill(r.Context(), name); err != nil {
+		if errors.Is(err, domain.ErrSkillBuiltin) {
+			s.writeError(w, r, http.StatusConflict, "built-in skill cannot be deleted")
+			return
+		}
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "skill not found")
+			return
+		}
+		s.logger.Error("delete skill failed", "err", err, "name", name,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "delete skill failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // triggerBody is the FTC DV signal payload for POST /internal/trigger.
 type triggerBody struct {
 	JobID     uuid.UUID `json:"job_id"`
@@ -209,23 +391,28 @@ func (s *server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, r, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
-// ingestFile is one file in an ingest payload.
-type ingestFile struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
-}
-
 // ingestBody is the full FBD -> CRN ingest payload (the wire contract). The
-// strict decoder (DisallowUnknownFields) requires EVERY field to be declared.
+// strict decoder (DisallowUnknownFields) requires EVERY field to be declared —
+// so adding a field here MUST be matched by FBD's payload builder, and vice-versa.
+//
+// The prototype ships as ONE zip (base64), not a per-file array: the build agent
+// extracts it in the workdir (see jobs.parsePayload). idea/brd/prd also ride
+// along as plain text (they're inside the zip under docs/ too) so the build
+// prompt can be composed without unzipping. Tag marks the channel ("alpha-test").
 type ingestBody struct {
-	OrgID     string       `json:"org_id"`
-	OrgName   string       `json:"org_name"`
-	ProjectID string       `json:"project_id"`
-	Name      string       `json:"name"`
-	BRD       string       `json:"brd"`
-	PRD       string       `json:"prd"`
-	Prompts   []string     `json:"prompts"`
-	Files     []ingestFile `json:"files"`
+	OrgID     string   `json:"org_id"`
+	OrgName   string   `json:"org_name"`
+	ProjectID string   `json:"project_id"`
+	Name      string   `json:"name"`
+	Tag       string   `json:"tag"`
+	Idea      string   `json:"idea"`
+	BRD       string   `json:"brd"`
+	PRD       string   `json:"prd"`
+	Prompts   []string `json:"prompts"`
+	ZipName   string   `json:"zip_name"`
+	ZipBase64 string   `json:"zip_base64"`
+	FileCount int      `json:"file_count"`
+	ZipBytes  int      `json:"zip_bytes"`
 }
 
 // handleIngest accepts a full project payload from FBD, ensures the org and

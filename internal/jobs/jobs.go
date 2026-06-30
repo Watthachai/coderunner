@@ -23,10 +23,12 @@ package jobs
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -302,11 +304,20 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// --- run Claude Code (optional) ---
 	var result domain.RunResult
 	if m.runClaude {
+		// Inject every enabled skill into {workDir}/.claude/skills/{name}/SKILL.md
+		// so the spawned `claude` discovers the fitt-build harness. The injected
+		// .claude dir is removed before the git phase so it is never committed.
+		if err := m.injectSkills(ctx, workDir); err != nil {
+			log.Error("inject skills failed", "err", err)
+			m.finishFailed(ctx, job, "inject skills failed: "+err.Error(), 0)
+			return
+		}
+
 		runSpec := domain.RunSpec{
 			JobID:           job.ID,
 			ProjectID:       job.ProjectID,
 			WorkDir:         workDir,
-			Prompt:          spec.Prompt,
+			Prompt:          harnessPrompt(spec),
 			ResumeSessionID: job.SessionID,
 		}
 
@@ -325,6 +336,12 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 
 		var runErr error
 		result, runErr = m.runner.Run(ctx, runSpec, emit)
+
+		// Remove the injected .claude dir (success OR fail) BEFORE the git phase so
+		// the harness skills are never committed/pushed.
+		if rmErr := os.RemoveAll(filepath.Join(workDir, ".claude")); rmErr != nil {
+			log.Warn("remove injected .claude failed", "err", rmErr)
+		}
 
 		// Persist the terminal session id from the result line if not already stored.
 		if result.SessionID != "" && result.SessionID != job.SessionID {
@@ -497,35 +514,116 @@ func (s *subscriber) closeLocked() {
 	})
 }
 
+// --- internal: skill injection + harness prompt ----------------------------
+
+// injectSkills writes every enabled skill into {workDir}/.claude/skills so the
+// spawned `claude` discovers the fitt-build harness. Each skill's SKILL.md (its
+// Body) plus every entry in its Files map (scripts/, references/, ...) is
+// written under {workDir}/.claude/skills/{name}/. It is a no-op (no error) when
+// no skills are enabled. The caller removes {workDir}/.claude before the git
+// phase so the harness is never committed.
+func (m *manager) injectSkills(ctx context.Context, workDir string) error {
+	skills, err := m.store.ListSkills(ctx)
+	if err != nil {
+		return fmt.Errorf("list skills: %w", err)
+	}
+	var files []buildstep.SkillFile
+	for _, sk := range skills {
+		if !sk.Enabled {
+			continue
+		}
+		files = append(files, buildstep.SkillFile{Name: sk.Name, Body: sk.Body, Files: sk.Files})
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	if err := buildstep.InjectSkills(workDir, files); err != nil {
+		return err
+	}
+	m.logger.Info("injected skills", "count", len(files), "workdir", workDir)
+	return nil
+}
+
+// harnessPrompt composes the prompt that invokes the fitt-build skill on the
+// FITT Builder export, embedding the briefs. When no brief is present it falls
+// back to the parsed legacy/edit-request prompt so the run is never empty.
+func harnessPrompt(spec payloadSpec) string {
+	if spec.Idea == "" && spec.BRD == "" && spec.PRD == "" {
+		return spec.Prompt
+	}
+	return fmt.Sprintf(
+		"You are in a fresh project directory containing a FITT Builder export "+
+			"(a zip). Use the fitt-build skill to extract it and set it up as a "+
+			"clean, runnable project that reproduces the prototype. Product briefs "+
+			"follow:\n\nIDEA:\n%s\n\nBRD:\n%s\n\nPRD:\n%s",
+		spec.Idea, spec.BRD, spec.PRD,
+	)
+}
+
 // --- internal: payload + event translation helpers -------------------------
 
 // payloadSpec is the parsed view of a job payload the build needs: the files to
-// materialize and the prompt to (optionally) hand to Claude Code.
+// materialize, the briefs (idea/brd/prd) the harness prompt embeds, and the
+// fallback prompt used when Claude is run without the skill harness (legacy /
+// edit-request shapes).
 type payloadSpec struct {
 	Files  []buildstep.FileEntry
+	Idea   string
+	BRD    string
+	PRD    string
 	Prompt string
 }
 
 // ingestPayload mirrors the FBD -> CRN ingest body (api.ingestBody). Only the
 // fields the build consumes are decoded; unknown fields are ignored here (the
-// strict decode happens at the API boundary).
+// strict decode happens at the API boundary). The prototype arrives as one
+// base64 zip, not a file array.
 type ingestPayload struct {
-	BRD     string                `json:"brd"`
-	PRD     string                `json:"prd"`
-	Prompts []string              `json:"prompts"`
-	Files   []buildstep.FileEntry `json:"files"`
+	Idea      string   `json:"idea"`
+	BRD       string   `json:"brd"`
+	PRD       string   `json:"prd"`
+	Prompts   []string `json:"prompts"`
+	ZipName   string   `json:"zip_name"`
+	ZipBase64 string   `json:"zip_base64"`
 }
 
-// parsePayload extracts the files and a composed Claude prompt from a job's JSON
-// payload. The prompt is built from brd/prd/prompts; when none are present it
-// falls back to promptFromPayload (raw JSON / legacy "prompt"/"change" shapes).
+// parsePayload materializes the prototype zip and composes the Claude prompt
+// from idea/brd/prd/prompts. The zip is written into the workdir as a single
+// file; the build agent extracts it itself (see the "# Source" prompt section).
+// When no brief/prompt is present it falls back to promptFromPayload (raw JSON /
+// legacy "prompt"/"change" shapes).
 func parsePayload(payload json.RawMessage) payloadSpec {
 	var p ingestPayload
 	_ = json.Unmarshal(payload, &p) // best-effort; an unknown shape yields zero values
 
-	spec := payloadSpec{Files: p.Files}
+	var spec payloadSpec
+	spec.Idea = p.Idea
+	spec.BRD = p.BRD
+	spec.PRD = p.PRD
+
+	// Drop the prototype zip into the workdir as one file. Decoded zip bytes go
+	// through FileEntry.Content (a Go string) byte-for-byte — WriteFiles does
+	// []byte(content), so binary survives intact.
+	zipName := p.ZipName
+	if zipName == "" {
+		zipName = "_fitt_export.zip"
+	}
+	if p.ZipBase64 != "" {
+		if raw, err := base64.StdEncoding.DecodeString(p.ZipBase64); err == nil {
+			spec.Files = []buildstep.FileEntry{{Path: zipName, Content: string(raw)}}
+		} else {
+			zipName = "" // bad base64 → nothing materialized; don't ask the agent to extract
+		}
+	} else {
+		zipName = ""
+	}
 
 	var b strings.Builder
+	if p.Idea != "" {
+		b.WriteString("# IDEA\n")
+		b.WriteString(p.Idea)
+		b.WriteString("\n\n")
+	}
 	if p.BRD != "" {
 		b.WriteString("# BRD\n")
 		b.WriteString(p.BRD)
@@ -543,6 +641,15 @@ func parsePayload(payload json.RawMessage) payloadSpec {
 		b.WriteString("# Requirement\n")
 		b.WriteString(m)
 		b.WriteString("\n\n")
+	}
+	if zipName != "" {
+		b.WriteString("# Source\n")
+		b.WriteString(fmt.Sprintf(
+			"ไฟล์ `%s` ใน working directory คือ zip ของ prototype เดิม (Vite SPA + เอกสารใน docs/). "+
+				"ขั้นแรกให้แตกไฟล์ออกมาก่อน (เช่น `unzip -o %s` หรือเครื่องมือที่มีในระบบ) แล้วลบ zip ทิ้ง "+
+				"จากนั้นต่อยอดเป็น production app จาก source ที่แตกออกมา\n\n",
+			zipName, zipName,
+		))
 	}
 
 	spec.Prompt = strings.TrimSpace(b.String())

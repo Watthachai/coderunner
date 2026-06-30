@@ -43,7 +43,8 @@ type Config struct {
 	GitRemote string
 
 	// RunClaude toggles whether the build invokes Claude Code after the files
-	// are materialized. Default false: materialize + push only.
+	// are materialized. Default true: a real Claude session runs the fitt-build
+	// harness skill. Set CRN_RUN_CLAUDE=false to materialize + push only.
 	RunClaude bool
 
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
@@ -69,7 +70,7 @@ type Config struct {
 //	CRN_MONGO_URL          ("mongodb://localhost:27017")
 //	CRN_PROJECTS_DIR       ("/projects")
 //	CRN_GIT_REMOTE         ("" — when empty the git-push step is skipped)
-//	CRN_RUN_CLAUDE         (false — "true"/"1" to run Claude Code post-materialize)
+//	CRN_RUN_CLAUDE         (true — set "false"/"0" to materialize + push only)
 //	CRN_LOG_LEVEL          ("info")
 //	CRN_SHUTDOWN_TIMEOUT   ("15s")
 //	CRN_ENV                ("development")
@@ -83,7 +84,7 @@ func Load() (*Config, error) {
 		DockerRegistryUser: os.Getenv("CRN_DOCKER_USER"),
 		ProjectsDir:        getEnv("CRN_PROJECTS_DIR", "/projects"),
 		GitRemote:          os.Getenv("CRN_GIT_REMOTE"),
-		RunClaude:          getEnvBool("CRN_RUN_CLAUDE", false),
+		RunClaude:          getEnvBool("CRN_RUN_CLAUDE", true),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 	}
