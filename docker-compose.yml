@@ -1,0 +1,51 @@
+# Local dev dependencies for CRN: PostgreSQL (jobs/projects/state) + MongoDB
+# (BRD/PRD document store, architecture §2.2). The Go backend and Next.js
+# frontend run on the host during dev (`go run ./cmd/server`, `npm run dev`);
+# only the datastores are containerized here. Production wiring (the CRN backend
+# image, the shared "DB กลาง" VM) is out of scope for this compose file.
+#
+# Usage:
+#   docker compose up -d
+#   make migrate            # applies migrations/0001_init.sql to Postgres
+#
+# Compose Spec: no top-level `version:` key (it is obsolete in Compose v2+).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: crn-postgres
+    environment:
+      POSTGRES_USER: crn
+      POSTGRES_PASSWORD: crn_dev_password
+      POSTGRES_DB: crn
+    ports:
+      - "5432:5432"
+    volumes:
+      - crn_pgdata:/var/lib/postgresql/data
+      # Auto-apply the init migration on first boot of a fresh volume.
+      - ./migrations/0001_init.sql:/docker-entrypoint-initdb.d/0001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crn -d crn"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: crn-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: crn
+      MONGO_INITDB_ROOT_PASSWORD: crn_dev_password
+    ports:
+      - "27017:27017"
+    volumes:
+      - crn_mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  crn_pgdata:
+  crn_mongodata:
