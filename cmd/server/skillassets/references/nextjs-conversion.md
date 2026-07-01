@@ -1,6 +1,8 @@
 # Vite + React SPA -> Next.js App Router — conversion guide
 
-You are converting a **FITT Builder export**: a client-only **Vite + React 18** single-page app. Convert it to **Next.js (App Router, latest stable, TypeScript)** while preserving the EXACT UI/UX and behavior. This guide is the map.
+You are converting a **FITT Builder export**: a client-only **Vite + React 18** single-page app. Convert it to **Next.js (App Router, TypeScript)** while preserving the EXACT UI/UX and behavior. This guide is the map.
+
+**Install the LATEST Next.js — always.** Run `npm install next@latest react@latest react-dom@latest` (currently **Next 16**). Do NOT install or pin Next 14/15: `next.config.ts`, current App Router APIs, and `output: "standalone"` behavior assume the latest major.
 
 ## 1. What the export looks like
 

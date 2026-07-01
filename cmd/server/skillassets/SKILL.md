@@ -19,13 +19,13 @@ Use the ready-made `assets/Dockerfile` and `assets/.dockerignore` as your starti
 
 2. **Recognize the source.** It is a **Vite + React SPA**: `index.html` (Tailwind CDN + fonts, `<div id="root">`), `src/main.tsx` (createRoot), `src/App.tsx` (root view), `src/index.css`, optional `src/data.ts`/`src/types.ts` (mock data), `vite.config.*`. Confirm before converting.
 
-3. **Convert to Next.js (App Router, latest stable, TypeScript)** — preserve UI/UX exactly (see nextjs-conversion.md):
+3. **Convert to Next.js (App Router, TypeScript) — install the LATEST Next.js** — preserve UI/UX exactly (see nextjs-conversion.md):
    - Scaffold an `app/` tree (NOT `pages/`). Port components/styles across.
    - `index.html` -> `app/layout.tsx` (`metadata`, fonts, global CSS import); `src/App.tsx` -> `app/page.tsx`. Delete `main.tsx`/`#root` bootstrap.
    - Client vs server: pages that just render the prototype UI can be client components (`"use client"` on the first line); prefer server components + server actions / route handlers for data.
    - Translate Vite-isms: `import.meta.env.VITE_X` -> `process.env.NEXT_PUBLIC_X` (client) or `process.env.X` (server-only); static assets -> `public/` or static imports; react-router routes -> `app/` segments (or keep a single-page client app if the prototype is one screen).
    - Keep the same styling approach (plain CSS or Tailwind — do not change the visual result).
-   - Update `package.json` (next/react scripts, remove vite), add `next.config.ts` with `output: "standalone"`.
+   - **Install the latest Next.js explicitly: `npm install next@latest react@latest react-dom@latest`** — currently **Next 16**. Do NOT pin or install Next 14/15. Update `package.json` scripts (`next dev`/`build`/`start`, remove vite), add `next.config.ts` (`.ts` config is supported in current Next) with `output: "standalone"`.
 
 4. **Add Prisma + PostgreSQL** (see prisma-setup.md):
    - Install `prisma` + `@prisma/client`; create `prisma/schema.prisma` (`provider = "postgresql"`, `url = env("DATABASE_URL")`).
@@ -45,4 +45,5 @@ Use the ready-made `assets/Dockerfile` and `assets/.dockerignore` as your starti
 - Faithful UI/UX — port the prototype, do not redesign or add features.
 - One clean path: App Router (no `pages/`), Prisma singleton, standalone Docker.
 - `next build` must succeed WITHOUT a database. Never fake a passing build.
+- **Always install `next@latest` (the current major — Next 16). Never install or pin Next 14/15** — current App Router APIs and `next.config.ts` require the latest.
 - Explain every change in `BUILD_NOTES.md`.
