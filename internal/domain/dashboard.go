@@ -69,6 +69,9 @@ type ProjectRow struct {
 	LastStatus     string     `json:"last_status"`
 	LastBranch     string     `json:"last_branch"`
 	LastActivityAt *time.Time `json:"last_activity_at"`
+	// RepoURL is the project's dedicated GitHub repo https clone URL (empty when
+	// the "one repo per project" model is disabled or no repo exists yet).
+	RepoURL string `json:"repo_url"`
 }
 
 // ActivityRow is one recent build_events entry, enriched with the project name

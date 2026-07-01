@@ -38,6 +38,7 @@ import (
 
 	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
+	"github.com/Watthachai/fitt-coderunner/internal/github"
 )
 
 // subscriberBuffer bounds each live WebSocket subscriber's channel. A slow
@@ -59,6 +60,12 @@ type manager struct {
 	projectsDir string
 	// gitRemote is the push target for every build's branch. Empty -> push skipped.
 	gitRemote string
+	// githubOwner opts into the "one repo per project" model: when non-empty each
+	// project gets its own repo "crn-<slug>-<id8>" under this owner and builds/edits
+	// push to its "main"; when empty the legacy gitRemote+branch model is used.
+	githubOwner string
+	// repoPrivate makes per-project repos private (owner-model only).
+	repoPrivate bool
 	// runClaude toggles invoking Claude Code after files are materialized.
 	runClaude bool
 
@@ -78,7 +85,9 @@ var _ domain.JobManager = (*manager)(nil)
 
 // NewManager returns a domain.JobManager composed of the store, Claude runner,
 // and notifier. projectsDir is the absolute root for per-project working dirs;
-// gitRemote is the push target (empty skips the push); runClaude toggles the
+// gitRemote is the push target for the legacy shared-remote model (empty skips
+// the push); githubOwner (when non-empty) opts into the "one repo per project"
+// model with repoPrivate controlling repo visibility; runClaude toggles the
 // Claude Code step. Signature is kept in lockstep with cmd/server/main.go.
 func NewManager(
 	store domain.Store,
@@ -87,6 +96,8 @@ func NewManager(
 	logger *slog.Logger,
 	projectsDir string,
 	gitRemote string,
+	githubOwner string,
+	repoPrivate bool,
 	runClaude bool,
 ) domain.JobManager {
 	if logger == nil {
@@ -99,6 +110,8 @@ func NewManager(
 		logger:      logger.With("component", "jobs"),
 		projectsDir: projectsDir,
 		gitRemote:   gitRemote,
+		githubOwner: githubOwner,
+		repoPrivate: repoPrivate,
 		runClaude:   runClaude,
 		subs:        make(map[uuid.UUID][]*subscriber),
 	}
@@ -293,9 +306,41 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 
 	spec := parsePayload(job.Payload)
 
-	// The build branch name derived from the product name + a short project id,
-	// e.g. "crn/expenseflow-70d7409b". Both build modes push to this same branch.
-	branch := "crn/" + slugify(spec.Name) + "-" + job.ProjectID.String()[:8]
+	// --- resolve the git model for this build ---------------------------------
+	// SHARED (githubOwner == ""): push a "crn/<slug>-<id8>" branch to gitRemote —
+	//   the legacy behavior, unchanged.
+	// PER-PROJECT (githubOwner != ""): ensure the project's own repo
+	//   "crn-<slug>-<id8>" exists under the owner and push its "main" branch.
+	// pushRemote/pushBranch are the values the git phase (and edit clone/pull) use;
+	// repoSlug is set in the owner model so a successful issue-driven edit can
+	// comment on the issue.
+	slug := slugify(spec.Name)
+	id8 := job.ProjectID.String()[:8]
+	ownerMode := m.githubOwner != ""
+
+	var pushRemote, pushBranch, repoSlug string
+	if ownerMode {
+		repoName := "crn-" + slug + "-" + id8
+		repoSlug = m.githubOwner + "/" + repoName
+		m.publishPhase(job.ID, "repo")
+		repoURL, err := github.EnsureRepo(ctx, m.githubOwner, repoName, m.repoPrivate, m.logger)
+		if err != nil {
+			log.Error("ensure github repo failed", "err", err, "repo", repoSlug)
+			m.finishFailed(ctx, job, "ensure github repo failed: "+err.Error(), 0)
+			return
+		}
+		// Record the repo URL on the project once (idempotent SetProjectRepo).
+		if err := m.store.SetProjectRepo(ctx, job.ProjectID, repoURL); err != nil {
+			log.Warn("persist project repo url failed", "err", err, "repo_url", repoURL)
+		}
+		pushRemote = repoURL
+		pushBranch = "main"
+	} else {
+		// The build branch name derived from the product name + a short project id,
+		// e.g. "crn/expenseflow-70d7409b". Both build modes push to this branch.
+		pushRemote = m.gitRemote
+		pushBranch = "crn/" + slug + "-" + id8
+	}
 
 	// resumeSession is the Claude session to --resume for this run; the Claude
 	// prompt is the requirement handed to Claude. Both are set per-mode below.
@@ -303,18 +348,18 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 
 	if spec.Mode == "edit" {
 		// --- EDIT mode: clone/pull the existing branch, do NOT reset/materialize ---
-		if m.gitRemote == "" {
-			log.Error("edit build requires a git remote but CRN_GIT_REMOTE is empty")
-			m.finishFailed(ctx, job, "edit build requires a git remote (CRN_GIT_REMOTE is empty)", 0)
+		if pushRemote == "" {
+			log.Error("edit build requires a git remote (set CRN_GIT_REMOTE or CRN_GITHUB_OWNER)")
+			m.finishFailed(ctx, job, "edit build requires a git remote (set CRN_GIT_REMOTE or CRN_GITHUB_OWNER)", 0)
 			return
 		}
 		m.publishPhase(job.ID, "pull")
-		if err := buildstep.GitCloneOrPull(ctx, workDir, m.gitRemote, branch, m.logger); err != nil {
-			log.Error("edit clone/pull failed", "err", err, "branch", branch)
+		if err := buildstep.GitCloneOrPull(ctx, workDir, pushRemote, pushBranch, m.logger); err != nil {
+			log.Error("edit clone/pull failed", "err", err, "branch", pushBranch)
 			m.finishFailed(ctx, job, "edit clone/pull failed: "+err.Error(), 0)
 			return
 		}
-		log.Info("edit workspace ready", "workdir", workDir, "branch", branch)
+		log.Info("edit workspace ready", "workdir", workDir, "branch", pushBranch)
 
 		claudePrompt = "You are editing an existing project in the current directory. " +
 			"Apply this change and keep everything else working:\n\n" + spec.Change
@@ -416,26 +461,36 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 
 	// --- success: git commit + force-push the build branch ---
-	// branch was computed above from the product name + a short project id; both
-	// build modes push to it.
-	if m.gitRemote != "" {
+	// pushRemote/pushBranch were resolved above per git model: the owner model
+	// pushes the project's own repo "main"; the shared model pushes a
+	// "crn/<slug>-<id8>" branch to CRN_GIT_REMOTE.
+	if pushRemote != "" {
 		m.publishPhase(job.ID, "git")
 		m.publishPhase(job.ID, "push")
 		msg := commitMessage(spec, job)
-		commit, err := buildstep.GitCommitAndPush(ctx, workDir, m.gitRemote, branch, msg, m.logger)
+		commit, err := buildstep.GitCommitAndPush(ctx, workDir, pushRemote, pushBranch, msg, m.logger)
 		if err != nil {
 			log.Error("git push failed", "err", err)
 			m.finishFailed(ctx, job, "git push failed: "+err.Error(), result.CostUSD)
 			return
 		}
-		log.Info("git pushed", "branch", branch, "commit", commit, "remote", m.gitRemote)
+		log.Info("git pushed", "branch", pushBranch, "commit", commit, "remote", pushRemote)
 		// Reuse docker_tag to record the produced branch (no docker pipeline yet).
-		if err := m.store.SetJobDockerTag(ctx, job.ID, "branch:"+branch); err != nil {
+		if err := m.store.SetJobDockerTag(ctx, job.ID, "branch:"+pushBranch); err != nil {
 			log.Warn("persist branch tag failed", "err", err)
 		}
-		job.DockerTag = "branch:" + branch
+		job.DockerTag = "branch:" + pushBranch
+
+		// Owner model: an edit driven by a GitHub issue comments the commit back on
+		// the issue (best-effort — never fails the build).
+		if ownerMode && spec.Mode == "edit" && spec.IssueNumber > 0 && repoSlug != "" {
+			body := "Fixed by CRN in " + commit
+			if err := github.CommentIssue(ctx, repoSlug, spec.IssueNumber, body, m.logger); err != nil {
+				log.Warn("comment issue failed", "err", err, "issue", spec.IssueNumber)
+			}
+		}
 	} else {
-		log.Info("git push skipped (CRN_GIT_REMOTE empty)", "branch", branch)
+		log.Info("git push skipped (no CRN_GIT_REMOTE / CRN_GITHUB_OWNER)", "branch", pushBranch)
 		m.publishPhase(job.ID, "push_skipped")
 	}
 
@@ -682,6 +737,9 @@ type payloadSpec struct {
 	Mode string
 	// Change is the edit instruction for an edit build (Mode == "edit").
 	Change string
+	// IssueNumber, when > 0, is the GitHub issue that drove this edit build. After
+	// a successful edit push (owner model) the build comments the commit on it.
+	IssueNumber int
 }
 
 // ingestPayload mirrors the FBD -> CRN ingest body (api.ingestBody). Only the
@@ -701,6 +759,9 @@ type ingestPayload struct {
 	// instruction instead of a prototype zip; the existing repo is edited in place.
 	Mode   string `json:"mode"`
 	Change string `json:"change"`
+	// IssueNumber, when > 0, is the GitHub issue that drove this edit build (the
+	// /issues/{number}/fix flow). The build comments on it after a successful push.
+	IssueNumber int `json:"issue_number"`
 }
 
 // parsePayload materializes the prototype zip and composes the Claude prompt
@@ -724,6 +785,7 @@ func parsePayload(payload json.RawMessage) payloadSpec {
 		spec.Mode = "edit"
 		spec.Change = p.Change
 		spec.Prompt = p.Change
+		spec.IssueNumber = p.IssueNumber
 		return spec
 	}
 

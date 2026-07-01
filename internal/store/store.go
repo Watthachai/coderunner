@@ -120,7 +120,7 @@ func (s *pgStore) CreateProject(ctx context.Context, p *domain.Project) error {
 			COALESCE(NULLIF($4, ''), 'pending'),
 			$5, $6
 		)
-		RETURNING id, org_id, name, status, current_build, COALESCE(stack, ''), created_at`
+		RETURNING id, org_id, name, status, current_build, COALESCE(stack, ''), repo_url, created_at`
 	row := s.pool.QueryRow(ctx, q,
 		p.ID, p.OrgID, p.Name, string(p.Status), p.CurrentBuild, p.Stack,
 	)
@@ -130,7 +130,7 @@ func (s *pgStore) CreateProject(ctx context.Context, p *domain.Project) error {
 // GetProject fetches a project by id, returning domain.ErrNotFound if absent.
 func (s *pgStore) GetProject(ctx context.Context, id uuid.UUID) (*domain.Project, error) {
 	const q = `
-		SELECT id, org_id, name, status, current_build, COALESCE(stack, ''), created_at
+		SELECT id, org_id, name, status, current_build, COALESCE(stack, ''), repo_url, created_at
 		FROM projects WHERE id = $1`
 	p := &domain.Project{}
 	if err := scanProject(s.pool.QueryRow(ctx, q, id), p); err != nil {
@@ -142,7 +142,7 @@ func (s *pgStore) GetProject(ctx context.Context, id uuid.UUID) (*domain.Project
 // ListProjectsByOrg returns all projects for an org, newest first.
 func (s *pgStore) ListProjectsByOrg(ctx context.Context, orgID uuid.UUID) ([]*domain.Project, error) {
 	const q = `
-		SELECT id, org_id, name, status, current_build, COALESCE(stack, ''), created_at
+		SELECT id, org_id, name, status, current_build, COALESCE(stack, ''), repo_url, created_at
 		FROM projects WHERE org_id = $1 ORDER BY created_at DESC`
 	rows, err := s.pool.Query(ctx, q, orgID)
 	if err != nil {
@@ -175,6 +175,21 @@ func (s *pgStore) BumpBuildNo(ctx context.Context, projectID uuid.UUID) (int, er
 		return 0, mapErr(err, "store: bump build_no")
 	}
 	return n, nil
+}
+
+// SetProjectRepo records the project's dedicated GitHub repo https clone URL
+// (the "one repo per project" model). Returns domain.ErrNotFound when no such
+// project exists.
+func (s *pgStore) SetProjectRepo(ctx context.Context, projectID uuid.UUID, repoURL string) error {
+	const q = `UPDATE projects SET repo_url = $2 WHERE id = $1`
+	tag, err := s.pool.Exec(ctx, q, projectID, repoURL)
+	if err != nil {
+		return mapErr(err, "store: set project repo")
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: set project repo: %w", domain.ErrNotFound)
+	}
+	return nil
 }
 
 // --- Jobs -------------------------------------------------------------------
@@ -485,7 +500,8 @@ func (s *pgStore) dashboardProjects(ctx context.Context, snap *domain.DashboardS
 		       (SELECT count(*) FROM skills WHERE enabled) AS skill_count,
 		       COALESCE(lj.status, ''),
 		       COALESCE(lj.docker_tag, ''),
-		       COALESCE(lj.finished_at, lj.queued_at)
+		       COALESCE(lj.finished_at, lj.queued_at),
+		       p.repo_url
 		FROM projects p
 		JOIN orgs o ON o.id = p.org_id
 		LEFT JOIN LATERAL (
@@ -509,6 +525,7 @@ func (s *pgStore) dashboardProjects(ctx context.Context, snap *domain.DashboardS
 			&pr.ID, &pr.Name, &pr.OrgName, &pr.Status, &pr.CurrentBuild,
 			&pr.SkillCount,
 			&pr.LastStatus, &lastDockerTag, &pr.LastActivityAt,
+			&pr.RepoURL,
 		); err != nil {
 			return fmt.Errorf("store: dashboard projects scan: %w", err)
 		}
@@ -964,7 +981,7 @@ type scannable interface {
 func scanProject(r scannable, p *domain.Project) error {
 	var status string
 	if err := r.Scan(
-		&p.ID, &p.OrgID, &p.Name, &status, &p.CurrentBuild, &p.Stack, &p.CreatedAt,
+		&p.ID, &p.OrgID, &p.Name, &status, &p.CurrentBuild, &p.Stack, &p.RepoURL, &p.CreatedAt,
 	); err != nil {
 		return mapErr(err, "store: scan project")
 	}

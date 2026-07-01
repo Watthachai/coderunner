@@ -47,6 +47,18 @@ type Config struct {
 	// git-push step is skipped (logged notice) and builds still complete.
 	GitRemote string
 
+	// GithubOwner opts the whole service into the "one private GitHub repo per
+	// project" model. When set, each project gets its OWN repo named
+	// "crn-<slug>-<id8>" under this owner and builds/edits push to that repo's
+	// "main" (via the `gh` CLI). When EMPTY the legacy shared-remote behavior is
+	// used unchanged: a "crn/<slug>-<id8>" branch is pushed to CRN_GIT_REMOTE.
+	GithubOwner string
+
+	// RepoPrivate controls whether the per-project GitHub repos created when
+	// GithubOwner is set are private (default) or public. Ignored when
+	// GithubOwner is empty.
+	RepoPrivate bool
+
 	// RunClaude toggles whether the build invokes Claude Code after the files
 	// are materialized. Default true: a real Claude session runs the fitt-build
 	// harness skill. Set CRN_RUN_CLAUDE=false to materialize + push only.
@@ -82,6 +94,8 @@ type Config struct {
 //	CRN_MONGO_URL          ("mongodb://localhost:27017")
 //	CRN_PROJECTS_DIR       ("/projects")
 //	CRN_GIT_REMOTE         ("" — when empty the git-push step is skipped)
+//	CRN_GITHUB_OWNER       ("" — when empty the shared-remote/branch model is used)
+//	CRN_REPO_PRIVATE       (true — per-project repos are private; "false"/"0" public)
 //	CRN_RUN_CLAUDE         (true — set "false"/"0" to materialize + push only)
 //	CRN_LOG_LEVEL          ("info")
 //	CRN_SHUTDOWN_TIMEOUT   ("15s")
@@ -98,6 +112,8 @@ func Load() (*Config, error) {
 		DockerRegistryUser: os.Getenv("CRN_DOCKER_USER"),
 		ProjectsDir:        getEnv("CRN_PROJECTS_DIR", "/projects"),
 		GitRemote:          os.Getenv("CRN_GIT_REMOTE"),
+		GithubOwner:        os.Getenv("CRN_GITHUB_OWNER"),
+		RepoPrivate:        getEnvBool("CRN_REPO_PRIVATE", true),
 		RunClaude:          getEnvBool("CRN_RUN_CLAUDE", true),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),

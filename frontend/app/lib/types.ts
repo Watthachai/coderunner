@@ -93,6 +93,18 @@ export interface ProjectRow {
   last_activity_at: string | null;
   // Number of ENABLED skills — these apply to every build.
   skill_count: number;
+  // Browser URL of the project's own private GitHub repo, when the repo-per-
+  // project model is enabled (CRN_GITHUB_OWNER set). Empty otherwise. May carry
+  // a trailing ".git" — strip it before linking.
+  repo_url: string;
+}
+
+// An open GitHub issue on a project's repo (GET /internal/projects/{id}/issues).
+export interface Issue {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
 }
 
 export interface ActivityRow {

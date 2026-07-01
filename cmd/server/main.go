@@ -43,7 +43,7 @@ func run() error {
 	}
 	logger.Info("starting CRN", "env", cfg.Environment, "addr", cfg.ListenAddr,
 		"run_claude", cfg.RunClaude, "claude_model", modelLabel,
-		"git_remote", cfg.GitRemote)
+		"git_remote", cfg.GitRemote, "github_owner", cfg.GithubOwner)
 
 	// Ensure the per-project working-dir root exists so file materialization and
 	// git pushes can write into it.
@@ -92,12 +92,12 @@ func run() error {
 	// --- Job manager (queue + lifecycle + per-org advisory lock) ---
 	// jobs.NewManager composes store + runner + notifier and the build-step
 	// config (projects dir, git remote, run-Claude toggle).
-	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.RunClaude)
+	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude)
 
 	// --- HTTP / WebSocket server (chi router) ---
 	// api.NewServer registers all routes and returns an http.Handler. The git
 	// remote is echoed back to FBD in the ingest response.
-	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote, cfg.ProjectsDir, cfg.TerminalShell, cfg.ClaudeBinPath, cfg.ClaudeModel)
+	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote, cfg.GithubOwner, cfg.ProjectsDir, cfg.TerminalShell, cfg.ClaudeBinPath, cfg.ClaudeModel)
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,

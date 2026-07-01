@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +49,7 @@ import (
 
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
+	"github.com/Watthachai/fitt-coderunner/internal/github"
 )
 
 // ctxKey is an unexported context key type to avoid collisions.
@@ -61,10 +63,11 @@ const (
 // server holds the transport dependencies. It is unexported; NewServer returns
 // the http.Handler (the chi router), not this concrete type.
 type server struct {
-	logger    *slog.Logger
-	store     domain.Store
-	jm        domain.JobManager
-	gitRemote string // advertised back to FBD in the ingest response
+	logger      *slog.Logger
+	store       domain.Store
+	jm          domain.JobManager
+	gitRemote   string // advertised back to FBD in the ingest response
+	githubOwner string // when set, the "one repo per project" model is active
 
 	// projectsDir is the root holding per-project working dirs. The terminal WS
 	// spawns the shell with its cwd at {projectsDir}/{project_id}.
@@ -86,15 +89,18 @@ var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
 
 // NewServer constructs the chi router with all CRN routes registered and
 // returns it as an http.Handler. gitRemote is echoed back to FBD in the ingest
-// response so the caller knows where the build will be pushed. projectsDir is
-// the per-project working-dir root used by the interactive terminal WS, and
-// terminalShell is the optional shell override for that terminal.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, projectsDir, terminalShell, claudeBin, claudeModel string) http.Handler {
+// response so the caller knows where the build will be pushed. githubOwner, when
+// non-empty, activates the "one repo per project" model (per-project GitHub repo
+// + issues endpoints). projectsDir is the per-project working-dir root used by
+// the interactive terminal WS, and terminalShell is the optional shell override
+// for that terminal.
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell, claudeBin, claudeModel string) http.Handler {
 	s := &server{
 		logger:        logger,
 		store:         store,
 		jm:            jm,
 		gitRemote:     gitRemote,
+		githubOwner:   githubOwner,
 		projectsDir:   projectsDir,
 		terminalShell: terminalShell,
 		claudeBin:     claudeBin,
@@ -153,6 +159,12 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	// project — Claude edits the project's existing repo instead of rebuilding
 	// from a zip.
 	r.Post("/internal/projects/{id}/edit", s.handleEditProject)
+
+	// No-auth GitHub issues for a project (only meaningful under the "one repo per
+	// project" model, i.e. CRN_GITHUB_OWNER set). List the project repo's open
+	// issues, or enqueue an EDIT build that fixes a given issue.
+	r.Get("/internal/projects/{id}/issues", s.handleListIssues)
+	r.Post("/internal/projects/{id}/issues/{number}/fix", s.handleFixIssue)
 
 	// Tenant-facing API, guarded by per-org API key.
 	r.Route("/api/v1", func(r chi.Router) {
@@ -919,6 +931,161 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 		"build_no":   job.BuildNo,
 		"git_branch": "crn/" + branchSlug(project.Name) + "-" + project.ID.String()[:8],
 		"status":     job.Status,
+	})
+}
+
+// repoSlugForProject returns the "owner/name" GitHub slug for a project under
+// the "one repo per project" model, or "" when that model is disabled
+// (s.githubOwner empty). It prefers parsing the project's stored repo_url and
+// falls back to deriving "owner/crn-<slug>-<id8>" from the configured owner +
+// the project name/id (matching what the jobs layer creates).
+func (s *server) repoSlugForProject(p *domain.Project) string {
+	if s.githubOwner == "" {
+		return ""
+	}
+	if slug := repoSlugFromURL(p.RepoURL); slug != "" {
+		return slug
+	}
+	return s.githubOwner + "/crn-" + branchSlug(p.Name) + "-" + p.ID.String()[:8]
+}
+
+// repoSlugFromURL parses "owner/name" out of a GitHub https clone URL
+// (https://github.com/<owner>/<name>.git). Returns "" when the URL is empty or
+// not in that shape.
+func repoSlugFromURL(repoURL string) string {
+	const prefix = "https://github.com/"
+	if !strings.HasPrefix(repoURL, prefix) {
+		return ""
+	}
+	slug := strings.TrimSuffix(strings.TrimPrefix(repoURL, prefix), ".git")
+	if strings.Count(slug, "/") != 1 || strings.HasPrefix(slug, "/") || strings.HasSuffix(slug, "/") {
+		return ""
+	}
+	return slug
+}
+
+// handleListIssues returns the open GitHub issues of a project's repo as
+// {"issues":[...]}. When the "one repo per project" model is disabled, or the
+// project has no repo yet, it returns {"issues":[]} (never an error).
+func (s *server) handleListIssues(w http.ResponseWriter, r *http.Request) {
+	projectID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid project id")
+		return
+	}
+
+	project, err := s.store.GetProject(r.Context(), projectID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "project not found")
+			return
+		}
+		s.logger.Error("get project failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+
+	repoSlug := s.repoSlugForProject(project)
+	if repoSlug == "" {
+		s.writeJSON(w, r, http.StatusOK, map[string]any{"issues": []github.Issue{}})
+		return
+	}
+
+	issues, err := github.ListIssues(r.Context(), repoSlug, s.logger)
+	if err != nil {
+		s.logger.Error("list issues failed", "err", err, "repo", repoSlug,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "list issues failed")
+		return
+	}
+	if issues == nil {
+		issues = []github.Issue{}
+	}
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"issues": issues})
+}
+
+// handleFixIssue enqueues an EDIT build whose change is a GitHub issue's title +
+// body, remembering the issue number so the build comments on it when done.
+// Responds 202 with the queued job. Requires the "one repo per project" model.
+func (s *server) handleFixIssue(w http.ResponseWriter, r *http.Request) {
+	projectID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+	if err != nil || number <= 0 {
+		s.writeError(w, r, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
+	project, err := s.store.GetProject(r.Context(), projectID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "project not found")
+			return
+		}
+		s.logger.Error("get project failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+
+	repoSlug := s.repoSlugForProject(project)
+	if repoSlug == "" {
+		s.writeError(w, r, http.StatusBadRequest, "project has no GitHub repo (CRN_GITHUB_OWNER not set)")
+		return
+	}
+
+	// Resolve the issue's title + body: they become the edit instruction.
+	issues, err := github.ListIssues(r.Context(), repoSlug, s.logger)
+	if err != nil {
+		s.logger.Error("list issues failed", "err", err, "repo", repoSlug,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "list issues failed")
+		return
+	}
+	var found *github.Issue
+	for i := range issues {
+		if issues[i].Number == number {
+			found = &issues[i]
+			break
+		}
+	}
+	if found == nil {
+		s.writeError(w, r, http.StatusNotFound, "issue not found")
+		return
+	}
+
+	change := found.Title
+	if strings.TrimSpace(found.Body) != "" {
+		change = found.Title + "\n\n" + found.Body
+	}
+
+	// The edit payload the jobs layer decodes: mode=edit routes runJob down the
+	// clone/pull + edit path; issue_number makes the build comment on the issue.
+	payload, err := json.Marshal(map[string]any{
+		"mode":         "edit",
+		"change":       change,
+		"name":         project.Name,
+		"issue_number": number,
+	})
+	if err != nil {
+		s.logger.Error("marshal fix-issue payload failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not encode payload")
+		return
+	}
+
+	job, err := s.jm.Enqueue(r.Context(), project.ID, project.OrgID, payload)
+	if err != nil {
+		s.logger.Error("enqueue fix-issue job failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not enqueue build")
+		return
+	}
+
+	s.writeJSON(w, r, http.StatusAccepted, map[string]any{
+		"job_id":   job.ID,
+		"build_no": job.BuildNo,
+		"status":   job.Status,
 	})
 }
 

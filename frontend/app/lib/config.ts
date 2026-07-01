@@ -69,6 +69,25 @@ export function projectEditUrl(projectId: string): string {
   return `${API_BASE}/internal/projects/${encodeURIComponent(projectId)}/edit`;
 }
 
+// GitHub issues on a project's own repo (no auth; repo-per-project model).
+//   GET /internal/projects/{id}/issues
+//   -> { "issues": [ { number, title, body, url } ] }  ([] if no repo/owner)
+export function projectIssuesUrl(projectId: string): string {
+  return `${API_BASE}/internal/projects/${encodeURIComponent(
+    projectId,
+  )}/issues`;
+}
+
+// Enqueue an EDIT build that fixes a specific issue (no auth). The build's
+// change = the issue title+body; when it finishes the backend comments on the
+// issue. -> 202 { job_id, build_no, status }.
+//   POST /internal/projects/{id}/issues/{number}/fix
+export function projectIssueFixUrl(projectId: string, number: number): string {
+  return `${API_BASE}/internal/projects/${encodeURIComponent(
+    projectId,
+  )}/issues/${number}/fix`;
+}
+
 // Operator-console snapshot (no auth): vitals, in-flight builds, queue,
 // projects, recent activity — polled by the dashboard.
 export function dashboardUrl(): string {

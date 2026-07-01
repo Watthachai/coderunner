@@ -31,6 +31,7 @@ services:
       - ./migrations/0002_skills.sql:/docker-entrypoint-initdb.d/0002_skills.sql:ro
       - ./migrations/0003_skill_files.sql:/docker-entrypoint-initdb.d/0003_skill_files.sql:ro
       - ./migrations/0004_skill_versions.sql:/docker-entrypoint-initdb.d/0004_skill_versions.sql:ro
+      - ./migrations/0005_project_repo.sql:/docker-entrypoint-initdb.d/0005_project_repo.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U crn -d crn"]
       interval: 5s

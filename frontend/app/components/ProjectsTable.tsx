@@ -71,7 +71,11 @@ export function ProjectsTable({
                     )}
                   </td>
                   <td>
-                    <BranchCell branch={p.last_branch} remote={remote} />
+                    <BranchCell
+                      branch={p.last_branch}
+                      remote={remote}
+                      repoUrl={p.repo_url}
+                    />
                   </td>
                   <td className="td-muted ta-right">
                     {formatRelative(p.last_activity_at, nowMs)}
@@ -95,7 +99,29 @@ export function ProjectsTable({
   );
 }
 
-function BranchCell({ branch, remote }: { branch: string; remote?: string }) {
+function BranchCell({
+  branch,
+  remote,
+  repoUrl,
+}: {
+  branch: string;
+  remote?: string;
+  repoUrl?: string;
+}) {
+  // Repo-per-project model: the project has its own repo, so the "branch" is
+  // just main on that repo — link straight to the repo instead.
+  if (repoUrl) {
+    return (
+      <a
+        className="branch"
+        href={repoUrl.replace(/\.git$/, "")}
+        target="_blank"
+        rel="noreferrer"
+      >
+        repo ↗
+      </a>
+    );
+  }
   if (!branch) return <span className="td-dim">—</span>;
   const href = branchHref(branch, remote);
   if (!href) return <span className="td-mono">{branch}</span>;

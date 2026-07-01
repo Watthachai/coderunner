@@ -33,6 +33,10 @@ type Store interface {
 	ListProjectsByOrg(ctx context.Context, orgID uuid.UUID) ([]*Project, error)
 	// BumpBuildNo atomically increments and returns the project's next build number.
 	BumpBuildNo(ctx context.Context, projectID uuid.UUID) (int, error)
+	// SetProjectRepo records the project's dedicated GitHub repo https clone URL
+	// (the "one repo per project" model). Idempotent: called once per project the
+	// first time its repo is ensured.
+	SetProjectRepo(ctx context.Context, projectID uuid.UUID, repoURL string) error
 
 	// --- Jobs ---
 	CreateJob(ctx context.Context, j *Job) error

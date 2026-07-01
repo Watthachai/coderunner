@@ -30,7 +30,11 @@ type Project struct {
 	Status       ProjectStatus `json:"status"`
 	CurrentBuild int           `json:"current_build"`
 	Stack        string        `json:"stack"`
-	CreatedAt    time.Time     `json:"created_at"`
+	// RepoURL is the project's dedicated GitHub repo https clone URL under the
+	// "one repo per project" model (empty when that model is disabled or no repo
+	// has been created for the project yet).
+	RepoURL   string    `json:"repo_url"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Job is a single unit of work in the build queue — the heart of the state
