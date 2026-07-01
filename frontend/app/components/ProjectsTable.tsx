@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { ProjectRow } from "../lib/types";
 import { useTick } from "../lib/useTick";
 import { formatRelative } from "../lib/format";
@@ -36,12 +37,17 @@ export function ProjectsTable({
                 <th>Build</th>
                 <th>Branch</th>
                 <th className="ta-right">Activity</th>
+                <th className="ta-right" />
               </tr>
             </thead>
             <tbody>
               {projects.map((p) => (
                 <tr key={p.id}>
-                  <td className="td-name">{p.name || p.id.slice(0, 8)}</td>
+                  <td className="td-name">
+                    <Link className="proj-link" href={`/projects/${p.id}`}>
+                      {p.name || p.id.slice(0, 8)}
+                    </Link>
+                  </td>
                   <td className="td-muted">{p.org_name || "—"}</td>
                   <td>
                     {p.last_status ? (
@@ -61,6 +67,15 @@ export function ProjectsTable({
                   </td>
                   <td className="td-muted ta-right">
                     {formatRelative(p.last_activity_at, nowMs)}
+                  </td>
+                  <td className="ta-right">
+                    <Link
+                      className="row-action"
+                      href={`/projects/${p.id}`}
+                      title="Open terminal"
+                    >
+                      terminal
+                    </Link>
                   </td>
                 </tr>
               ))}

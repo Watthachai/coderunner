@@ -103,3 +103,9 @@ Postgres `LISTEN/NOTIFY` wiring, and the MongoDB BRD/PRD store.
 - Move the central DB to the shared fixed-IP VM (architecture §8 Phase 9).
 - Secrets management for `X-API-Key` hashing + Docker Hub credentials.
 - Lock down `POST /internal/trigger` (network policy or shared secret).
+- **Lock down the interactive terminal WS** `GET /internal/projects/{id}/terminal`.
+  It runs a real OS shell in a PTY in the project's workdir on the CRN host with
+  **no auth** (mirrors the no-auth log WS) — i.e. a remote shell on the build
+  host. Fine for local/trusted dev; in production it MUST be behind
+  authentication and a network policy, or removed. Shell is chosen from
+  `CRN_TERMINAL_SHELL` → `$SHELL` → `/bin/zsh` → `/bin/bash` → `/bin/sh`.

@@ -1256,3 +1256,179 @@ body {
   line-height: 1.5;
   white-space: pre;
 }
+
+/* ============================================================================
+   Project terminal page — a real interactive PTY (xterm.js) per project.
+   Same midnight-studio aesthetic as the console: bordered panel, mono, cyan.
+   ========================================================================== */
+
+/* project-id line under the header */
+.term-idline {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.term-idline-label {
+  font-size: 0.67rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-dim);
+}
+
+.term-id {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.3rem 0.6rem;
+  word-break: break-all;
+}
+
+/* the outer bordered panel filling the viewport */
+.term-panel {
+  min-height: 70vh;
+  display: flex;
+}
+
+/* the shell wraps a status bar + the xterm mount, stacked and filling height */
+.term-shell {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: #0c0c0e;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.term-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.85rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.term-bar-title {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-muted);
+}
+
+.term-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.term-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.term-status--connected {
+  color: var(--done);
+}
+.term-status--connected .term-status-dot {
+  background: var(--done);
+  box-shadow: 0 0 8px var(--done);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.term-status--connecting {
+  color: var(--queued);
+}
+.term-status--connecting .term-status-dot {
+  background: var(--queued);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.term-status--closed {
+  color: var(--error);
+}
+.term-status--closed .term-status-dot {
+  background: var(--error);
+}
+
+/* the div xterm renders into — fills the remaining panel height */
+.term-mount {
+  flex: 1;
+  min-height: 0;
+  padding: 0.5rem 0.6rem;
+}
+
+/* xterm sizes to its host; make the host and viewport fill the mount */
+.term-mount .xterm,
+.term-mount .xterm-viewport,
+.term-mount .xterm-screen {
+  height: 100%;
+}
+
+.term-mount .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.term-mount .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.term-mount .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+/* --- projects table: name link + per-row terminal action --- */
+
+.proj-link {
+  color: var(--fg);
+  text-decoration: none;
+  border-bottom: 1px dotted transparent;
+}
+
+.proj-link:hover {
+  color: var(--accent);
+  border-bottom-color: rgba(100, 206, 251, 0.4);
+}
+
+.row-action {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.18rem 0.55rem;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.row-action:hover {
+  color: var(--accent);
+  border-color: rgba(100, 206, 251, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term-status--connected .term-status-dot,
+  .term-status--connecting .term-status-dot {
+    animation: none;
+  }
+}

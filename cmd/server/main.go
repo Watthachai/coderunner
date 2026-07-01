@@ -97,7 +97,7 @@ func run() error {
 	// --- HTTP / WebSocket server (chi router) ---
 	// api.NewServer registers all routes and returns an http.Handler. The git
 	// remote is echoed back to FBD in the ingest response.
-	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote)
+	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote, cfg.ProjectsDir, cfg.TerminalShell)
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,

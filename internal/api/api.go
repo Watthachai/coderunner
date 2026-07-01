@@ -13,6 +13,7 @@
 //	GET    /internal/skills/{name}                  -> store.GetSkill
 //	PUT    /internal/skills/{name}                  -> store.UpsertSkill
 //	DELETE /internal/skills/{name}                  -> store.DeleteSkill  (409 if built-in)
+//	GET    /internal/projects/{id}/terminal         -> WebSocket: PTY shell in the project workdir (no auth)
 //	Route /api/v1 (group, apiKeyAuth):
 //	  POST /projects/{id}/edit-request              -> store.CreateEditRequest + jm.Enqueue
 //	  GET  /projects/{id}/status                    -> jm.Status
@@ -57,6 +58,13 @@ type server struct {
 	store     domain.Store
 	jm        domain.JobManager
 	gitRemote string // advertised back to FBD in the ingest response
+
+	// projectsDir is the root holding per-project working dirs. The terminal WS
+	// spawns the shell with its cwd at {projectsDir}/{project_id}.
+	projectsDir string
+	// terminalShell is the operator's optional shell override for the terminal
+	// WS (CRN_TERMINAL_SHELL); empty falls back to $SHELL/zsh/bash/sh.
+	terminalShell string
 }
 
 // defaultOrgID is the org an ingest call is attributed to when the body carries
@@ -65,9 +73,18 @@ var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
 
 // NewServer constructs the chi router with all CRN routes registered and
 // returns it as an http.Handler. gitRemote is echoed back to FBD in the ingest
-// response so the caller knows where the build will be pushed.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote string) http.Handler {
-	s := &server{logger: logger, store: store, jm: jm, gitRemote: gitRemote}
+// response so the caller knows where the build will be pushed. projectsDir is
+// the per-project working-dir root used by the interactive terminal WS, and
+// terminalShell is the optional shell override for that terminal.
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, projectsDir, terminalShell string) http.Handler {
+	s := &server{
+		logger:        logger,
+		store:         store,
+		jm:            jm,
+		gitRemote:     gitRemote,
+		projectsDir:   projectsDir,
+		terminalShell: terminalShell,
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -93,6 +110,12 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	// No-auth internal live-log WebSocket so the CRN dashboard can watch a build
 	// without an org API key. Same stream as the /api/v1 variant, no auth.
 	r.Get("/internal/projects/{id}/jobs/{build_no}/logs", s.handleInternalLogsWS)
+
+	// No-auth interactive per-project terminal WebSocket: an OS shell running in
+	// a PTY in the project's working dir, bridged to the browser. SECURITY: this
+	// is a remote shell on the CRN host with NO auth — fine for local/trusted
+	// dev, MUST be locked down (auth + network policy) in prod. See terminal.go.
+	r.Get("/internal/projects/{id}/terminal", s.handleTerminalWS)
 
 	// No-auth operator-console read model. A single snapshot of vitals, the
 	// in-flight builds, the queue, all projects, and a recent activity feed.

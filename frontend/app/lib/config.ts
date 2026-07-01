@@ -37,6 +37,25 @@ export function jobLogsWsUrl(
   return url.toString();
 }
 
+/**
+ * Build the interactive PTY WebSocket URL for a project's terminal.
+ *
+ * Connects to the NO-AUTH internal endpoint (browsers cannot set the
+ * X-API-Key header on a WS handshake):
+ *   GET /internal/projects/{id}/terminal
+ *
+ * Protocol:
+ *   server -> client: raw PTY output as BINARY frames
+ *   client -> server: TEXT frames, JSON:
+ *     { "type": "input",  "data": "<keystrokes>" }
+ *     { "type": "resize", "cols": <int>, "rows": <int> }
+ */
+export function terminalWsUrl(projectId: string): string {
+  return `${WS_BASE}/internal/projects/${encodeURIComponent(
+    projectId,
+  )}/terminal`;
+}
+
 export function projectStatusUrl(projectId: string): string {
   return `${API_BASE}/api/v1/projects/${encodeURIComponent(projectId)}/status`;
 }

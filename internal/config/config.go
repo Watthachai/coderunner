@@ -60,6 +60,13 @@ type Config struct {
 
 	// Environment is "development" | "production"; controls log handler choice.
 	Environment string
+
+	// TerminalShell optionally overrides the OS shell spawned for the per-project
+	// interactive terminal WebSocket. Empty means fall back to $SHELL, then
+	// /bin/zsh, then /bin/bash, then /bin/sh (the first that exists at runtime).
+	// The fallback logic lives in the terminal handler; this field only carries
+	// the operator's explicit override.
+	TerminalShell string
 }
 
 // Load reads configuration from the environment.
@@ -79,6 +86,7 @@ type Config struct {
 //	CRN_LOG_LEVEL          ("info")
 //	CRN_SHUTDOWN_TIMEOUT   ("15s")
 //	CRN_ENV                ("development")
+//	CRN_TERMINAL_SHELL     ("" — falls back to $SHELL, then /bin/zsh/bash/sh)
 func Load() (*Config, error) {
 	cfg := &Config{
 		ListenAddr:         getEnv("CRN_LISTEN_ADDR", ":8080"),
@@ -93,6 +101,7 @@ func Load() (*Config, error) {
 		RunClaude:          getEnvBool("CRN_RUN_CLAUDE", true),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
+		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),
 	}
 
 	if cfg.CentralDatabaseURL == "" {
