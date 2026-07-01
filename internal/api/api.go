@@ -360,7 +360,7 @@ func (s *server) handlePutSkill(w http.ResponseWriter, r *http.Request) {
 	skill := &domain.Skill{
 		Name:        name,
 		Description: body.Description,
-		Body:        body.Body,
+		Body:        normalizeSkillBody(body.Body, name, body.Description),
 		Files:       body.Files,
 		Enabled:     body.Enabled,
 	}
@@ -557,7 +557,7 @@ func (s *server) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 	skill := &domain.Skill{
 		Name:        name,
 		Description: parsed.description,
-		Body:        parsed.body,
+		Body:        normalizeSkillBody(parsed.body, name, parsed.description),
 		Files:       parsed.files,
 		Enabled:     true,
 	}
@@ -707,6 +707,49 @@ func frontmatterValue(line, key string) (string, bool) {
 	v := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
 	v = strings.Trim(v, `"'`)
 	return v, true
+}
+
+// normalizeSkillBody rewrites the SKILL.md frontmatter "name:" to match the
+// skill's (kebab-case) record name so Claude Code will actually load it —
+// uploaded skills often ship an invalid name (spaces/uppercase/&, e.g.
+// "Vulnerability Scanning & Assessment"). Claude Code requires name to be
+// [a-z0-9-] and match the skill directory (which CRN names by the record name).
+// If the body has no frontmatter, a minimal valid block is prepended using the
+// record name + description. Only the name is forced; an existing description is
+// left untouched.
+func normalizeSkillBody(body, name, description string) string {
+	lines := strings.Split(body, "\n")
+
+	// No opening fence -> prepend a minimal valid frontmatter block.
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return "---\nname: " + name + "\ndescription: " + description + "\n---\n\n" + body
+	}
+
+	// Find the closing fence and any existing name: line inside the block.
+	closeIdx, nameIdx := -1, -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			closeIdx = i
+			break
+		}
+		if _, ok := frontmatterValue(lines[i], "name"); ok {
+			nameIdx = i
+		}
+	}
+	if closeIdx == -1 {
+		// Malformed (unterminated) frontmatter — prepend a clean block instead.
+		return "---\nname: " + name + "\ndescription: " + description + "\n---\n\n" + body
+	}
+
+	if nameIdx >= 0 {
+		lines[nameIdx] = "name: " + name
+		return strings.Join(lines, "\n")
+	}
+	// No name line inside the block — insert one right after the opening fence.
+	out := make([]string, 0, len(lines)+1)
+	out = append(out, lines[0], "name: "+name)
+	out = append(out, lines[1:]...)
+	return strings.Join(out, "\n")
 }
 
 // triggerBody is the FTC DV signal payload for POST /internal/trigger.
