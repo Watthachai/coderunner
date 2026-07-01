@@ -424,7 +424,14 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 					log.Warn("persist session id failed", "err", err)
 				}
 			}
-			m.publish(job.ID, translate(job.ID, ev))
+			msg := translate(job.ID, ev)
+			// Skip empty assistant chatter (e.g. an assistant turn that only carried
+			// a tool_use, already surfaced above as a tool call) so the live console
+			// isn't full of blank "text" rows.
+			if msg.Kind == domain.WSAssistantText && strings.TrimSpace(msg.Text) == "" {
+				return nil
+			}
+			m.publish(job.ID, msg)
 			return nil
 		}
 
@@ -881,12 +888,21 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 	}
 	switch ev.Type {
 	case domain.ClaudeAssistant:
-		msg.Kind = domain.WSAssistantText
-		msg.Text = ev.Text
+		// stream-json nests tool_use blocks inside assistant messages; decodeLine
+		// surfaces the tool on the same event. Show it as a tool call so the live
+		// console reads as Claude's actions, not empty "text" rows.
+		if ev.ToolName != "" {
+			msg.Kind = domain.WSToolCall
+			msg.Tool = ev.ToolName
+			msg.File = detailFromToolInput(ev.ToolInput)
+		} else {
+			msg.Kind = domain.WSAssistantText
+			msg.Text = ev.Text
+		}
 	case domain.ClaudeToolUse:
 		msg.Kind = domain.WSToolCall
 		msg.Tool = ev.ToolName
-		msg.File = fileFromToolInput(ev.ToolInput)
+		msg.File = detailFromToolInput(ev.ToolInput)
 	case domain.ClaudeToolResult:
 		msg.Kind = domain.WSToolResult
 		msg.Tool = ev.ToolName
@@ -901,23 +917,46 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 	return msg
 }
 
-// fileFromToolInput best-effort extracts a file path from a tool_use input so
-// the dashboard can show which file a tool touched. Returns "" when absent.
-func fileFromToolInput(input json.RawMessage) string {
+// detailFromToolInput best-effort extracts a human-meaningful detail from a
+// tool_use input so the live console reads like Claude's actions: the file path
+// (Read/Edit/Write), the command (Bash), the pattern (Grep/Glob), or a URL.
+func detailFromToolInput(input json.RawMessage) string {
 	if len(input) == 0 {
 		return ""
 	}
 	var in struct {
 		FilePath string `json:"file_path"`
 		Path     string `json:"path"`
+		Command  string `json:"command"`
+		Pattern  string `json:"pattern"`
+		URL      string `json:"url"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return ""
 	}
-	if in.FilePath != "" {
+	switch {
+	case in.FilePath != "":
 		return in.FilePath
+	case in.Path != "":
+		return in.Path
+	case in.Command != "":
+		return truncateOneLine(in.Command, 100)
+	case in.Pattern != "":
+		return in.Pattern
+	case in.URL != "":
+		return in.URL
 	}
-	return in.Path
+	return ""
+}
+
+// truncateOneLine collapses a value to a single line and caps its length so a
+// long command/pattern stays a compact one-row entry in the live console.
+func truncateOneLine(s string, max int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // donePayload builds the build_done event payload (cost + session) for the

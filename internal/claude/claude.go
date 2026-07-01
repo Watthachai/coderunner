@@ -360,12 +360,16 @@ func decodeLine(line []byte, log *slog.Logger) (domain.ClaudeEvent, bool) {
 	ev := domain.ClaudeEvent{
 		Type: domain.ClaudeEventType(raw.Type),
 		Raw:  rawCopy,
+		// session_id rides on many events (the "system" init line, the terminal
+		// "result" line). Capture it on every event so the job manager can persist
+		// it as soon as the session starts — not only at the end — which lets a
+		// future edit --resume even if this run fails midway.
+		SessionID: raw.SessionID,
 	}
 
 	switch domain.ClaudeEventType(raw.Type) {
 	case domain.ClaudeResult:
 		ev.Subtype = raw.Subtype
-		ev.SessionID = raw.SessionID
 		ev.CostUSD = raw.TotalCostUSD
 		if ev.CostUSD == 0 {
 			ev.CostUSD = raw.CostUSD
