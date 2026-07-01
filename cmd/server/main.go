@@ -67,11 +67,13 @@ func run() error {
 	// truth: EnsureBuiltinSkill re-applies this body/description/files on every
 	// restart (ON CONFLICT DO UPDATE) so the canonical harness is always current,
 	// while PRESERVING the operator's enabled flag (enable/disable stays an
-	// operator decision). fitt-build ships SKILL.md-only (no extra files).
+	// operator decision). fitt-build ships SKILL.md plus reference guides and
+	// Docker templates under references/ and assets/ (builtinSkillFiles).
 	if err := st.EnsureBuiltinSkill(rootCtx, &domain.Skill{
 		Name:        builtinSkillName,
 		Description: builtinSkillDescription,
 		Body:        builtinSkillBody,
+		Files:       builtinSkillFiles,
 		Enabled:     true,
 		IsBuiltin:   true,
 	}); err != nil {
