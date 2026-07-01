@@ -159,10 +159,7 @@ func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, 
 	// ships its own .gitignore. .git/info/exclude is local-only (never pushed),
 	// so it doesn't pollute the project's tree. Claude's `npm install` produces a
 	// node_modules/ that would otherwise be force-pushed.
-	excludeBody := "node_modules/\ndist/\nbuild/\n.next/\n.claude/\n*.log\n.DS_Store\n"
-	if err := os.MkdirAll(filepath.Join(gitDir, "info"), 0o755); err == nil {
-		_ = os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte(excludeBody), 0o644)
-	}
+	writeGitExclude(gitDir)
 
 	// Local identity so commits never depend on a global git config being set.
 	if _, err := runGit(ctx, dir, log, "config", "user.email", "crn@fitt.local"); err != nil {
@@ -199,6 +196,63 @@ func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, 
 		return "", err
 	}
 	return strings.TrimSpace(sha), nil
+}
+
+// excludeBody is the .git/info/exclude content applied to every build repo so
+// install/build artifacts are never committed or pushed. It is local-only (never
+// pushed) so it doesn't pollute the project's tree.
+const excludeBody = "node_modules/\ndist/\nbuild/\n.next/\n.claude/\n*.log\n.DS_Store\n"
+
+// writeGitExclude writes excludeBody to {gitDir}/info/exclude (best effort).
+func writeGitExclude(gitDir string) {
+	if err := os.MkdirAll(filepath.Join(gitDir, "info"), 0o755); err == nil {
+		_ = os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte(excludeBody), 0o644)
+	}
+}
+
+// GitCloneOrPull ensures dir holds an up-to-date checkout of <branch> from
+// <remote>. If {dir}/.git already exists it fetches origin and hard-resets to
+// origin/<branch>; otherwise it clones the branch fresh into dir. The host's
+// ambient git credentials are used as-is. It writes the same .git/info/exclude
+// as GitCommitAndPush so install/build artifacts are never committed. A missing
+// remote branch yields a clear error.
+func GitCloneOrPull(ctx context.Context, dir, remote, branch string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	log := logger.With("component", "buildstep.git", "dir", dir, "branch", branch)
+
+	gitDir := filepath.Join(dir, ".git")
+	info, err := os.Stat(gitDir)
+	switch {
+	case err == nil && info.IsDir():
+		// Existing checkout: fetch then hard-reset to the remote branch head.
+		if _, err := runGit(ctx, dir, log, "remote", "set-url", "origin", remote); err != nil {
+			if _, addErr := runGit(ctx, dir, log, "remote", "add", "origin", remote); addErr != nil {
+				return addErr
+			}
+		}
+		if _, err := runGit(ctx, dir, log, "fetch", "origin"); err != nil {
+			return err
+		}
+		if _, err := runGit(ctx, dir, log, "reset", "--hard", "origin/"+branch); err != nil {
+			return fmt.Errorf("buildstep: reset to origin/%s (does the branch exist remotely?): %w", branch, err)
+		}
+		writeGitExclude(gitDir)
+		return nil
+	case os.IsNotExist(err):
+		// Fresh clone of the requested branch into dir.
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("buildstep: mkdir clone dir: %w", err)
+		}
+		if _, err := runGit(ctx, dir, log, "clone", "--branch", branch, remote, dir); err != nil {
+			return fmt.Errorf("buildstep: clone branch %q from remote (does the branch exist remotely?): %w", branch, err)
+		}
+		writeGitExclude(gitDir)
+		return nil
+	default:
+		return fmt.Errorf("buildstep: stat .git: %w", err)
+	}
 }
 
 // runGit runs one git subcommand in dir, streaming combined stdout/stderr to the

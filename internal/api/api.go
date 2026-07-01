@@ -46,6 +46,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 )
 
@@ -71,6 +72,12 @@ type server struct {
 	// terminalShell is the operator's optional shell override for the terminal
 	// WS (CRN_TERMINAL_SHELL); empty falls back to $SHELL/zsh/bash/sh.
 	terminalShell string
+
+	// claudeBin is the path to the `claude` CLI used by the improve-skill endpoint.
+	claudeBin string
+	// claudeModel optionally pins the model for the improve-skill run (empty = CLI
+	// default).
+	claudeModel string
 }
 
 // defaultOrgID is the org an ingest call is attributed to when the body carries
@@ -82,7 +89,7 @@ var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
 // response so the caller knows where the build will be pushed. projectsDir is
 // the per-project working-dir root used by the interactive terminal WS, and
 // terminalShell is the optional shell override for that terminal.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, projectsDir, terminalShell string) http.Handler {
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, projectsDir, terminalShell, claudeBin, claudeModel string) http.Handler {
 	s := &server{
 		logger:        logger,
 		store:         store,
@@ -90,6 +97,8 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 		gitRemote:     gitRemote,
 		projectsDir:   projectsDir,
 		terminalShell: terminalShell,
+		claudeBin:     claudeBin,
+		claudeModel:   claudeModel,
 	}
 
 	r := chi.NewRouter()
@@ -136,6 +145,14 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	r.Put("/internal/skills/{name}", s.handlePutSkill)
 	r.Delete("/internal/skills/{name}", s.handleDeleteSkill)
 	r.Get("/internal/skills/{name}/versions", s.handleListSkillVersions)
+	// AI "improve skill": runs Claude to improve/expand a SKILL.md body and returns
+	// the improved markdown for the operator to review (does NOT save it).
+	r.Post("/internal/skills/{name}/improve", s.handleImproveSkill)
+
+	// No-auth internal edit-build trigger: creates an EDIT build for an existing
+	// project — Claude edits the project's existing repo instead of rebuilding
+	// from a zip.
+	r.Post("/internal/projects/{id}/edit", s.handleEditProject)
 
 	// Tenant-facing API, guarded by per-org API key.
 	r.Route("/api/v1", func(r chi.Router) {
@@ -430,6 +447,41 @@ func (s *server) handleListSkillVersions(w http.ResponseWriter, r *http.Request)
 		versions = []*domain.SkillVersion{}
 	}
 	s.writeJSON(w, r, http.StatusOK, map[string]any{"versions": versions})
+}
+
+// improveSkillBody is the POST /internal/skills/{name}/improve payload: the
+// current SKILL.md body to improve. The improved body is returned; it is NOT
+// saved (the operator reviews it in the editor first).
+type improveSkillBody struct {
+	Body string `json:"body"`
+}
+
+// handleImproveSkill runs Claude to improve/expand a SKILL.md body and returns
+// {"body": improved}. It does not persist anything.
+func (s *server) handleImproveSkill(w http.ResponseWriter, r *http.Request) {
+	if s.claudeBin == "" {
+		s.writeError(w, r, http.StatusServiceUnavailable, "claude CLI is not configured")
+		return
+	}
+
+	var body improveSkillBody
+	if err := decodeJSON(r, &body); err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.Body) == "" {
+		s.writeError(w, r, http.StatusBadRequest, "body is required")
+		return
+	}
+
+	improved, err := claude.Improve(r.Context(), s.claudeBin, s.claudeModel, body.Body, s.logger)
+	if err != nil {
+		s.logger.Error("improve skill failed", "err", err, "name", chi.URLParam(r, "name"),
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "improve skill failed")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, map[string]string{"body": improved})
 }
 
 // uploadMaxMemory bounds how much of a multipart upload is buffered in memory
@@ -800,6 +852,72 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		"org_id":     orgID,
 		"git_remote": s.gitRemote,
 		"git_branch": "crn/" + branchSlug(body.Name) + "-" + projectID.String()[:8],
+		"status":     job.Status,
+	})
+}
+
+// editProjectBody is the POST /internal/projects/{id}/edit payload: a free-text
+// description of what to change in the existing project.
+type editProjectBody struct {
+	Change string `json:"change"`
+}
+
+// handleEditProject creates an EDIT build for an existing project: Claude edits
+// the project's existing repo in place (clone/pull the branch, apply the change,
+// push the same branch) instead of rebuilding from a zip. No auth — like ingest,
+// it is a trusted-network internal call. Responds 202 with the queued job.
+func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
+	projectID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid project id")
+		return
+	}
+
+	var body editProjectBody
+	if err := decodeJSON(r, &body); err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.Change) == "" {
+		s.writeError(w, r, http.StatusBadRequest, "change is required")
+		return
+	}
+
+	project, err := s.store.GetProject(r.Context(), projectID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "project not found")
+			return
+		}
+		s.logger.Error("get project failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+
+	// The edit payload the jobs layer decodes: mode=edit routes runJob down the
+	// clone/pull + edit path; name reproduces the same branch slug as the build.
+	payload, err := json.Marshal(map[string]string{
+		"mode":   "edit",
+		"change": body.Change,
+		"name":   project.Name,
+	})
+	if err != nil {
+		s.logger.Error("marshal edit payload failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not encode payload")
+		return
+	}
+
+	job, err := s.jm.Enqueue(r.Context(), project.ID, project.OrgID, payload)
+	if err != nil {
+		s.logger.Error("enqueue edit job failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not enqueue build")
+		return
+	}
+
+	s.writeJSON(w, r, http.StatusAccepted, map[string]any{
+		"job_id":     job.ID,
+		"build_no":   job.BuildNo,
+		"git_branch": "crn/" + branchSlug(project.Name) + "-" + project.ID.String()[:8],
 		"status":     job.Status,
 	})
 }

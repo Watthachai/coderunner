@@ -50,6 +50,10 @@ type Store interface {
 	SetJobDockerTag(ctx context.Context, id uuid.UUID, dockerTag string) error
 	// NextQueuedJob returns the oldest queued job for an org, or (nil, nil) if none.
 	NextQueuedJob(ctx context.Context, orgID uuid.UUID) (*Job, error)
+	// LastSessionID returns the session_id of the project's most recent job that
+	// has a non-empty session_id ("" when none). Used by an edit build to --resume
+	// the project's prior Claude session.
+	LastSessionID(ctx context.Context, projectID uuid.UUID) (string, error)
 	// QueueDepth counts jobs in JobQueued for a project.
 	QueueDepth(ctx context.Context, projectID uuid.UUID) (int, error)
 

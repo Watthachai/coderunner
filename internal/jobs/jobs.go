@@ -291,25 +291,64 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// git push targets the same directory.
 	workDir := filepath.Join(m.projectsDir, job.ProjectID.String())
 
-	// Reset the workspace so each build starts from a clean slate. Every build
-	// ships a full export, so stale artifacts from a prior build (old zips,
-	// extracted source, a previous .git) must not leak in — two leftover zips
-	// would make the harness ambiguous about which to extract.
-	if err := os.RemoveAll(workDir); err != nil {
-		log.Error("reset workspace failed", "err", err, "workdir", workDir)
-		m.finishFailed(ctx, job, "reset workspace failed: "+err.Error(), 0)
-		return
-	}
-
-	// --- materialize: write the incoming payload files to disk ---
 	spec := parsePayload(job.Payload)
-	m.publishPhase(job.ID, "materialize")
-	if err := buildstep.WriteFiles(workDir, spec.Files); err != nil {
-		log.Error("materialize files failed", "err", err)
-		m.finishFailed(ctx, job, "materialize files failed: "+err.Error(), 0)
-		return
+
+	// The build branch name derived from the product name + a short project id,
+	// e.g. "crn/expenseflow-70d7409b". Both build modes push to this same branch.
+	branch := "crn/" + slugify(spec.Name) + "-" + job.ProjectID.String()[:8]
+
+	// resumeSession is the Claude session to --resume for this run; the Claude
+	// prompt is the requirement handed to Claude. Both are set per-mode below.
+	var resumeSession, claudePrompt string
+
+	if spec.Mode == "edit" {
+		// --- EDIT mode: clone/pull the existing branch, do NOT reset/materialize ---
+		if m.gitRemote == "" {
+			log.Error("edit build requires a git remote but CRN_GIT_REMOTE is empty")
+			m.finishFailed(ctx, job, "edit build requires a git remote (CRN_GIT_REMOTE is empty)", 0)
+			return
+		}
+		m.publishPhase(job.ID, "pull")
+		if err := buildstep.GitCloneOrPull(ctx, workDir, m.gitRemote, branch, m.logger); err != nil {
+			log.Error("edit clone/pull failed", "err", err, "branch", branch)
+			m.finishFailed(ctx, job, "edit clone/pull failed: "+err.Error(), 0)
+			return
+		}
+		log.Info("edit workspace ready", "workdir", workDir, "branch", branch)
+
+		claudePrompt = "You are editing an existing project in the current directory. " +
+			"Apply this change and keep everything else working:\n\n" + spec.Change
+
+		// Resume the project's last Claude session so the edit has full context.
+		sid, err := m.store.LastSessionID(ctx, job.ProjectID)
+		if err != nil {
+			log.Warn("look up last session id failed", "err", err)
+		}
+		resumeSession = sid
+	} else {
+		// --- NORMAL mode: reset the workspace + materialize the export zip ---
+		// Reset the workspace so each build starts from a clean slate. Every build
+		// ships a full export, so stale artifacts from a prior build (old zips,
+		// extracted source, a previous .git) must not leak in — two leftover zips
+		// would make the harness ambiguous about which to extract.
+		if err := os.RemoveAll(workDir); err != nil {
+			log.Error("reset workspace failed", "err", err, "workdir", workDir)
+			m.finishFailed(ctx, job, "reset workspace failed: "+err.Error(), 0)
+			return
+		}
+
+		// --- materialize: write the incoming payload files to disk ---
+		m.publishPhase(job.ID, "materialize")
+		if err := buildstep.WriteFiles(workDir, spec.Files); err != nil {
+			log.Error("materialize files failed", "err", err)
+			m.finishFailed(ctx, job, "materialize files failed: "+err.Error(), 0)
+			return
+		}
+		log.Info("materialized files", "count", len(spec.Files), "workdir", workDir)
+
+		claudePrompt = harnessPrompt(spec)
+		resumeSession = job.SessionID
 	}
-	log.Info("materialized files", "count", len(spec.Files), "workdir", workDir)
 
 	// --- run Claude Code (optional) ---
 	var result domain.RunResult
@@ -327,8 +366,8 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			JobID:           job.ID,
 			ProjectID:       job.ProjectID,
 			WorkDir:         workDir,
-			Prompt:          harnessPrompt(spec),
-			ResumeSessionID: job.SessionID,
+			Prompt:          claudePrompt,
+			ResumeSessionID: resumeSession,
 		}
 
 		emit := func(ev domain.ClaudeEvent) error {
@@ -377,16 +416,12 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 
 	// --- success: git commit + force-push the build branch ---
-	// A meaningful branch name derived from the product name + a short project id,
-	// e.g. "crn/expenseflow-70d7409b" instead of the raw "crn/<uuid>".
-	branch := "crn/" + slugify(spec.Name) + "-" + job.ProjectID.String()[:8]
+	// branch was computed above from the product name + a short project id; both
+	// build modes push to it.
 	if m.gitRemote != "" {
 		m.publishPhase(job.ID, "git")
 		m.publishPhase(job.ID, "push")
-		msg := fmt.Sprintf("crn: build %d — %s", job.BuildNo, spec.Name)
-		if spec.Name == "" {
-			msg = fmt.Sprintf("crn: build %d — %s", job.BuildNo, job.ProjectID)
-		}
+		msg := commitMessage(spec, job)
 		commit, err := buildstep.GitCommitAndPush(ctx, workDir, m.gitRemote, branch, msg, m.logger)
 		if err != nil {
 			log.Error("git push failed", "err", err)
@@ -575,6 +610,30 @@ func harnessPrompt(spec payloadSpec) string {
 	)
 }
 
+// commitMessage builds the git commit message for a build. An edit build reads
+// "crn: edit build {n} — {first line of change}"; a normal build reads
+// "crn: build {n} — {name}" (falling back to the project id when unnamed).
+func commitMessage(spec payloadSpec, job *domain.Job) string {
+	if spec.Mode == "edit" {
+		return fmt.Sprintf("crn: edit build %d — %s", job.BuildNo, firstLine(spec.Change))
+	}
+	if spec.Name == "" {
+		return fmt.Sprintf("crn: build %d — %s", job.BuildNo, job.ProjectID)
+	}
+	return fmt.Sprintf("crn: build %d — %s", job.BuildNo, spec.Name)
+}
+
+// firstLine returns the first non-empty line of s, trimmed. Empty input yields
+// "edit" so the commit subject is never blank.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return "edit"
+}
+
 // slugify turns a product name into a git-branch-safe slug: lowercase, keeping
 // only [a-z0-9]; every other run of characters collapses to a single '-';
 // leading/trailing '-' are trimmed and the result is capped at ~40 chars. A
@@ -616,6 +675,13 @@ type payloadSpec struct {
 	BRD    string
 	PRD    string
 	Prompt string
+
+	// Mode selects the build path: "edit" edits the project's existing repo in
+	// place (clone/pull the branch, run Claude with Change, push the same branch);
+	// "" (default) is the normal reset -> materialize -> harness path.
+	Mode string
+	// Change is the edit instruction for an edit build (Mode == "edit").
+	Change string
 }
 
 // ingestPayload mirrors the FBD -> CRN ingest body (api.ingestBody). Only the
@@ -630,6 +696,11 @@ type ingestPayload struct {
 	Prompts   []string `json:"prompts"`
 	ZipName   string   `json:"zip_name"`
 	ZipBase64 string   `json:"zip_base64"`
+
+	// Edit build fields. When Mode == "edit" the payload carries a Change
+	// instruction instead of a prototype zip; the existing repo is edited in place.
+	Mode   string `json:"mode"`
+	Change string `json:"change"`
 }
 
 // parsePayload materializes the prototype zip and composes the Claude prompt
@@ -646,6 +717,15 @@ func parsePayload(payload json.RawMessage) payloadSpec {
 	spec.Idea = p.Idea
 	spec.BRD = p.BRD
 	spec.PRD = p.PRD
+
+	// Edit build: no zip to materialize and no harness prompt — the repo already
+	// exists on disk (cloned/pulled by runJob) and Change is the edit instruction.
+	if p.Mode == "edit" {
+		spec.Mode = "edit"
+		spec.Change = p.Change
+		spec.Prompt = p.Change
+		return spec
+	}
 
 	// Drop the prototype zip into the workdir as one file. Decoded zip bytes go
 	// through FileEntry.Content (a Go string) byte-for-byte — WriteFiles does

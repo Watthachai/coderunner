@@ -60,6 +60,15 @@ export function projectStatusUrl(projectId: string): string {
   return `${API_BASE}/api/v1/projects/${encodeURIComponent(projectId)}/status`;
 }
 
+// Request an EDIT build for an existing project (no auth). Body:
+//   { "change": "<what to change>" }
+// -> 202 { "job_id", "build_no", "git_branch", "status" }. An edit build pulls
+// the project's existing branch and --resumes the last session (no reset/zip).
+//   POST /internal/projects/{id}/edit
+export function projectEditUrl(projectId: string): string {
+  return `${API_BASE}/internal/projects/${encodeURIComponent(projectId)}/edit`;
+}
+
 // Operator-console snapshot (no auth): vitals, in-flight builds, queue,
 // projects, recent activity — polled by the dashboard.
 export function dashboardUrl(): string {
@@ -76,6 +85,14 @@ export function skillsUrl(): string {
 
 export function skillUrl(name: string): string {
   return `${API_BASE}/internal/skills/${encodeURIComponent(name)}`;
+}
+
+// Run Claude to improve/expand a skill's SKILL.md (no auth). Body:
+//   { "body": "<current SKILL.md>" } -> { "body": "<improved SKILL.md>" }
+// Does NOT save — the UI drops the result into the editor for review.
+//   POST /internal/skills/{name}/improve
+export function skillImproveUrl(name: string): string {
+  return `${API_BASE}/internal/skills/${encodeURIComponent(name)}/improve`;
 }
 
 // Upload a .zip of a skill folder (multipart/form-data, field "file"); the

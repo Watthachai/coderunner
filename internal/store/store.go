@@ -315,6 +315,26 @@ func (s *pgStore) NextQueuedJob(ctx context.Context, orgID uuid.UUID) (*domain.J
 	return j, nil
 }
 
+// LastSessionID returns the Claude session id of the project's most recent job
+// that carries a non-empty session_id, or "" when none exists. Used by an edit
+// build to --resume the project's prior Claude session.
+func (s *pgStore) LastSessionID(ctx context.Context, projectID uuid.UUID) (string, error) {
+	const q = `
+		SELECT session_id
+		FROM project_jobs
+		WHERE project_id = $1 AND session_id IS NOT NULL AND session_id <> ''
+		ORDER BY queued_at DESC
+		LIMIT 1`
+	var sid string
+	if err := s.pool.QueryRow(ctx, q, projectID).Scan(&sid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("store: last session id: %w", err)
+	}
+	return sid, nil
+}
+
 // QueueDepth counts jobs in JobQueued for a project.
 func (s *pgStore) QueueDepth(ctx context.Context, projectID uuid.UUID) (int, error) {
 	const q = `SELECT count(*) FROM project_jobs WHERE project_id = $1 AND status = 'queued'`

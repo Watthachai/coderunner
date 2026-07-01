@@ -27,6 +27,7 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,9 +39,77 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 )
+
+// improveTimeout bounds a one-shot Improve run so a hung `claude` invocation
+// cannot block the HTTP handler indefinitely.
+const improveTimeout = 120 * time.Second
+
+// improvePromptTemplate instructs Claude to improve and expand a Claude Agent
+// Skill SKILL.md. %s is the current SKILL.md body.
+const improvePromptTemplate = `You are an expert at authoring Claude Agent Skills. Improve and expand the following Claude Agent Skill SKILL.md. Make it more detailed, precise, and effective — clearer instructions, better structure, concrete guidance — while KEEPING the same skill name and intent and preserving valid YAML frontmatter (the leading '---' fenced block with name: and description:).
+
+Return ONLY the improved SKILL.md markdown. Do not add any preamble, explanation, or code fences around it.
+
+Current SKILL.md:
+
+%s`
+
+// Improve runs a one-shot `claude` invocation to improve and expand a Claude
+// Agent Skill SKILL.md. Unlike Run it does NOT stream stream-json — it captures
+// plain stdout with `claude -p <prompt> --dangerously-skip-permissions
+// [--model model]`, bounded by improveTimeout. It returns the trimmed stdout
+// (the improved SKILL.md). A non-zero exit or empty output is an error.
+func Improve(ctx context.Context, binPath, model, skillBody string, logger *slog.Logger) (string, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if binPath == "" {
+		return "", errors.New("claude: improve: empty bin path")
+	}
+	if strings.TrimSpace(skillBody) == "" {
+		return "", errors.New("claude: improve: empty skill body")
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, improveTimeout)
+	defer cancel()
+
+	prompt := fmt.Sprintf(improvePromptTemplate, skillBody)
+	args := []string{"-p", prompt, "--dangerously-skip-permissions"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+
+	cmd := exec.CommandContext(runCtx, binPath, args...)
+	// New process group so a cancel/timeout signals the whole tree, matching Run.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return killGroup(cmd, syscall.SIGKILL)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	log := logger.With("component", "claude.improve")
+	if err := cmd.Run(); err != nil {
+		errOut := strings.TrimSpace(stderr.String())
+		if ctxErr := runCtx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("claude: improve: %w: %s", ctxErr, errOut)
+		}
+		log.Warn("claude improve failed", "err", err, "stderr", errOut)
+		return "", fmt.Errorf("claude: improve: %w: %s", err, errOut)
+	}
+
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		return "", errors.New("claude: improve: empty output")
+	}
+	return out, nil
+}
 
 // maxLineBytes is the bufio.Scanner token cap. Claude Code can emit a single
 // JSON line carrying a whole file's contents (e.g. a Write tool_use), which

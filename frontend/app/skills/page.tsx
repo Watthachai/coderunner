@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   API_BASE,
+  skillImproveUrl,
   skillUploadUrl,
   skillUrl,
   skillVersionsUrl,
@@ -104,6 +105,9 @@ export default function SkillsPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [busy, setBusy] = useState(false);
+  // Runs Claude to expand the SKILL.md body — slow (10-60s), so tracked apart
+  // from `busy` and it disables the editor while in flight.
+  const [improving, setImproving] = useState(false);
   // Which extra file (path) is open in the FILES content editor, if any.
   const [openFile, setOpenFile] = useState<string | null>(null);
 
@@ -247,6 +251,41 @@ export default function SkillsPage() {
       });
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Ask the backend to run Claude and improve/expand the current SKILL.md body.
+  // Does NOT save: the returned body replaces the editor body for review, then
+  // the operator clicks Save. Slow (10-60s) — the whole editor is disabled.
+  async function improve() {
+    if (!draft) return;
+    const name = draft.name.trim();
+    if (name === "") {
+      setStatus({ kind: "err", text: "Name is required." });
+      return;
+    }
+    setImproving(true);
+    setStatus({ kind: "idle" });
+    try {
+      const res = await fetch(skillImproveUrl(name), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: draft.body }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as { body: string };
+      patchDraft({ body: json.body });
+      setStatus({
+        kind: "ok",
+        text: "Improved draft ready — review, then Save.",
+      });
+    } catch (e) {
+      setStatus({
+        kind: "err",
+        text: e instanceof Error ? e.message : "improve failed",
+      });
+    } finally {
+      setImproving(false);
     }
   }
 
@@ -510,7 +549,7 @@ export default function SkillsPage() {
                     value={draft.body}
                     placeholder="# my-skill&#10;&#10;Instructions for the build harness…"
                     spellCheck={false}
-                    disabled={busy}
+                    disabled={busy || improving}
                     onChange={(e) => patchDraft({ body: e.target.value })}
                   />
                 </label>
@@ -614,16 +653,24 @@ export default function SkillsPage() {
                   <button
                     type="button"
                     className="btn"
-                    disabled={busy}
+                    disabled={busy || improving}
                     onClick={() => void save()}
                   >
                     {draft.isNew ? "Create" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--ghost"
+                    disabled={busy || improving}
+                    onClick={() => void improve()}
+                  >
+                    {improving ? "improving…" : "✨ improve with AI"}
                   </button>
                   {!draft.isNew && !draft.is_builtin ? (
                     <button
                       type="button"
                       className="btn btn--ghost btn--danger"
-                      disabled={busy}
+                      disabled={busy || improving}
                       onClick={() => void remove()}
                     >
                       Delete

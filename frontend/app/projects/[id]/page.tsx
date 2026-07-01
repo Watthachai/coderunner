@@ -9,6 +9,7 @@
 import Link from "next/link";
 import { API_BASE } from "../../lib/config";
 import { ProjectTerminal } from "../../components/ProjectTerminal";
+import { RequestEdit } from "../../components/RequestEdit";
 
 export default async function ProjectTerminalPage(
   props: PageProps<"/projects/[id]">,
@@ -37,6 +38,8 @@ export default async function ProjectTerminalPage(
         <span className="term-idline-label">project</span>
         <code className="term-id">{id}</code>
       </div>
+
+      <RequestEdit projectId={id} />
 
       <div className="term-panel">
         <ProjectTerminal projectId={id} />

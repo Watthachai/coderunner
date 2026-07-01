@@ -1288,6 +1288,58 @@ body {
   word-break: break-all;
 }
 
+/* "request an edit" panel — sits above the terminal, mirrors .term-shell */
+.edit-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+
+.edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0.85rem;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.edit-bar-title {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-muted);
+}
+
+.edit-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem;
+}
+
+.edit-input {
+  min-height: 4.5rem;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.edit-link {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 /* the outer bordered panel filling the viewport */
 .term-panel {
   min-height: 70vh;
