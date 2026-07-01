@@ -37,7 +37,13 @@ func run() error {
 
 	logger := newLogger(cfg)
 	slog.SetDefault(logger)
-	logger.Info("starting CRN", "env", cfg.Environment, "addr", cfg.ListenAddr)
+	modelLabel := cfg.ClaudeModel
+	if modelLabel == "" {
+		modelLabel = "(cli default)"
+	}
+	logger.Info("starting CRN", "env", cfg.Environment, "addr", cfg.ListenAddr,
+		"run_claude", cfg.RunClaude, "claude_model", modelLabel,
+		"git_remote", cfg.GitRemote)
 
 	// Ensure the per-project working-dir root exists so file materialization and
 	// git pushes can write into it.
@@ -81,7 +87,7 @@ func run() error {
 
 	// --- Claude runner (spawns `claude --output-format stream-json`) ---
 	// TODO(claude): claude.NewRunner wires the binary path + projects dir.
-	runner := claude.NewRunner(cfg.ClaudeBinPath, cfg.ProjectsDir, logger)
+	runner := claude.NewRunner(cfg.ClaudeBinPath, cfg.ProjectsDir, cfg.ClaudeModel, logger)
 
 	// --- Job manager (queue + lifecycle + per-org advisory lock) ---
 	// jobs.NewManager composes store + runner + notifier and the build-step

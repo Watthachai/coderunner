@@ -609,6 +609,32 @@ body {
   text-overflow: ellipsis;
 }
 
+/* live-stream status tag beside the elapsed clock */
+.now-stream {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+}
+.now-stream--open {
+  color: var(--done);
+}
+.now-stream--connecting {
+  color: var(--queued);
+}
+.now-stream--error {
+  color: var(--error);
+}
+
+/* the live console sits inside the now-card; trim its height for the hero */
+.now-card .feed {
+  margin-top: 0.9rem;
+  max-height: 300px;
+}
+
 /* --- phase track (signature) --- */
 
 .track {

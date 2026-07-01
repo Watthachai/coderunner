@@ -5,6 +5,7 @@ import { useJobStream } from "../lib/useJobStream";
 import { useTick } from "../lib/useTick";
 import { formatElapsed } from "../lib/format";
 import { PhaseTrack, phaseRank } from "./PhaseTrack";
+import { EventFeed } from "./EventFeed";
 
 function BuildingCard({ job, nowMs }: { job: BuildingJob; nowMs: number }) {
   const stream = useJobStream(job.project_id, job.build_no, { enabled: true });
@@ -20,18 +21,6 @@ function BuildingCard({ job, nowMs }: { job: BuildingJob; nowMs: number }) {
     }
   }
   const terminal = stream.result !== null || stream.status === "closed";
-
-  // The most recent meaningful line to surface under the track.
-  const lastTool = [...stream.events]
-    .reverse()
-    .find((e) => e.event === "tool_call");
-  const lastText = [...stream.events]
-    .reverse()
-    .find((e) => e.event === "assistant_text" && e.text);
-  const line = lastTool
-    ? `▸ ${lastTool.tool ?? "tool"}${lastTool.file ? " " + lastTool.file : ""}`
-    : (lastText?.text?.slice(0, 140) ??
-      (stream.status === "open" ? "warming up…" : "connecting…"));
 
   return (
     <article className="now-card">
@@ -49,10 +38,17 @@ function BuildingCard({ job, nowMs }: { job: BuildingJob; nowMs: number }) {
 
       <div className="now-foot">
         <span className="now-clock">{formatElapsed(job.started_at, nowMs)}</span>
-        <span className="now-line" title={line}>
-          {line}
+        <span className={`now-stream now-stream--${stream.status}`}>
+          {stream.status === "open"
+            ? "● live"
+            : stream.status === "connecting"
+              ? "connecting…"
+              : stream.status}
         </span>
       </div>
+
+      {/* Live console: the full Claude Code stream (tool calls, text, results). */}
+      <EventFeed events={stream.events} />
     </article>
   );
 }

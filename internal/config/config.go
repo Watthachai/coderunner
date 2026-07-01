@@ -30,6 +30,11 @@ type Config struct {
 	// ClaudeBinPath is the absolute path to the `claude` CLI used to spawn runs.
 	ClaudeBinPath string
 
+	// ClaudeModel optionally pins the model the spawned `claude` uses via
+	// --model (e.g. "sonnet" for the latest Sonnet, or a full model id). Empty
+	// uses the CLI's default model.
+	ClaudeModel string
+
 	// DockerRegistryUser is the Docker Hub user image tags are pushed under:
 	// {DockerRegistryUser}/{project_id}:v{build_no}.
 	DockerRegistryUser string
@@ -81,6 +86,7 @@ func Load() (*Config, error) {
 		CentralDatabaseURL: os.Getenv("CRN_CENTRAL_DATABASE_URL"),
 		MongoURL:           getEnv("CRN_MONGO_URL", "mongodb://localhost:27017"),
 		ClaudeBinPath:      os.Getenv("CRN_CLAUDE_BIN"),
+		ClaudeModel:        os.Getenv("CRN_CLAUDE_MODEL"),
 		DockerRegistryUser: os.Getenv("CRN_DOCKER_USER"),
 		ProjectsDir:        getEnv("CRN_PROJECTS_DIR", "/projects"),
 		GitRemote:          os.Getenv("CRN_GIT_REMOTE"),

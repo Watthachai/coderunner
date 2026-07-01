@@ -717,8 +717,12 @@ func (s *server) streamJobLogsWS(w http.ResponseWriter, r *http.Request, project
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// TODO(crn): restrict OriginPatterns to the dashboard origin(s) in prod;
-		// the request host is always allowed by coder/websocket.
+		// The dashboard is served from a different origin/port (e.g. :3001) than
+		// the API (:8080), so the default same-origin check rejects the handshake
+		// with a 403. Skip it in dev to match devCORS.
+		// TODO(crn): set OriginPatterns to the known dashboard origin(s) in prod
+		// instead of skipping verification.
+		InsecureSkipVerify: true,
 	})
 	if err != nil {
 		// Accept already wrote an HTTP error response.

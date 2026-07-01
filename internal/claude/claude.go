@@ -52,6 +52,7 @@ const maxLineBytes = 16 << 20 // 16 MiB
 type runner struct {
 	binPath     string
 	projectsDir string
+	model       string // optional --model pin; empty = CLI default
 	logger      *slog.Logger
 }
 
@@ -59,8 +60,9 @@ type runner struct {
 var _ domain.ClaudeRunner = (*runner)(nil)
 
 // NewRunner returns a domain.ClaudeRunner backed by the `claude` CLI at binPath.
-// Signature is fixed by cmd/server/main.go.
-func NewRunner(binPath, projectsDir string, logger *slog.Logger) domain.ClaudeRunner {
+// model optionally pins --model (empty = the CLI default). Signature is wired by
+// cmd/server/main.go.
+func NewRunner(binPath, projectsDir, model string, logger *slog.Logger) domain.ClaudeRunner {
 	if logger == nil {
 		// Fail-fast convention: a nil logger is a wiring bug, not a runtime
 		// condition to paper over. main.go always passes a real logger.
@@ -69,6 +71,7 @@ func NewRunner(binPath, projectsDir string, logger *slog.Logger) domain.ClaudeRu
 	return &runner{
 		binPath:     binPath,
 		projectsDir: projectsDir,
+		model:       model,
 		logger:      logger,
 	}
 }
@@ -91,6 +94,9 @@ func (r *runner) Run(ctx context.Context, spec domain.RunSpec, emit func(domain.
 	}
 	if spec.ResumeSessionID != "" {
 		args = append(args, "--resume", spec.ResumeSessionID)
+	}
+	if r.model != "" {
+		args = append(args, "--model", r.model)
 	}
 
 	log := r.logger.With(

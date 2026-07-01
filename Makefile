@@ -4,8 +4,10 @@
 # Default local DSN matching docker-compose.yml (host port 5433 -> container 5432).
 DATABASE_URL ?= postgres://crn:crn_dev_password@localhost:5433/crn?sslmode=disable
 MIGRATIONS_DIR ?= migrations
+# Port the backend listens on (matches CRN_LISTEN_ADDR's default :8080).
+PORT ?= 8080
 
-.PHONY: help build run vet tidy test migrate db-up db-down fmt frontend-dev
+.PHONY: help build run stop restart vet tidy test migrate db-up db-down fmt frontend-dev
 
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -18,6 +20,17 @@ run: ## Run the Go backend (auto-loads .env if present).
 	@if [ -f .env ]; then set -a; . ./.env; set +a; else \
 		echo "warning: no .env found — run: cp .env.example .env"; fi; \
 	go run ./cmd/server
+
+stop: ## Stop the running backend (kills whatever listens on :$(PORT)).
+	@pid=$$(lsof -nP -tiTCP:$(PORT) -sTCP:LISTEN 2>/dev/null); \
+	if [ -n "$$pid" ]; then kill $$pid 2>/dev/null; sleep 1; \
+		pid=$$(lsof -nP -tiTCP:$(PORT) -sTCP:LISTEN 2>/dev/null); \
+		[ -n "$$pid" ] && kill -9 $$pid 2>/dev/null; echo "stopped :$(PORT)"; \
+	else echo "nothing listening on :$(PORT)"; fi
+
+restart: ## Stop any running backend, then run a fresh one (picks up .env + rebuild).
+	@$(MAKE) stop
+	@$(MAKE) run
 
 vet: ## go vet the whole module.
 	go vet ./...

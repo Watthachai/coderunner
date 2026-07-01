@@ -291,6 +291,16 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// git push targets the same directory.
 	workDir := filepath.Join(m.projectsDir, job.ProjectID.String())
 
+	// Reset the workspace so each build starts from a clean slate. Every build
+	// ships a full export, so stale artifacts from a prior build (old zips,
+	// extracted source, a previous .git) must not leak in — two leftover zips
+	// would make the harness ambiguous about which to extract.
+	if err := os.RemoveAll(workDir); err != nil {
+		log.Error("reset workspace failed", "err", err, "workdir", workDir)
+		m.finishFailed(ctx, job, "reset workspace failed: "+err.Error(), 0)
+		return
+	}
+
 	// --- materialize: write the incoming payload files to disk ---
 	spec := parsePayload(job.Payload)
 	m.publishPhase(job.ID, "materialize")
