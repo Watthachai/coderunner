@@ -40,3 +40,62 @@ export function PhaseTrack({
     </ol>
   );
 }
+
+// Short flight-plan captions for the pipeline stages — what CRN is actually
+// doing at each node, in the operator's vocabulary.
+const PHASE_CAPTION: Record<(typeof PHASES)[number], string> = {
+  materialize: "write files",
+  claude: "agent build",
+  git: "commit",
+  push: "publish",
+};
+
+/**
+ * PhasePipeline — the signature element. The same four stages as PhaseTrack,
+ * rendered as an illuminated flight conduit: a rail that fills as stages
+ * complete, big reactor nodes, and the active node pulsing under an accent
+ * halo. `progress` (0..1) drives the fill; derived here from `current`/`done`
+ * so a mid-build reconnect still reads correctly.
+ */
+export function PhasePipeline({
+  current,
+  done = false,
+}: {
+  current: number;
+  done?: boolean;
+}) {
+  const last = PHASES.length - 1;
+  // Fill reaches the center of the active node, or the far end when done.
+  const reached = done ? last : Math.max(0, Math.min(current, last));
+  const progress = done ? 1 : last === 0 ? 0 : reached / last;
+
+  return (
+    <div className="pipe" aria-label="build pipeline">
+      <div className="pipe-rail">
+        <div
+          className="pipe-fill"
+          style={{ width: `${(progress * 100).toFixed(2)}%` }}
+        />
+      </div>
+      <ol className="pipe-nodes">
+        {PHASES.map((p, i) => {
+          const state =
+            done || i < current
+              ? "done"
+              : i === current
+                ? "active"
+                : "pending";
+          return (
+            <li key={p} className={`node node--${state}`}>
+              <span className="node-core">
+                <span className="node-index">{i + 1}</span>
+              </span>
+              <span className="node-name">{p}</span>
+              <span className="node-caption">{PHASE_CAPTION[p]}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}

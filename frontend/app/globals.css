@@ -709,6 +709,569 @@ body {
   color: var(--accent);
 }
 
+/* ============================================================================
+   MISSION CONTROL — the build console (BuildConsole / PhasePipeline / HUD).
+   All the boldness lives here: a control-panel surface, an illuminated phase
+   conduit, live telemetry, and the CLAUDE STREAM terminal. Everything else on
+   the dashboard stays quiet. One accent (#64cefb). Motion is decorative and is
+   fully disabled under prefers-reduced-motion (see the guard at the bottom).
+   ========================================================================== */
+
+:root {
+  --mc-glow: rgba(100, 206, 251, 0.55);
+  --mc-glow-soft: rgba(100, 206, 251, 0.14);
+  --mc-well: #0a0c10;
+}
+
+.bc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+/* --- the console card (control-panel surface) --- */
+
+.bc {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.1rem 1.2rem 1.2rem;
+  /* faint blueprint grid + a top-lit gradient so the panel feels backlit */
+  background-color: #0d0f13;
+  background-image:
+    linear-gradient(180deg, rgba(100, 206, 251, 0.05), transparent 32%),
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    34px 34px,
+    34px 34px;
+}
+
+/* accent frame + halo while the build is live */
+.bc--live {
+  border-color: rgba(100, 206, 251, 0.42);
+  box-shadow:
+    0 0 0 1px rgba(100, 206, 251, 0.12),
+    0 0 44px -8px rgba(100, 206, 251, 0.28),
+    inset 0 1px 0 rgba(100, 206, 251, 0.08);
+}
+
+/* a single scanline sweeping the card, top to bottom, only when live */
+.bc-scan {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.bc--live .bc-scan {
+  opacity: 1;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(100, 206, 251, 0.09) 48%,
+    rgba(100, 206, 251, 0.16) 50%,
+    rgba(100, 206, 251, 0.09) 52%,
+    transparent
+  );
+  height: 42%;
+  bottom: auto;
+  animation: bc-scan 5.5s linear infinite;
+}
+
+@keyframes bc-scan {
+  0% {
+    transform: translateY(-120%);
+  }
+  100% {
+    transform: translateY(320%);
+  }
+}
+
+/* keep all content above the scanline/grid */
+.bc-head,
+.bc .hud,
+.bc .pipe,
+.bc .stream {
+  position: relative;
+  z-index: 1;
+}
+
+/* --- console header --- */
+
+.bc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.bc-id {
+  display: flex;
+  flex-direction: column;
+  gap: 0.16rem;
+  min-width: 0;
+}
+
+.bc-eyebrow {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--accent);
+}
+
+.bc-proj {
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bc-org {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--fg-dim);
+}
+
+.bc-build {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  white-space: nowrap;
+}
+
+/* --- TELEMETRY HUD --- */
+
+.hud {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, auto)) 1fr;
+  gap: 0.7rem;
+  align-items: stretch;
+  margin-bottom: 1.1rem;
+}
+
+.hud-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  background: rgba(10, 12, 16, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  min-width: 0;
+}
+
+.hud-cell--clock {
+  border-color: rgba(100, 206, 251, 0.28);
+  background: rgba(100, 206, 251, 0.04);
+}
+
+.hud-cell--now {
+  min-width: 0;
+  justify-content: center;
+}
+
+.hud-label {
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--fg-dim);
+}
+
+.hud-clock {
+  font-family: var(--mono);
+  font-size: 1.55rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 18px rgba(100, 206, 251, 0.4);
+}
+
+.hud-num {
+  font-family: var(--mono);
+  font-size: 1.55rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-current {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- illuminated PHASE PIPELINE (signature) --- */
+
+.pipe {
+  position: relative;
+  padding: 0.35rem 0 0.2rem;
+  margin-bottom: 1.15rem;
+}
+
+/* the conduit rail: unlit base + a fill that lights up as stages complete.
+   sits behind the nodes, vertically centered on the node cores (28px tall). */
+.pipe-rail {
+  position: absolute;
+  top: 14px;
+  left: 7%;
+  right: 7%;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--border),
+    rgba(255, 255, 255, 0.06)
+  );
+  overflow: hidden;
+}
+
+.pipe-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(100, 206, 251, 0.5), var(--accent));
+  box-shadow: 0 0 12px var(--mc-glow);
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+/* a light packet racing along the lit portion of the conduit */
+.pipe-fill::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.9),
+    transparent
+  );
+  animation: pipe-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pipe-pulse {
+  0% {
+    left: -40px;
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+
+.pipe-nodes {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  text-align: center;
+}
+
+.node-core {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: #0c0e12;
+  color: var(--fg-dim);
+  transition:
+    border-color 0.3s,
+    box-shadow 0.3s,
+    color 0.3s,
+    background 0.3s;
+}
+
+.node-index {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.node-name {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--fg-dim);
+  transition: color 0.3s;
+}
+
+.node-caption {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.03em;
+  color: transparent;
+  transition: color 0.3s;
+}
+
+/* done: core lit solid accent */
+.node--done .node-core {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #04222e;
+  box-shadow: 0 0 14px -1px var(--mc-glow);
+}
+.node--done .node-name {
+  color: var(--fg-muted);
+}
+
+/* active: haloed, pulsing reactor node — the eye lands here */
+.node--active .node-core {
+  border-color: var(--accent);
+  background: #0a1720;
+  color: var(--accent);
+  box-shadow:
+    0 0 0 4px var(--mc-glow-soft),
+    0 0 22px -2px var(--mc-glow);
+  animation: node-halo 1.7s ease-in-out infinite;
+}
+.node--active .node-name {
+  color: var(--accent);
+}
+.node--active .node-caption {
+  color: var(--fg-dim);
+}
+
+@keyframes node-halo {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 4px var(--mc-glow-soft),
+      0 0 22px -2px var(--mc-glow);
+  }
+  50% {
+    box-shadow:
+      0 0 0 7px rgba(100, 206, 251, 0.06),
+      0 0 30px 0 var(--mc-glow);
+  }
+}
+
+/* --- CLAUDE STREAM terminal (hero) --- */
+
+.stream {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--mc-well);
+}
+
+.bc--live .stream {
+  border-color: rgba(100, 206, 251, 0.24);
+}
+
+.stream-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.45rem 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--border);
+}
+
+.stream-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--fg-muted);
+}
+
+.stream-glyph {
+  color: var(--accent);
+}
+
+.stream-sid {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--fg-dim);
+  letter-spacing: 0.04em;
+}
+
+.stream-live {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.stream-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.stream-live--live {
+  color: var(--done);
+}
+.stream-live--live .stream-live-dot {
+  box-shadow: 0 0 8px var(--done);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.stream-live--connecting {
+  color: var(--queued);
+}
+.stream-live--connecting .stream-live-dot {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.stream-live--done {
+  color: var(--fg-dim);
+}
+
+/* the div xterm renders into */
+.stream-mount {
+  height: 340px;
+  padding: 0.5rem 0.5rem 0.35rem;
+}
+
+.stream-mount .xterm {
+  height: 100%;
+}
+
+.stream-mount .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.stream-mount .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.stream-mount .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+
+/* --- STANDBY (idle) — calm, with a dim reactor core --- */
+
+.standby {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 2.6rem 1rem 2.9rem;
+  text-align: center;
+}
+
+.reactor {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 0.4rem;
+}
+
+.reactor-core {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.55;
+  box-shadow: 0 0 16px var(--mc-glow);
+  animation: reactor-breathe 3.4s ease-in-out infinite;
+}
+
+.reactor-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(100, 206, 251, 0.25);
+  animation: reactor-breathe 3.4s ease-in-out infinite;
+}
+
+@keyframes reactor-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.04);
+  }
+}
+
+.standby-title {
+  margin: 0.2rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.standby-sub {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--fg-dim);
+}
+
+/* mission-control HUD stacks its readouts on narrow layouts */
+@media (max-width: 620px) {
+  .hud {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .hud-cell--now {
+    grid-column: 1 / -1;
+  }
+  .node-caption {
+    display: none;
+  }
+}
+
 /* --- incoming queue --- */
 
 .qlist {
@@ -926,8 +1489,19 @@ body {
   .idle-mark,
   .seg--active .seg-dot,
   .pill-dot--pulse,
-  .badge-dot--pulse {
+  .badge-dot--pulse,
+  .bc--live .bc-scan,
+  .pipe-fill::after,
+  .node--active .node-core,
+  .reactor-core,
+  .reactor-ring,
+  .stream-live--live .stream-live-dot,
+  .stream-live--connecting .stream-live-dot {
     animation: none;
+  }
+  /* the sweeping scanline is decorative-only; hide it entirely when reduced */
+  .bc--live .bc-scan {
+    display: none;
   }
 }
 
