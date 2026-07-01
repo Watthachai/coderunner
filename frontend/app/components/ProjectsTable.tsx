@@ -35,6 +35,7 @@ export function ProjectsTable({
                 <th>Org</th>
                 <th>Status</th>
                 <th>Build</th>
+                <th>Skills</th>
                 <th>Branch</th>
                 <th className="ta-right">Activity</th>
                 <th className="ta-right" />
@@ -61,6 +62,13 @@ export function ProjectsTable({
                   </td>
                   <td className="td-mono">
                     {p.current_build > 0 ? `#${p.current_build}` : "—"}
+                  </td>
+                  <td className="td-mono">
+                    {p.skill_count > 0 ? (
+                      `${p.skill_count} skill${p.skill_count === 1 ? "" : "s"}`
+                    ) : (
+                      <span className="td-dim">—</span>
+                    )}
                   </td>
                   <td>
                     <BranchCell branch={p.last_branch} remote={remote} />

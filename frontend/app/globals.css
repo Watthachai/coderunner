@@ -1432,3 +1432,144 @@ body {
     animation: none;
   }
 }
+
+/* ============================================================================
+   Skills: upload control, version history + line diff (midnight studio).
+   ========================================================================== */
+
+.skills-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* --- version history --- */
+
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
+}
+
+.ver-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ver-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.65rem;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ver-row:hover {
+  border-color: rgba(100, 206, 251, 0.3);
+}
+
+.ver-row--active {
+  border-color: var(--accent);
+  background: rgba(100, 206, 251, 0.06);
+}
+
+.ver-tag {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.ver-note {
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.ver-date {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+/* --- line diff --- */
+
+.ver-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.diff-caption {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+}
+
+.diff {
+  margin: 0;
+  background: #0c0c0e;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  max-height: 360px;
+  overflow: auto;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.diff span {
+  display: block;
+}
+
+.diff-add {
+  color: var(--done);
+  background: rgba(84, 217, 140, 0.08);
+}
+
+.diff-del {
+  color: var(--error);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.diff-ctx {
+  color: var(--fg-dim);
+}
+
+.diff-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-family: var(--mono);
+  font-size: 0.76rem;
+}

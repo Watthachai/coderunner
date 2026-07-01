@@ -91,6 +91,8 @@ export interface ProjectRow {
   last_status: JobStatus | "";
   last_branch: string;
   last_activity_at: string | null;
+  // Number of ENABLED skills — these apply to every build.
+  skill_count: number;
 }
 
 export interface ActivityRow {
@@ -123,4 +125,17 @@ export interface Skill {
   // SKILL.md itself stays in `body`; this map carries everything else.
   files: Record<string, string>;
   updated_at: string; // RFC3339
+}
+
+// A single recorded revision of a skill (GET /internal/skills/{name}/versions).
+// Every user-initiated change (PUT + upload) records one; builtin re-seed does
+// not. Newest first in the response.
+export interface SkillVersion {
+  version: number;
+  description: string;
+  body: string;
+  // Extra bundled files at this revision, keyed by relative path.
+  files: Record<string, string>;
+  note: string;
+  created_at: string; // RFC3339
 }

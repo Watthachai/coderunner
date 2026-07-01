@@ -58,11 +58,14 @@ type QueuedJob struct {
 // ProjectRow is one project with its registry state and a summary of its latest
 // job. The last_* fields are empty/null when the project has no jobs yet.
 type ProjectRow struct {
-	ID             uuid.UUID  `json:"id"`
-	Name           string     `json:"name"`
-	OrgName        string     `json:"org_name"`
-	Status         string     `json:"status"`
-	CurrentBuild   int        `json:"current_build"`
+	ID           uuid.UUID `json:"id"`
+	Name         string    `json:"name"`
+	OrgName      string    `json:"org_name"`
+	Status       string    `json:"status"`
+	CurrentBuild int       `json:"current_build"`
+	// SkillCount is the number of ENABLED skills. Enabled skills are injected into
+	// every build, so this is the same value for every project row.
+	SkillCount     int        `json:"skill_count"`
 	LastStatus     string     `json:"last_status"`
 	LastBranch     string     `json:"last_branch"`
 	LastActivityAt *time.Time `json:"last_activity_at"`

@@ -10,9 +10,11 @@
 //	GET    /healthz                                 -> store.Ping
 //	POST   /internal/trigger                        -> jm.HandleTrigger   (FTC DV signal)
 //	GET    /internal/skills                         -> store.ListSkills
+//	POST   /internal/skills/upload                  -> unzip + UpsertSkill + RecordSkillVersion
 //	GET    /internal/skills/{name}                  -> store.GetSkill
-//	PUT    /internal/skills/{name}                  -> store.UpsertSkill
+//	PUT    /internal/skills/{name}                  -> store.UpsertSkill + RecordSkillVersion
 //	DELETE /internal/skills/{name}                  -> store.DeleteSkill  (409 if built-in)
+//	GET    /internal/skills/{name}/versions         -> store.ListSkillVersions
 //	GET    /internal/projects/{id}/terminal         -> WebSocket: PTY shell in the project workdir (no auth)
 //	Route /api/v1 (group, apiKeyAuth):
 //	  POST /projects/{id}/edit-request              -> store.CreateEditRequest + jm.Enqueue
@@ -22,13 +24,17 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -125,9 +131,11 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	// bodies injected into every build; built-in skills are editable but not
 	// deletable.
 	r.Get("/internal/skills", s.handleListSkills)
+	r.Post("/internal/skills/upload", s.handleUploadSkill)
 	r.Get("/internal/skills/{name}", s.handleGetSkill)
 	r.Put("/internal/skills/{name}", s.handlePutSkill)
 	r.Delete("/internal/skills/{name}", s.handleDeleteSkill)
+	r.Get("/internal/skills/{name}/versions", s.handleListSkillVersions)
 
 	// Tenant-facing API, guarded by per-org API key.
 	r.Route("/api/v1", func(r chi.Router) {
@@ -333,7 +341,41 @@ func (s *server) handlePutSkill(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusInternalServerError, "upsert skill failed")
 		return
 	}
+	// Record a version snapshot of the resulting state (a user-initiated edit).
+	if err := s.store.RecordSkillVersion(r.Context(), name, "edited"); err != nil {
+		s.logger.Error("record skill version failed", "err", err, "name", name,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "record skill version failed")
+		return
+	}
 	s.writeJSON(w, r, http.StatusOK, skill)
+}
+
+// branchSlug turns a product name into a git-branch-safe slug (lowercase,
+// [a-z0-9] runs joined by single '-', trimmed, capped, fallback "project"). It
+// mirrors jobs.slugify so the branch advertised at ingest matches the one the
+// build actually pushes.
+func branchSlug(s string) string {
+	const maxLen = 40
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevDash = false
+		} else if !prevDash {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if len(slug) > maxLen {
+		slug = strings.Trim(slug[:maxLen], "-")
+	}
+	if slug == "" {
+		return "project"
+	}
+	return slug
 }
 
 // validSkillFilePath reports whether p is a safe relative path for a skill's
@@ -371,6 +413,236 @@ func (s *server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListSkillVersions returns a skill's version history newest-first as
+// {"versions":[...]}. An unknown skill yields an empty list (200).
+func (s *server) handleListSkillVersions(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	versions, err := s.store.ListSkillVersions(r.Context(), name)
+	if err != nil {
+		s.logger.Error("list skill versions failed", "err", err, "name", name,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "list skill versions failed")
+		return
+	}
+	if versions == nil {
+		versions = []*domain.SkillVersion{}
+	}
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"versions": versions})
+}
+
+// uploadMaxMemory bounds how much of a multipart upload is buffered in memory
+// before spilling to a temp file (16 MiB — a skill zip is small).
+const uploadMaxMemory = 16 << 20
+
+// handleUploadSkill accepts a multipart/form-data upload (field "file" = a .zip
+// of a skill folder) and installs it as an enabled, non-builtin skill. The zip
+// must contain a SKILL.md (top level or inside a single common top dir); its
+// content becomes the skill body and every OTHER file becomes an extra file
+// keyed by relative path. The skill name is resolved from the SKILL.md YAML
+// frontmatter "name:", falling back to the form "name" field, the zip's top
+// dir, then the zip filename — slugified to a valid [a-z0-9-] name. A version
+// snapshot ("uploaded") is recorded. Returns the persisted Skill (200).
+func (s *server) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(uploadMaxMemory); err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "missing 'file' upload")
+		return
+	}
+	defer file.Close()
+
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "could not read upload")
+		return
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid zip archive")
+		return
+	}
+
+	parsed, err := parseSkillZip(zr)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Resolve the name: frontmatter -> form "name" -> zip top dir -> zip filename.
+	name := parsed.frontmatterName
+	if name == "" {
+		name = r.FormValue("name")
+	}
+	if name == "" {
+		name = parsed.topDir
+	}
+	if name == "" {
+		name = strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
+	}
+	// branchSlug always yields a valid non-empty [a-z0-9-] name (fallback
+	// "project"), so the resulting skill name is always installable.
+	name = branchSlug(name)
+
+	skill := &domain.Skill{
+		Name:        name,
+		Description: parsed.description,
+		Body:        parsed.body,
+		Files:       parsed.files,
+		Enabled:     true,
+	}
+	if err := s.store.UpsertSkill(r.Context(), skill); err != nil {
+		s.logger.Error("upsert uploaded skill failed", "err", err, "name", name,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "upsert skill failed")
+		return
+	}
+	if err := s.store.RecordSkillVersion(r.Context(), name, "uploaded"); err != nil {
+		s.logger.Error("record uploaded skill version failed", "err", err, "name", name,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "record skill version failed")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, skill)
+}
+
+// parsedSkillZip is the extracted content of an uploaded skill zip.
+type parsedSkillZip struct {
+	body            string            // SKILL.md content
+	description     string            // parsed from the SKILL.md frontmatter "description:"
+	frontmatterName string            // parsed from the SKILL.md frontmatter "name:"
+	topDir          string            // the single common top-level dir, if any
+	files           map[string]string // every non-SKILL.md entry, relpath -> content
+}
+
+// parseSkillZip walks a zip archive, strips a single common top-level directory
+// prefix if present, treats the entry whose basename is "SKILL.md" as the skill
+// body (parsing its YAML frontmatter name/description), and collects every other
+// file into a relpath->content map. Paths that are absolute or contain ".." are
+// rejected. Returns an error when no SKILL.md is found.
+func parseSkillZip(zr *zip.Reader) (parsedSkillZip, error) {
+	var out parsedSkillZip
+	out.files = map[string]string{}
+
+	topDir := commonTopDir(zr)
+	out.topDir = topDir
+
+	foundSkillMD := false
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		// Normalize to forward slashes and strip the common top dir prefix.
+		rel := path.Clean(strings.ReplaceAll(f.Name, "\\", "/"))
+		if topDir != "" {
+			rel = strings.TrimPrefix(rel, topDir+"/")
+		}
+		if rel == "" || rel == "." {
+			continue
+		}
+		// Reject path traversal / absolute paths (defense in depth: these are the
+		// keys later written under the skill dir at build time).
+		if path.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, "../") {
+			return parsedSkillZip{}, errors.New("zip contains an unsafe path: " + f.Name)
+		}
+
+		content, err := readZipEntry(f)
+		if err != nil {
+			return parsedSkillZip{}, errors.New("could not read zip entry " + f.Name)
+		}
+
+		if path.Base(rel) == "SKILL.md" {
+			out.body = content
+			out.frontmatterName, out.description = parseSkillFrontmatter(content)
+			foundSkillMD = true
+			continue
+		}
+		out.files[rel] = content
+	}
+
+	if !foundSkillMD {
+		return parsedSkillZip{}, errors.New("zip has no SKILL.md")
+	}
+	return out, nil
+}
+
+// commonTopDir returns the single top-level directory shared by every entry in
+// the zip, or "" if entries live at more than one top level (or at the root).
+func commonTopDir(zr *zip.Reader) string {
+	top := ""
+	for _, f := range zr.File {
+		name := path.Clean(strings.ReplaceAll(f.Name, "\\", "/"))
+		if name == "" || name == "." {
+			continue
+		}
+		first := name
+		if i := strings.IndexByte(name, '/'); i >= 0 {
+			first = name[:i]
+		} else if !f.FileInfo().IsDir() {
+			// A file at the root -> no common top dir.
+			return ""
+		}
+		if top == "" {
+			top = first
+		} else if top != first {
+			return ""
+		}
+	}
+	return top
+}
+
+// readZipEntry reads one zip entry's full content as a string.
+func readZipEntry(f *zip.File) (string, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// parseSkillFrontmatter extracts "name:" and "description:" from a SKILL.md YAML
+// frontmatter block (the leading "---" fenced section). Missing fields yield "".
+func parseSkillFrontmatter(body string) (name, description string) {
+	lines := strings.Split(body, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return "", ""
+	}
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) == "---" {
+			break
+		}
+		if v, ok := frontmatterValue(line, "name"); ok {
+			name = v
+		}
+		if v, ok := frontmatterValue(line, "description"); ok {
+			description = v
+		}
+	}
+	return name, description
+}
+
+// frontmatterValue parses a "key: value" frontmatter line, returning the trimmed
+// (optionally quote-stripped) value when the key matches.
+func frontmatterValue(line, key string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	prefix := key + ":"
+	if !strings.HasPrefix(trimmed, prefix) {
+		return "", false
+	}
+	v := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+	v = strings.Trim(v, `"'`)
+	return v, true
 }
 
 // triggerBody is the FTC DV signal payload for POST /internal/trigger.
@@ -527,7 +799,7 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		"build_no":   job.BuildNo,
 		"org_id":     orgID,
 		"git_remote": s.gitRemote,
-		"git_branch": "crn/" + projectID.String(),
+		"git_branch": "crn/" + branchSlug(body.Name) + "-" + projectID.String()[:8],
 		"status":     job.Status,
 	})
 }

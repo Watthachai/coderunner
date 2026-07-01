@@ -78,6 +78,19 @@ export function skillUrl(name: string): string {
   return `${API_BASE}/internal/skills/${encodeURIComponent(name)}`;
 }
 
+// Upload a .zip of a skill folder (multipart/form-data, field "file"); the
+// server unzips, parses SKILL.md, upserts, and records a version.
+//   POST /internal/skills/upload
+export function skillUploadUrl(): string {
+  return `${API_BASE}/internal/skills/upload`;
+}
+
+// Version history for a skill, newest first.
+//   GET /internal/skills/{name}/versions
+export function skillVersionsUrl(name: string): string {
+  return `${API_BASE}/internal/skills/${encodeURIComponent(name)}/versions`;
+}
+
 // Optional: the git remote builds are pushed to. When set, project branches
 // in the table link to GitHub. Empty -> branches render as plain text.
 export const GIT_REMOTE = process.env.NEXT_PUBLIC_CRN_GIT_REMOTE ?? "";

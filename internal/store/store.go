@@ -458,8 +458,11 @@ func (s *pgStore) dashboardQueue(ctx context.Context, snap *domain.DashboardSnap
 // most recent job (by queued_at); last_* are empty/null when there is no job.
 // last_activity_at prefers finished_at, falling back to queued_at.
 func (s *pgStore) dashboardProjects(ctx context.Context, snap *domain.DashboardSnapshot) error {
+	// skill_count is a single scalar (count of enabled skills, which apply to
+	// every build) computed once via a subquery and broadcast to each row.
 	const q = `
 		SELECT p.id, p.name, o.name, p.status, p.current_build,
+		       (SELECT count(*) FROM skills WHERE enabled) AS skill_count,
 		       COALESCE(lj.status, ''),
 		       COALESCE(lj.docker_tag, ''),
 		       COALESCE(lj.finished_at, lj.queued_at)
@@ -484,6 +487,7 @@ func (s *pgStore) dashboardProjects(ctx context.Context, snap *domain.DashboardS
 		var lastDockerTag string
 		if err := rows.Scan(
 			&pr.ID, &pr.Name, &pr.OrgName, &pr.Status, &pr.CurrentBuild,
+			&pr.SkillCount,
 			&pr.LastStatus, &lastDockerTag, &pr.LastActivityAt,
 		); err != nil {
 			return fmt.Errorf("store: dashboard projects scan: %w", err)
@@ -739,6 +743,66 @@ func (s *pgStore) EnsureBuiltinSkill(ctx context.Context, sk *domain.Skill) erro
 		return fmt.Errorf("store: ensure builtin skill: %w", err)
 	}
 	return nil
+}
+
+// RecordSkillVersion snapshots the skill's CURRENT persisted row into
+// skill_versions at the next version number (COALESCE(max,0)+1), tagged with
+// note. A single INSERT ... SELECT reads the live skills row and the running
+// max version together so the recorded snapshot is exactly the current state.
+// Returns domain.ErrNotFound when the skill does not exist.
+func (s *pgStore) RecordSkillVersion(ctx context.Context, name, note string) error {
+	const q = `
+		INSERT INTO skill_versions (skill_name, version, description, body, files, note)
+		SELECT
+			s.name,
+			COALESCE((SELECT max(v.version) FROM skill_versions v WHERE v.skill_name = s.name), 0) + 1,
+			s.description, s.body, s.files, $2
+		FROM skills s
+		WHERE s.name = $1`
+	tag, err := s.pool.Exec(ctx, q, name, note)
+	if err != nil {
+		return mapErr(err, "store: record skill version")
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: record skill version %q: %w", name, domain.ErrNotFound)
+	}
+	return nil
+}
+
+// ListSkillVersions returns a skill's version history, newest first. An unknown
+// skill simply yields an empty slice (no error) — the caller distinguishes a
+// missing skill via GetSkill if needed.
+func (s *pgStore) ListSkillVersions(ctx context.Context, name string) ([]*domain.SkillVersion, error) {
+	const q = `
+		SELECT version, description, body, files, note, created_at
+		FROM skill_versions
+		WHERE skill_name = $1
+		ORDER BY version DESC`
+	rows, err := s.pool.Query(ctx, q, name)
+	if err != nil {
+		return nil, fmt.Errorf("store: list skill versions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*domain.SkillVersion
+	for rows.Next() {
+		v := &domain.SkillVersion{}
+		var files map[string]string
+		if err := rows.Scan(
+			&v.Version, &v.Description, &v.Body, &files, &v.Note, &v.CreatedAt,
+		); err != nil {
+			return nil, mapErr(err, "store: scan skill version")
+		}
+		if files == nil {
+			files = map[string]string{}
+		}
+		v.Files = files
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list skill versions: %w", err)
+	}
+	return out, nil
 }
 
 // --- Per-org advisory lock --------------------------------------------------

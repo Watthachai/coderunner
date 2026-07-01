@@ -21,3 +21,16 @@ type Skill struct {
 	IsBuiltin bool              `json:"is_builtin"`
 	UpdatedAt time.Time         `json:"updated_at"`
 }
+
+// SkillVersion is a point-in-time snapshot of a skill, recorded on every
+// user-initiated change (an operator edit via PUT or a zip upload). It captures
+// the resulting state so history can be browsed. Builtin re-seeds on startup do
+// NOT record versions.
+type SkillVersion struct {
+	Version     int               `json:"version"`
+	Description string            `json:"description"`
+	Body        string            `json:"body"`
+	Files       map[string]string `json:"files"`
+	Note        string            `json:"note"`
+	CreatedAt   time.Time         `json:"created_at"`
+}

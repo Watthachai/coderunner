@@ -377,11 +377,16 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 
 	// --- success: git commit + force-push the build branch ---
-	branch := "crn/" + job.ProjectID.String()
+	// A meaningful branch name derived from the product name + a short project id,
+	// e.g. "crn/expenseflow-70d7409b" instead of the raw "crn/<uuid>".
+	branch := "crn/" + slugify(spec.Name) + "-" + job.ProjectID.String()[:8]
 	if m.gitRemote != "" {
 		m.publishPhase(job.ID, "git")
 		m.publishPhase(job.ID, "push")
-		msg := fmt.Sprintf("crn: build %d for project %s", job.BuildNo, job.ProjectID)
+		msg := fmt.Sprintf("crn: build %d — %s", job.BuildNo, spec.Name)
+		if spec.Name == "" {
+			msg = fmt.Sprintf("crn: build %d — %s", job.BuildNo, job.ProjectID)
+		}
 		commit, err := buildstep.GitCommitAndPush(ctx, workDir, m.gitRemote, branch, msg, m.logger)
 		if err != nil {
 			log.Error("git push failed", "err", err)
@@ -570,6 +575,34 @@ func harnessPrompt(spec payloadSpec) string {
 	)
 }
 
+// slugify turns a product name into a git-branch-safe slug: lowercase, keeping
+// only [a-z0-9]; every other run of characters collapses to a single '-';
+// leading/trailing '-' are trimmed and the result is capped at ~40 chars. A
+// name that yields nothing (e.g. Thai-only text) falls back to "project" so the
+// branch is never empty.
+func slugify(s string) string {
+	const maxLen = 40
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevDash = false
+		} else if !prevDash {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if len(slug) > maxLen {
+		slug = strings.Trim(slug[:maxLen], "-")
+	}
+	if slug == "" {
+		return "project"
+	}
+	return slug
+}
+
 // --- internal: payload + event translation helpers -------------------------
 
 // payloadSpec is the parsed view of a job payload the build needs: the files to
@@ -578,6 +611,7 @@ func harnessPrompt(spec payloadSpec) string {
 // edit-request shapes).
 type payloadSpec struct {
 	Files  []buildstep.FileEntry
+	Name   string
 	Idea   string
 	BRD    string
 	PRD    string
@@ -589,6 +623,7 @@ type payloadSpec struct {
 // strict decode happens at the API boundary). The prototype arrives as one
 // base64 zip, not a file array.
 type ingestPayload struct {
+	Name      string   `json:"name"`
 	Idea      string   `json:"idea"`
 	BRD       string   `json:"brd"`
 	PRD       string   `json:"prd"`
@@ -607,6 +642,7 @@ func parsePayload(payload json.RawMessage) payloadSpec {
 	_ = json.Unmarshal(payload, &p) // best-effort; an unknown shape yields zero values
 
 	var spec payloadSpec
+	spec.Name = p.Name
 	spec.Idea = p.Idea
 	spec.BRD = p.BRD
 	spec.PRD = p.PRD

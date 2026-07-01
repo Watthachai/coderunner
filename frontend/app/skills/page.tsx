@@ -5,11 +5,17 @@
 // edits each SKILL.md body. List on the left, editor on the right. Built-in
 // skills are editable but not deletable. Mutations PUT/DELETE then refresh().
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { API_BASE, skillUrl } from "../lib/config";
+import {
+  API_BASE,
+  skillUploadUrl,
+  skillUrl,
+  skillVersionsUrl,
+} from "../lib/config";
 import { useSkills } from "../lib/useSkills";
-import type { Skill } from "../lib/types";
+import type { Skill, SkillVersion } from "../lib/types";
+import { fileChanges, lineDiff } from "../lib/linediff";
 
 type Status =
   | { kind: "idle" }
@@ -71,6 +77,26 @@ function formatUpdated(iso: string): string {
   return d.toLocaleString("en-GB", { hour12: false });
 }
 
+// Short relative label for a version's created_at (e.g. "3h ago", "2d ago").
+// Falls back to a compact date past a week.
+function formatShortDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const secs = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (secs < 60) return "just now";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 export default function SkillsPage() {
   const { skills, error, loading, refresh } = useSkills();
 
@@ -80,6 +106,12 @@ export default function SkillsPage() {
   const [busy, setBusy] = useState(false);
   // Which extra file (path) is open in the FILES content editor, if any.
   const [openFile, setOpenFile] = useState<string | null>(null);
+
+  // Version history for the selected skill (newest first) + which version is
+  // expanded in the DIFF view. `null` selectedVer collapses the diff.
+  const [versions, setVersions] = useState<SkillVersion[]>([]);
+  const [selectedVer, setSelectedVer] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Auto-select the first skill once the list arrives and nothing is open.
   useEffect(() => {
@@ -96,6 +128,29 @@ export default function SkillsPage() {
     () => (draft && !draft.isNew ? draft.name : null),
     [draft],
   );
+
+  // Load the version history for a given skill name. Clears on failure so a
+  // stale list from a previous skill never lingers.
+  const loadVersions = useCallback(async (name: string) => {
+    try {
+      const res = await fetch(skillVersionsUrl(name), { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as { versions: SkillVersion[] };
+      setVersions(json.versions);
+    } catch {
+      setVersions([]);
+    }
+  }, []);
+
+  // Fetch versions whenever the selected (persisted) skill changes.
+  useEffect(() => {
+    setSelectedVer(null);
+    if (selectedName === null) {
+      setVersions([]);
+      return;
+    }
+    void loadVersions(selectedName);
+  }, [selectedName, loadVersions]);
 
   function openSkill(s: Skill) {
     setSelected(s.name);
@@ -183,6 +238,7 @@ export default function SkillsPage() {
       setSelected(saved.name);
       setDraft(draftFromSkill(saved));
       setOpenFile(null);
+      await loadVersions(saved.name);
       setStatus({ kind: "ok", text: `Saved "${saved.name}".` });
     } catch (e) {
       setStatus({
@@ -252,6 +308,63 @@ export default function SkillsPage() {
     }
   }
 
+  // Upload a .zip of a skill folder; the server unzips + parses SKILL.md, then
+  // returns the resulting Skill. Refresh the list and select the upload.
+  async function uploadZip(file: File) {
+    setBusy(true);
+    setStatus({ kind: "idle" });
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(skillUploadUrl(), {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const saved = (await res.json()) as Skill;
+      await refresh();
+      setSelected(saved.name);
+      setDraft(draftFromSkill(saved));
+      setOpenFile(null);
+      await loadVersions(saved.name);
+      setStatus({ kind: "ok", text: `Uploaded "${saved.name}".` });
+    } catch (e) {
+      setStatus({
+        kind: "err",
+        text: e instanceof Error ? e.message : "upload failed",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset the input so re-picking the same file fires change again.
+    e.target.value = "";
+    if (file) void uploadZip(file);
+  }
+
+  // The version currently expanded in the diff view, if any.
+  const activeVersion = useMemo(
+    () =>
+      selectedVer === null
+        ? null
+        : (versions.find((v) => v.version === selectedVer) ?? null),
+    [selectedVer, versions],
+  );
+
+  // Diff the selected historical version (old) against the current editor body
+  // (new) — this shows what the working copy would change relative to that
+  // revision. File add/remove is compared the same direction.
+  const diff = useMemo(() => {
+    if (activeVersion === null || draft === null) return null;
+    return {
+      lines: lineDiff(activeVersion.body, draft.body),
+      files: fileChanges(activeVersion.files, draft.files),
+    };
+  }, [activeVersion, draft]);
+
   return (
     <main className="console">
       <header className="page-head">
@@ -285,14 +398,39 @@ export default function SkillsPage() {
         <section className="panel">
           <div className="panel-head">
             <h2>skills</h2>
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={openNew}
-            >
-              + new skill
-            </button>
+            <div className="skills-head-actions">
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                disabled={busy}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                ⬆ upload zip
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={openNew}
+              >
+                + new skill
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip"
+                hidden
+                onChange={onFilePicked}
+              />
+            </div>
           </div>
+
+          {/* Upload feedback stays visible even when no skill is selected. */}
+          {draft === null && status.kind === "err" ? (
+            <p className="alert">{status.text}</p>
+          ) : null}
+          {draft === null && status.kind === "ok" ? (
+            <p className="notice">{status.text}</p>
+          ) : null}
 
           {skills.length === 0 && !loading ? (
             <p className="empty">No skills yet. Create one →</p>
@@ -492,6 +630,97 @@ export default function SkillsPage() {
                     </button>
                   ) : null}
                 </div>
+
+                {!draft.isNew ? (
+                  <section className="history">
+                    <div className="files-head">
+                      <span className="field-label">history</span>
+                      <span className="editor-meta">
+                        {versions.length} version
+                        {versions.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+
+                    {versions.length === 0 ? (
+                      <p className="files-empty">No recorded versions yet.</p>
+                    ) : (
+                      <ul className="ver-list scroll-thin">
+                        {versions.map((v) => {
+                          const open = v.version === selectedVer;
+                          return (
+                            <li key={v.version}>
+                              <button
+                                type="button"
+                                className={`ver-row${
+                                  open ? " ver-row--active" : ""
+                                }`}
+                                onClick={() =>
+                                  setSelectedVer(open ? null : v.version)
+                                }
+                              >
+                                <span className="ver-tag">v{v.version}</span>
+                                <span className="ver-note">
+                                  {v.note || "—"}
+                                </span>
+                                <span className="ver-date">
+                                  {formatShortDate(v.created_at)}
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+
+                    {activeVersion !== null && diff !== null ? (
+                      <div className="ver-diff">
+                        <p className="diff-caption">
+                          diff · v{activeVersion.version} → current editor body
+                        </p>
+                        <pre className="diff mono scroll-thin">
+                          {diff.lines.map((ln, i) => (
+                            <span
+                              key={i}
+                              className={
+                                ln.kind === "add"
+                                  ? "diff-add"
+                                  : ln.kind === "del"
+                                    ? "diff-del"
+                                    : "diff-ctx"
+                              }
+                            >
+                              {ln.kind === "add"
+                                ? "+ "
+                                : ln.kind === "del"
+                                  ? "- "
+                                  : "  "}
+                              {ln.text}
+                              {"\n"}
+                            </span>
+                          ))}
+                        </pre>
+
+                        {diff.files.added.length > 0 ||
+                        diff.files.removed.length > 0 ? (
+                          <ul className="diff-files">
+                            {diff.files.added.map((p) => (
+                              <li key={`a-${p}`} className="diff-add">
+                                + {p}
+                              </li>
+                            ))}
+                            {diff.files.removed.map((p) => (
+                              <li key={`r-${p}`} className="diff-del">
+                                - {p}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="files-empty">No file changes.</p>
+                        )}
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
               </div>
             </>
           )}

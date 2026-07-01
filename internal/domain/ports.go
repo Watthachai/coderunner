@@ -86,6 +86,14 @@ type Store interface {
 	DeleteSkill(ctx context.Context, name string) error
 	EnsureBuiltinSkill(ctx context.Context, s *Skill) error
 
+	// RecordSkillVersion snapshots the skill's CURRENT persisted row into
+	// skill_versions at version = COALESCE(max,0)+1, tagged with note (e.g.
+	// "edited" or "uploaded"). Called after every user-initiated change; never
+	// from EnsureBuiltinSkill.
+	RecordSkillVersion(ctx context.Context, name, note string) error
+	// ListSkillVersions returns a skill's version history, newest first.
+	ListSkillVersions(ctx context.Context, name string) ([]*SkillVersion, error)
+
 	// --- Dashboard (operator console read model) ---
 	// DashboardSnapshot returns a single point-in-time read model for the
 	// operator console: vitals (counts), the in-flight builds, the FIFO queue,
