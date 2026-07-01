@@ -1355,10 +1355,18 @@ func (s *server) streamJobLogsWS(w http.ResponseWriter, r *http.Request, project
 	// CloseNow on any abnormal exit; the normal-path close is issued below.
 	defer conn.CloseNow()
 
-	events, unsubscribe := s.jm.Subscribe(r.Context(), jobID)
+	history, events, unsubscribe := s.jm.Subscribe(r.Context(), jobID)
 	defer unsubscribe()
 
 	ctx := r.Context()
+	// Replay buffered history first so a client that connects or refreshes
+	// mid-build sees what already happened instead of a blank console.
+	for _, msg := range history {
+		if err := wsjson.Write(ctx, conn, msg); err != nil {
+			s.logger.Warn("ws replay write failed", "err", err, "job_id", jobID)
+			return
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():

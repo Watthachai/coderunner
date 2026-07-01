@@ -163,9 +163,11 @@ type JobManager interface {
 	Cancel(ctx context.Context, jobID uuid.UUID) error
 
 	// Subscribe registers a live listener for normalized build events of a job
-	// (used by the WebSocket handler). The returned channel is closed when the
-	// job finishes or ctx is cancelled; unsubscribe via the returned func.
-	Subscribe(ctx context.Context, jobID uuid.UUID) (<-chan BuildEventMsg, func())
+	// (used by the WebSocket handler). It returns the buffered history so far
+	// (replayed to a client that connects/refreshes mid-build) plus a live
+	// channel that is closed when the job finishes or ctx is cancelled;
+	// unsubscribe via the returned func.
+	Subscribe(ctx context.Context, jobID uuid.UUID) (history []BuildEventMsg, events <-chan BuildEventMsg, unsubscribe func())
 
 	// Status returns the read model for a project's current/last job.
 	Status(ctx context.Context, projectID uuid.UUID) (*ProjectStatusView, error)

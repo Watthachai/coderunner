@@ -47,6 +47,11 @@ import (
 // best-effort live telemetry.
 const subscriberBuffer = 64
 
+// historyCap bounds the per-job replay buffer of live events. A WS that connects
+// or refreshes mid-build is sent this history first so the console shows what
+// already happened instead of a blank "waiting…" state.
+const historyCap = 3000
+
 // manager is the concrete domain.JobManager. It is unexported; callers receive
 // it through the domain.JobManager interface from NewManager.
 type manager struct {
@@ -70,7 +75,8 @@ type manager struct {
 	runClaude bool
 
 	mu   sync.Mutex
-	subs map[uuid.UUID][]*subscriber // jobID -> live listeners
+	subs map[uuid.UUID][]*subscriber          // jobID -> live listeners
+	hist map[uuid.UUID][]domain.BuildEventMsg // jobID -> capped replay buffer
 }
 
 // subscriber is one live WebSocket listener for a job's normalized events.
@@ -112,6 +118,7 @@ func NewManager(
 		gitRemote:   gitRemote,
 		githubOwner: githubOwner,
 		repoPrivate: repoPrivate,
+		hist:        make(map[uuid.UUID][]domain.BuildEventMsg),
 		runClaude:   runClaude,
 		subs:        make(map[uuid.UUID][]*subscriber),
 	}
@@ -188,10 +195,13 @@ func (m *manager) Cancel(ctx context.Context, jobID uuid.UUID) error {
 // Subscribe registers a live listener for normalized build events of a job. The
 // returned channel is closed when the job finishes (via closeSubscribers) or
 // when the returned unsubscribe func is called. Unsubscribe is idempotent.
-func (m *manager) Subscribe(ctx context.Context, jobID uuid.UUID) (<-chan domain.BuildEventMsg, func()) {
+func (m *manager) Subscribe(ctx context.Context, jobID uuid.UUID) ([]domain.BuildEventMsg, <-chan domain.BuildEventMsg, func()) {
 	sub := &subscriber{ch: make(chan domain.BuildEventMsg, subscriberBuffer)}
 
 	m.mu.Lock()
+	// Snapshot the replay buffer and register the subscriber atomically so no
+	// event is missed or duplicated between the snapshot and going live.
+	history := append([]domain.BuildEventMsg(nil), m.hist[jobID]...)
 	m.subs[jobID] = append(m.subs[jobID], sub)
 	m.mu.Unlock()
 
@@ -204,7 +214,7 @@ func (m *manager) Subscribe(ctx context.Context, jobID uuid.UUID) (<-chan domain
 		unsubscribe()
 	}()
 
-	return sub.ch, unsubscribe
+	return history, sub.ch, unsubscribe
 }
 
 // Status returns the read model for a project's current/last job.
@@ -576,6 +586,12 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 func (m *manager) publish(jobID uuid.UUID, msg domain.BuildEventMsg) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Buffer for replay so a WS connecting/refreshing mid-build sees history.
+	h := append(m.hist[jobID], msg)
+	if len(h) > historyCap {
+		h = append([]domain.BuildEventMsg(nil), h[len(h)-historyCap:]...)
+	}
+	m.hist[jobID] = h
 	for _, sub := range m.subs[jobID] {
 		if sub.closed {
 			continue
@@ -597,6 +613,7 @@ func (m *manager) closeSubscribers(jobID uuid.UUID) {
 		sub.closeLocked()
 	}
 	delete(m.subs, jobID)
+	delete(m.hist, jobID)
 }
 
 // removeSubscriber drops a single subscriber (explicit unsubscribe / ctx done)
