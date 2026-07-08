@@ -68,13 +68,18 @@ const (
 // WebSocket (CRN-architecture.md §7 — the translated form). The store/notifier
 // persistence type is BuildEvent; this is the wire/live type.
 type BuildEventMsg struct {
-	Kind      WSEventKind `json:"event"`
-	Tool      string      `json:"tool,omitempty"`
-	File      string      `json:"file,omitempty"`
-	Text      string      `json:"text,omitempty"`
-	Phase     string      `json:"phase,omitempty"`
-	CostUSD   float64     `json:"cost_usd,omitempty"`
-	SessionID string      `json:"session_id,omitempty"`
-	JobID     string      `json:"job_id,omitempty"`
-	Timestamp time.Time   `json:"timestamp"`
+	Kind WSEventKind `json:"event"`
+	Tool string      `json:"tool,omitempty"`
+	File string      `json:"file,omitempty"`
+	Text string      `json:"text,omitempty"`
+	// Before/After carry the code a Write/Edit tool call produced so the GUI can
+	// render a diff: Write sets After (the new file); Edit sets both (old->new).
+	// Empty for non-file tools. Size-capped to keep events/traces bounded.
+	Before    string    `json:"before,omitempty"`
+	After     string    `json:"after,omitempty"`
+	Phase     string    `json:"phase,omitempty"`
+	CostUSD   float64   `json:"cost_usd,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
+	JobID     string    `json:"job_id,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }

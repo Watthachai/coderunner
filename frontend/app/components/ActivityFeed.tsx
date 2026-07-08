@@ -1,8 +1,9 @@
 import type { ActivityRow } from "../lib/types";
 import { formatClock } from "../lib/format";
 
+// Status color is information: started=blue, done=green, failed=red.
 const TONE: Record<string, string> = {
-  build_started: "var(--accent)",
+  build_started: "var(--building)",
   build_done: "var(--done)",
   build_failed: "var(--error)",
 };

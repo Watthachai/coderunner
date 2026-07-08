@@ -30,6 +30,10 @@ export interface BuildEventMsg {
   tool?: string;
   file?: string;
   text?: string;
+  // Code a Write/Edit tool call produced, for the diff view: Write sets `after`
+  // (new file); Edit sets both (old->new). Absent for non-file tools.
+  before?: string;
+  after?: string;
   phase?: string;
   cost_usd?: number;
   session_id?: string;
@@ -124,6 +128,43 @@ export interface DashboardSnapshot {
   generated_at: string;
 }
 
+// --- build traces (durable per-build state history) ---
+// Mirrors internal/domain.BuildTrace (job_traces table). The live WS stream is
+// discarded when a build ends; a BuildTrace is the persisted snapshot for the
+// retroactive "state trace" view. `events` is populated only by the single-trace
+// read (GET /internal/jobs/{id}/trace); list reads (recent / per-project builds)
+// return it as [].
+
+export interface BuildTrace {
+  job_id: string;
+  project_id: string;
+  build_no: number;
+  outcome: JobStatus | string; // "done" | "failed" | "cancelled"
+  mode: string; // "build" | "edit"
+  commit_sha: string;
+  branch: string;
+  remote: string;
+  session_id: string;
+  cost_usd: number;
+  tool_count: number;
+  file_count: number;
+  error_msg: string;
+  events: BuildEventMsg[]; // full stream on detail read; [] on list reads
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+// GET /internal/traces           -> { traces: BuildTrace[] }  (summary, no events)
+// GET /internal/projects/{id}/builds -> { builds: BuildTrace[] } (summary, no events)
+// GET /internal/jobs/{id}/trace  -> BuildTrace                 (with events)
+export interface RecentTracesResponse {
+  traces: BuildTrace[];
+}
+export interface ProjectBuildsResponse {
+  builds: BuildTrace[];
+}
+
 // --- skill management (GET/PUT/DELETE /internal/skills) ---
 // Mirrors the `skills` table: harness Agent Skills injected into every build.
 
@@ -149,5 +190,51 @@ export interface SkillVersion {
   // Extra bundled files at this revision, keyed by relative path.
   files: Record<string, string>;
   note: string;
+  created_at: string; // RFC3339
+}
+
+// --- in-demo feedback loop (edit-request contract) ---
+// The shape a CRN-built demo's feedback widget submits and the CRN Edit Request
+// Panel consumes. Mirrors the planned `feedback_requests` table (see
+// docs/superpowers/specs/2026-07-07-feedback-loop-design.md). Frontend-first for
+// the mock intake slice; a Go domain mirror + Supabase table follow.
+
+export type FeedbackCategory = "bug" | "feature" | "style";
+export type FeedbackPriority = "low" | "med" | "high";
+export type FeedbackStatus =
+  | "new"
+  | "reviewing"
+  | "approved"
+  | "building"
+  | "done"
+  | "rejected";
+
+// One element the reporter pinned on the live page: a stable selector, the
+// bounding box, a captured region screenshot, and what they want changed.
+export interface FeedbackPin {
+  selector: string;
+  label: string;
+  note: string;
+  box: { x: number; y: number; w: number; h: number };
+  region_shot: string; // storage path / URL (data URI in the mock)
+}
+
+export interface FeedbackPayload {
+  pins: FeedbackPin[];
+  full_shot: string; // full-page screenshot
+  viewport: { w: number; h: number };
+  user_agent: string;
+}
+
+export interface FeedbackRequest {
+  id: string;
+  project_id: string;
+  status: FeedbackStatus;
+  category: FeedbackCategory;
+  priority: FeedbackPriority;
+  note: string; // the overall ask
+  page_url: string;
+  reporter: string; // optional; "" when anonymous
+  payload: FeedbackPayload;
   created_at: string; // RFC3339
 }

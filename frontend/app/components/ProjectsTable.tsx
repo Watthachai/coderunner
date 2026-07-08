@@ -81,13 +81,22 @@ export function ProjectsTable({
                     {formatRelative(p.last_activity_at, nowMs)}
                   </td>
                   <td className="ta-right">
-                    <Link
-                      className="row-action"
-                      href={`/projects/${p.id}`}
-                      title="Open terminal"
-                    >
-                      terminal
-                    </Link>
+                    <span className="row-actions">
+                      <Link
+                        className="row-action"
+                        href={`/projects/${p.id}#build-history`}
+                        title="Build history"
+                      >
+                        history
+                      </Link>
+                      <Link
+                        className="row-action"
+                        href={`/projects/${p.id}`}
+                        title="Open terminal"
+                      >
+                        terminal
+                      </Link>
+                    </span>
                   </td>
                 </tr>
               ))}

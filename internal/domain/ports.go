@@ -110,6 +110,31 @@ type Store interface {
 	// non-nil (so JSON renders [] not null).
 	DashboardSnapshot(ctx context.Context) (*DashboardSnapshot, error)
 
+	// --- Build traces (durable per-build state history) ---
+	// SaveJobTrace snapshots one build's normalized event stream + derived
+	// summary into job_traces (upsert by job_id). Called once, at the terminal
+	// state, BEFORE the in-memory live buffer is discarded.
+	SaveJobTrace(ctx context.Context, t *BuildTrace) error
+	// ListBuildTraces returns a project's build traces, newest build first, with
+	// Events omitted (the summary list). Empty slice when the project has none.
+	ListBuildTraces(ctx context.Context, projectID uuid.UUID) ([]*BuildTrace, error)
+	// RecentBuildTraces returns the most recent build traces across all projects,
+	// newest first, with Events omitted. limit <= 0 falls back to a sane default.
+	RecentBuildTraces(ctx context.Context, limit int) ([]*BuildTrace, error)
+	// GetBuildTrace returns a single build trace by job id WITH its full Events
+	// stream for replay. Returns ErrNotFound when no trace exists for the job.
+	GetBuildTrace(ctx context.Context, jobID uuid.UUID) (*BuildTrace, error)
+
+	// --- In-demo feedback (Edit Request Panel) ---
+	// ListFeedback returns feedback requests newest first; status filters by the
+	// lifecycle state (e.g. "new"), or "" for all. Always non-nil.
+	ListFeedback(ctx context.Context, status string) ([]*FeedbackRequest, error)
+	// GetFeedback returns one feedback request by id, ErrNotFound when absent.
+	GetFeedback(ctx context.Context, id uuid.UUID) (*FeedbackRequest, error)
+	// SetFeedbackStatus updates a request's status and, when jobID is non-nil,
+	// links the edit build it was merged into. ErrNotFound when the id is absent.
+	SetFeedbackStatus(ctx context.Context, id uuid.UUID, status string, jobID *uuid.UUID) error
+
 	// Ping verifies connectivity (used by /healthz and startup checks).
 	Ping(ctx context.Context) error
 	// Close releases the connection pool.

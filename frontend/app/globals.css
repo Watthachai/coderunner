@@ -1,21 +1,96 @@
-/* FITT Code Runner dashboard — midnight studio: black canvas, single accent. */
+@import url("https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&display=swap");
+@import url("https://db.onlinewebfonts.com/c/14936bb7a4b6575fd2eee80a3ab52cc2?family=Feather+Bold");
+
+/* FITT Code Runner dashboard — Duolingo design system: white canvas, chunky
+   3D-shadow controls, one green accent (#58CC02), Nunito + Feather Bold. The
+   app keys every surface off these tokens, so redefining them reskins the whole
+   console. Live terminals and log/diff surfaces keep dark wells (the feed,
+   stream, terminal and diff blocks) — a terminal is intrinsically dark; the
+   Duolingo chrome frames it. */
 
 :root {
+  color-scheme: light;
+
+  /* Duolingo palette (the spec's CSS custom properties) */
+  --green: #58cc02;
+  --green-hover: #4bb200;
+  --green-shadow: #61b800;
+  --dark-blue: #100f3e;
+  --blue: #1cb0f6;
+  --blue-shadow: #1899d6;
+  --gray-text: #4b4b4b;
+  --gray-light: #777777;
+  --border-color: #e5e5e5;
+  --nav-text: #afafaf;
+  --footer-green: #4ec604;
+  --red: #ff4b4b;
+  --red-shadow: #cc3c3c;
+  --orange: #ff9600;
+  --golden: #ffc800;
+
+  /* Semantic tokens the components consume (mapped onto the palette). */
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f7f7f7;
+  --border: var(--border-color);
+  --fg: var(--gray-text);
+  --fg-muted: var(--gray-light);
+  --fg-dim: var(--nav-text);
+  --accent: var(--green);
+  --accent-shadow: var(--green-shadow);
+  --error: var(--red);
+
+  /* status color = information: queued=amber, building=blue, done=green, failed=red */
+  --queued: var(--orange);
+  --building: var(--blue);
+  --done: var(--green);
+
+  /* dark wells for terminals/log feeds/diffs — dark in BOTH themes (a terminal
+     is intrinsically dark). Light text on them is set explicitly. */
+  --well: #14132e; /* dark-blue tinted so terminals feel on-brand */
+  --well-border: #2a2950;
+
+  /* theme-flip tokens: these swap between light (here) and dark
+     (:root[data-theme="dark"]) so the component layer stays token-driven and
+     the theme switch is a pure token swap. */
+  --brand-fg: var(--dark-blue); /* wordmark + big display numbers */
+  --shadow-neutral: #cfcfcf; /* neutral 3D button drop-shadow */
+  --row-hover: rgba(0, 0, 0, 0.03); /* table/list row hover */
+  --hairline: rgba(0, 0, 0, 0.06); /* row separators */
+  --grid-line: rgba(0, 0, 0, 0.02); /* console blueprint grid */
+
+  --radius: 16px;
+  --radius-sm: 12px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: "Nunito", "DIN Round Pro", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --display: "Feather Bold", "Nunito", var(--sans);
+}
+
+/* Duolingo DARK mode — same green accent + chunky style on a dark canvas. Only
+   the surface/text/flip tokens change; the component layer is token-driven so
+   the theme switch is a pure token swap. Set via data-theme on <html> (see the
+   no-FOUC script in layout.tsx + the .theme-switch control). */
+:root[data-theme="dark"] {
   color-scheme: dark;
 
-  --bg: #0a0a0a;
-  --panel: #121214;
-  --panel-2: #17171a;
-  --border: #26262b;
-  --fg: #ededed;
-  --fg-muted: #9ca3af;
-  --fg-dim: #6b7280;
-  --accent: #64cefb;
-  --error: #f87171;
+  --bg: #0b0b10;
+  --panel: #16161d;
+  --panel-2: #1e1e26;
+  --border: #2c2c36;
+  --fg: #ededf2;
+  --fg-muted: #a2a2b0;
+  --fg-dim: #6d6d7c;
+  /* accent stays Duolingo green; status colors inherit from the palette */
 
-  --radius: 10px;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --well: #08080e;
+  --well-border: #26262f;
+
+  --brand-fg: #eef0ff;
+  --shadow-neutral: #05050a;
+  --row-hover: rgba(255, 255, 255, 0.04);
+  --hairline: rgba(255, 255, 255, 0.06);
+  --grid-line: rgba(255, 255, 255, 0.025);
 }
 
 * {
@@ -29,6 +104,7 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--sans);
+  font-weight: 600;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -346,8 +422,9 @@ body {
    ========================================================================== */
 
 :root {
-  --queued: #f5b545;
-  --done: #54d98c;
+  /* status tokens kept in lockstep with the Duolingo palette above */
+  --queued: var(--orange);
+  --done: var(--green);
 }
 
 .console {
@@ -690,7 +767,7 @@ body {
 .seg--done .seg-dot {
   background: var(--accent);
   border-color: var(--accent);
-  box-shadow: 0 0 8px rgba(100, 206, 251, 0.5);
+  box-shadow: 0 0 8px rgba(88, 204, 2, 0.5);
 }
 .seg--done .seg-label {
   color: var(--fg-muted);
@@ -702,7 +779,7 @@ body {
 .seg--active .seg-dot {
   border-color: var(--accent);
   background: var(--bg);
-  box-shadow: 0 0 0 4px rgba(100, 206, 251, 0.15);
+  box-shadow: 0 0 0 4px rgba(88, 204, 2, 0.15);
   animation: pulse 1.4s ease-in-out infinite;
 }
 .seg--active .seg-label {
@@ -718,9 +795,12 @@ body {
    ========================================================================== */
 
 :root {
-  --mc-glow: rgba(100, 206, 251, 0.55);
-  --mc-glow-soft: rgba(100, 206, 251, 0.14);
-  --mc-well: #0a0c10;
+  /* mission-control accents recolored to Duolingo green; the console card is
+     now a light Duolingo surface, but the CLAUDE STREAM terminal well stays
+     dark (see .stream). */
+  --mc-glow: rgba(88, 204, 2, 0.5);
+  --mc-glow-soft: rgba(88, 204, 2, 0.14);
+  --mc-well: var(--well);
 }
 
 .bc-list {
@@ -951,7 +1031,7 @@ body {
 .pipe-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(100, 206, 251, 0.5), var(--accent));
+  background: linear-gradient(90deg, rgba(88, 204, 2, 0.45), var(--accent));
   box-shadow: 0 0 12px var(--mc-glow);
   transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
@@ -2043,7 +2123,10 @@ body {
 
 /* the outer bordered panel filling the viewport */
 .term-panel {
-  min-height: 70vh;
+  /* A DEFINITE, bounded height (not a min-height floor): xterm + FitAddon +
+     ResizeObserver need a fixed target, otherwise the height:100% chain has no
+     ceiling and the terminal grows without limit. It scrolls internally. */
+  height: clamp(280px, 46vh, 480px);
   display: flex;
 }
 
@@ -2325,4 +2408,973 @@ body {
   gap: 0.15rem;
   font-family: var(--mono);
   font-size: 0.76rem;
+}
+
+/* ============================================================================
+   DUOLINGO REDESIGN — component layer.
+   The :root token flip above already recolors every surface (white canvas,
+   green accent). This layer restyles the chrome to Duolingo's language: chunky
+   3D-shadow controls, 2px rounded cards, pill badges, Feather Bold display
+   type — and, crucially, keeps the live terminal / log / diff surfaces DARK
+   with readable light text (a terminal is intrinsically dark). Appended last so
+   it wins over the dark base by source order.
+   ========================================================================== */
+
+/* faint Duolingo green hero wash at the top of the page */
+body {
+  background:
+    linear-gradient(180deg, rgba(88, 204, 2, 0.07), transparent 360px),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* --- display type (Feather Bold) --- */
+.brand h1 {
+  font-family: var(--display);
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--brand-fg);
+  font-size: 1.3rem;
+}
+.vital-num,
+.hud-num,
+.hud-clock,
+.bc-proj,
+.now-proj {
+  font-family: var(--display);
+  font-weight: 400;
+}
+
+/* --- chunky 3D buttons --- */
+.btn {
+  background: var(--green);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--sans);
+  font-weight: 800;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.62rem 1.1rem;
+  box-shadow: 0 4px 0 var(--green-shadow);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.12s ease;
+}
+.btn:hover:not(:disabled) {
+  background: var(--green-hover);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(4px);
+  box-shadow: none;
+}
+.btn:disabled {
+  opacity: 0.45;
+  box-shadow: 0 4px 0 var(--green-shadow);
+}
+.btn--ghost {
+  background: var(--panel);
+  color: var(--blue);
+  border: 2px solid var(--border);
+  box-shadow: 0 4px 0 var(--shadow-neutral);
+}
+.btn--ghost:hover:not(:disabled) {
+  background: rgba(28, 176, 246, 0.06);
+}
+.btn--danger {
+  background: var(--red);
+  color: #fff;
+  border: none;
+  box-shadow: 0 4px 0 var(--red-shadow);
+}
+.btn--danger:hover:not(:disabled) {
+  background: #e63e3e;
+}
+.btn--sm {
+  font-size: 0.7rem;
+  padding: 0.4rem 0.8rem;
+  box-shadow: 0 3px 0 var(--green-shadow);
+}
+.btn--sm:active:not(:disabled) {
+  transform: translateY(3px);
+}
+
+/* --- cards / panels / vitals (2px border, rounded, subtle lift) --- */
+.card,
+.panel,
+.vital,
+.now-card,
+.edit-panel,
+.issues-panel {
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.vital--live {
+  border-color: var(--blue);
+  box-shadow: 0 4px 0 rgba(28, 176, 246, 0.18);
+}
+.vital-dot {
+  background: var(--blue);
+  box-shadow: none;
+}
+.now-card {
+  background: var(--panel-2);
+}
+
+/* --- inputs --- */
+.input {
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--sans);
+  font-weight: 600;
+}
+.input:focus {
+  border-color: var(--blue);
+}
+.input::placeholder {
+  color: var(--nav-text);
+}
+/* code editors stay monospace */
+.skill-body,
+.file-body,
+.edit-input {
+  font-family: var(--mono);
+}
+
+/* --- pills / badges (Duolingo) — colors are set inline per status --- */
+.pill,
+.badge {
+  background: transparent;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.66rem;
+}
+
+/* --- nav link / api-base chip --- */
+.navlink {
+  color: var(--gray-light);
+  border: 2px solid var(--border);
+  font-weight: 800;
+}
+.navlink:hover {
+  color: var(--green);
+  border-color: var(--green);
+}
+.api-base {
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  color: var(--gray-light);
+}
+
+/* --- section labels / panel heads --- */
+.panel-head h2 {
+  color: var(--nav-text);
+  font-weight: 800;
+}
+
+/* --- table + feed row separators: flip white-on-dark tints to dark-on-light --- */
+.table tbody tr:hover {
+  background: var(--row-hover);
+}
+.table tbody td {
+  border-bottom-color: var(--hairline);
+}
+.arow,
+.qrow {
+  border-bottom-color: var(--hairline);
+}
+.branch,
+.issues-repo {
+  color: var(--blue);
+  border-bottom-color: rgba(28, 176, 246, 0.4);
+}
+.proj-link:hover {
+  color: var(--green);
+  border-bottom-color: rgba(88, 204, 2, 0.4);
+}
+.row-action {
+  border: 2px solid var(--border);
+  font-weight: 800;
+}
+.row-action:hover {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+/* ---------------------------------------------------------------------------
+   DARK WELLS — the log feed, code diff, and terminals stay dark with light
+   text (framed by the Duolingo light chrome).
+   --------------------------------------------------------------------------- */
+.feed,
+.diff {
+  background: var(--well);
+  border: 2px solid var(--well-border);
+  color: #e9e9f4;
+}
+.feed-content,
+.feed-strong {
+  color: #f1f1f8;
+}
+.feed-time {
+  color: #8f8fb2;
+}
+.feed-muted {
+  color: #bcbcd6;
+}
+.feed-file {
+  color: #7fe08a;
+}
+.feed-row {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+.diff-ctx {
+  color: #9a9ac2;
+}
+
+/* CLAUDE STREAM terminal + per-project terminal wells */
+.stream,
+.term-shell {
+  background: var(--well);
+  border: 2px solid var(--well-border);
+}
+.stream-bar,
+.term-bar {
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.stream-title,
+.term-bar-title {
+  color: #cccce4;
+}
+.stream-sid {
+  color: #8f8fb2;
+}
+.stream-glyph {
+  color: var(--green);
+}
+
+/* ---------------------------------------------------------------------------
+   MISSION CONTROL — the live build console, adapted to a light Duolingo card.
+   The CLAUDE STREAM terminal inside stays dark (above); the card, HUD, phase
+   pipeline, reactor and standby become light + green.
+   --------------------------------------------------------------------------- */
+.bc {
+  background-color: var(--panel);
+  background-image:
+    linear-gradient(180deg, rgba(88, 204, 2, 0.06), transparent 32%),
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  border: 2px solid var(--border);
+}
+.bc--live {
+  border-color: var(--green);
+  box-shadow:
+    0 6px 0 rgba(88, 204, 2, 0.16),
+    0 0 44px -10px rgba(88, 204, 2, 0.3);
+}
+.bc-eyebrow {
+  color: var(--green);
+}
+.bc-build {
+  border: 2px solid var(--border);
+  color: var(--gray-light);
+}
+.hud-cell {
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+}
+.hud-cell--clock {
+  border-color: rgba(88, 204, 2, 0.4);
+  background: rgba(88, 204, 2, 0.07);
+}
+.hud-clock {
+  color: var(--green);
+  text-shadow: none;
+}
+.hud-num {
+  color: var(--brand-fg);
+}
+
+/* phase pipeline: unlit rail on light, green chunky nodes */
+.pipe-rail {
+  background: var(--border);
+}
+.node-core {
+  background: var(--panel);
+  border: 2px solid var(--border);
+  color: var(--nav-text);
+}
+.node--active .node-core {
+  background: rgba(88, 204, 2, 0.1);
+  border-color: var(--green);
+  color: var(--green-hover);
+}
+.node--done .node-core {
+  color: #fff;
+}
+
+/* reactor / standby (idle console) */
+.reactor-ring {
+  border-color: rgba(88, 204, 2, 0.35);
+}
+.standby-title,
+.idle-title {
+  color: var(--gray-light);
+}
+.standby-sub,
+.idle-sub {
+  color: var(--nav-text);
+}
+.idle-mark {
+  background: var(--nav-text);
+}
+
+/* alerts / notices */
+.alert {
+  background: rgba(255, 75, 75, 0.08);
+  border: 2px solid rgba(255, 75, 75, 0.3);
+}
+.notice {
+  background: rgba(88, 204, 2, 0.08);
+  border: 2px solid rgba(88, 204, 2, 0.3);
+}
+
+/* --- skills page chrome --- */
+.skill-row,
+.ver-row,
+.file-row,
+.status-cell {
+  border: 2px solid var(--border);
+}
+.skill-row--active,
+.ver-row--active,
+.file-row--active {
+  border-color: var(--green);
+  box-shadow: inset 0 0 0 1px rgba(88, 204, 2, 0.18);
+}
+.skill-dot--on {
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(88, 204, 2, 0.5);
+}
+.term-id {
+  border: 2px solid var(--border);
+}
+
+/* --- theme switch (light Duolingo <-> dark) --- */
+.theme-switch {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+.theme-switch-track {
+  position: relative;
+  width: 54px;
+  height: 28px;
+  border-radius: 14px;
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.theme-switch--on .theme-switch-track {
+  background: var(--green);
+  border-color: var(--green);
+}
+.theme-switch-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.theme-switch--on .theme-switch-thumb {
+  transform: translateX(26px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-switch-thumb,
+  .theme-switch-track {
+    transition: none;
+  }
+}
+
+/* ============================================================================
+   BUILD TRACES — durable per-build state history rendered as a
+   distributed-tracing span-graph (materialize -> claude -> git -> push), plus
+   the idle "armed" console. Reuses the live pipeline (.pipe/.node) and console
+   card (.bc); this layer adds the historical/failed states and metadata chrome.
+   Token-driven — flips correctly across data-theme.
+   ========================================================================== */
+
+.trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* A single build's trace card. Inherits .bc (padded, bordered, grid wash). */
+.trace-card .bc-head {
+  margin-bottom: 1rem;
+}
+.trace-buildno {
+  color: var(--accent);
+}
+.trace-outcome {
+  text-transform: lowercase;
+  flex-shrink: 0;
+}
+
+/* --- the span-graph: a still (historical) variant of the live pipeline --- */
+.pipe--trace {
+  margin-bottom: 1rem;
+}
+.pipe--trace .pipe-fill {
+  /* historical trace: a lit, still conduit — no racing light packet */
+  box-shadow: 0 0 10px var(--mc-glow-soft);
+}
+.pipe--trace .pipe-fill::after {
+  display: none;
+}
+/* every stage caption is always legible on a trace (not reveal-on-active) */
+.pipe--trace .node-caption {
+  color: var(--fg-dim);
+}
+.pipe--trace .node--done .node-caption {
+  color: var(--fg-muted);
+}
+
+/* failed stage — where the build stopped, in red */
+.node--failed .node-core {
+  background: var(--error);
+  border-color: var(--error);
+  color: #fff;
+  box-shadow: 0 0 14px -1px rgba(255, 75, 75, 0.5);
+}
+.node--failed .node-index {
+  color: #fff;
+}
+.node--failed .node-name,
+.pipe--trace .node--failed .node-caption {
+  color: var(--error);
+}
+
+/* cancelled/stopped stage — a neutral halt, not a failure */
+.node--stopped .node-core {
+  background: var(--panel-2);
+  border-color: var(--fg-dim);
+  color: var(--fg-dim);
+}
+.node--stopped .node-name,
+.pipe--trace .node--stopped .node-caption {
+  color: var(--fg-dim);
+}
+
+/* compact span-graph for the idle console */
+.pipe--compact {
+  margin-bottom: 0.4rem;
+}
+.pipe--compact .pipe-rail {
+  top: 11px;
+}
+.pipe--compact .node-core {
+  width: 22px;
+  height: 22px;
+}
+.pipe--compact .node-index {
+  font-size: 0.6rem;
+}
+.pipe--compact .node-name {
+  font-size: 0.62rem;
+}
+
+/* --- per-build telemetry, four equal cells (overrides .hud's template) --- */
+.trace-hud {
+  grid-template-columns: repeat(4, 1fr);
+  margin-bottom: 0.9rem;
+}
+
+/* --- commit / branch / remote chips + replay toggle --- */
+.trace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.trace-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.28rem 0.6rem;
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  max-width: 100%;
+}
+.trace-chip code {
+  font-family: var(--mono);
+  color: var(--brand-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-chip-key {
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--fg-dim);
+  font-weight: 800;
+}
+.trace-chip--sha code {
+  color: var(--accent);
+}
+.trace-chip--muted {
+  color: var(--fg-dim);
+}
+.trace-chip--remote code {
+  color: var(--fg-muted);
+  max-width: 240px;
+}
+.trace-replay-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* --- the replayed event stream, in a dark terminal well --- */
+.trace-replay {
+  margin-top: 0.9rem;
+  border: 2px solid var(--well-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.trace-replay-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--well);
+  color: #cccce4;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-bottom: 1px solid var(--well-border);
+}
+.trace-replay-glyph {
+  color: var(--accent);
+}
+.trace-replay-session {
+  margin-left: auto;
+  color: #8f8fb2;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.trace-replay .feed {
+  border: none;
+  border-radius: 0;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+/* failure message + "replay not captured" note */
+.trace-error {
+  margin: 0.7rem 0 0;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 75, 75, 0.08);
+  border: 1px solid rgba(255, 75, 75, 0.3);
+  color: var(--error);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+.trace-replay-note {
+  margin: 0.7rem 0 0;
+  color: var(--fg-dim);
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
+/* --- idle "armed" console: last finished build held on screen --- */
+.standby--armed {
+  padding-bottom: 1.1rem;
+}
+.idle-last {
+  width: 100%;
+  max-width: 480px;
+  margin: 1.15rem auto 0;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--hairline);
+}
+.idle-last-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  margin-bottom: 0.85rem;
+}
+.idle-last-proj {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: var(--brand-fg);
+}
+.idle-last-rel {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--fg-dim);
+}
+.idle-last-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--fg-dim);
+}
+.idle-last-meta code {
+  font-family: var(--mono);
+  color: var(--fg-muted);
+}
+
+/* Projects table row actions (history + terminal side by side) */
+.row-actions {
+  display: inline-flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+/* so the #build-history anchor jump doesn't tuck the heading against the top */
+#build-history {
+  scroll-margin-top: 1rem;
+}
+
+/* ============================================================================
+   FEEDBACK — the in-demo Edit Request Panel as a floating modal (Slice 0, mock).
+   A header "feedback" bell with an unread badge opens a modal listing incoming
+   requests: category/priority, the ask, screenshots, and the pinned elements.
+   ========================================================================== */
+
+/* --- header trigger --- */
+.fb-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.72rem;
+  border: 2px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+.fb-bell:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+.fb-bell-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.fb-bell-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--red);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  box-shadow: 0 0 0 3px rgba(255, 75, 75, 0.18);
+}
+@media (max-width: 560px) {
+  .fb-bell-text {
+    display: none;
+  }
+}
+
+/* --- modal shell --- */
+.fb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 3.5rem 1rem 2rem;
+  overflow-y: auto;
+}
+.fb-modal {
+  width: 100%;
+  max-width: 660px;
+  max-height: calc(100vh - 5.5rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 64px -16px var(--shadow-neutral);
+  overflow: hidden;
+}
+.fb-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 1rem 1.15rem;
+  border-bottom: 2px solid var(--border);
+}
+.fb-modal-title h2 {
+  margin: 0.1rem 0 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: 1.05rem;
+  color: var(--brand-fg);
+}
+.fb-modal-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--fg-dim);
+}
+.fb-close {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+.fb-close:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+.fb-modal-body {
+  padding: 1.15rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+/* --- request card --- */
+.fb-card {
+  background: var(--panel-2);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+}
+.fb-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+/* category + priority tinted pills (override .pill's border/transparent bg) */
+.fb-cat,
+.fb-prio {
+  border: none;
+  padding: 0.24rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.fb-cat--bug {
+  background: rgba(255, 75, 75, 0.14);
+  color: var(--red);
+}
+.fb-cat--feature {
+  background: rgba(28, 176, 246, 0.14);
+  color: var(--blue);
+}
+.fb-cat--style {
+  background: rgba(139, 92, 246, 0.16);
+  color: #8b5cf6;
+}
+.fb-prio--high {
+  background: rgba(255, 75, 75, 0.14);
+  color: var(--red);
+}
+.fb-prio--med {
+  background: rgba(255, 150, 0, 0.16);
+  color: var(--orange);
+}
+.fb-prio--low {
+  background: var(--panel);
+  color: var(--fg-dim);
+}
+.fb-meta {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  color: var(--fg-dim);
+}
+.fb-note {
+  margin: 0.7rem 0 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--fg);
+  line-height: 1.4;
+}
+
+/* screenshots */
+.fb-shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 0.75rem 0 0;
+}
+.fb-shot {
+  margin: 0;
+}
+.fb-shot img {
+  display: block;
+  width: 210px;
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+}
+.fb-shot figcaption {
+  margin-top: 0.28rem;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-dim);
+}
+
+/* pinned elements */
+.fb-pins {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.fb-pin {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  padding: 0.55rem;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+}
+.fb-pin-shot {
+  width: 118px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+}
+.fb-pin-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  min-width: 0;
+}
+.fb-pin-label {
+  font-weight: 800;
+  font-size: 0.8rem;
+  color: var(--brand-fg);
+}
+.fb-pin-sel {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--accent);
+  background: var(--panel-2);
+  padding: 0.1rem 0.4rem;
+  border-radius: 5px;
+}
+.fb-pin-note {
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+  line-height: 1.35;
+}
+
+/* card actions */
+.fb-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+}
+.fb-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.fb-page {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  color: var(--fg-dim);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fb-overlay {
+    backdrop-filter: none;
+  }
+}
+
+/* --- diff view in the event feed: the code a Write/Edit produced (green/red) --- */
+.feed-difftoggle {
+  margin-left: 8px;
+  border: none;
+  background: none;
+  color: #8a8ac0;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.feed-difftoggle:hover {
+  color: var(--accent);
+}
+.feed-diff {
+  margin: 4px 0 8px;
+  max-height: 300px;
+  overflow: auto;
+  font-size: 0.72rem;
 }

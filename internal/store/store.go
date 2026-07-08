@@ -571,6 +571,232 @@ func (s *pgStore) dashboardActivity(ctx context.Context, snap *domain.DashboardS
 	return nil
 }
 
+// --- Build traces (durable per-build state history) -------------------------
+
+// traceListCols is the summary projection shared by the list reads (no events).
+const traceListCols = `
+	job_id, project_id, build_no, outcome, mode, commit_sha, branch, remote,
+	session_id, cost_usd, tool_count, file_count, error_msg,
+	started_at, finished_at, created_at`
+
+// SaveJobTrace upserts one build's trace (summary + full event stream) by
+// job_id. The events slice is stored as JSONB; a nil slice persists as '[]'.
+func (s *pgStore) SaveJobTrace(ctx context.Context, t *domain.BuildTrace) error {
+	events := t.Events
+	if events == nil {
+		events = []domain.BuildEventMsg{}
+	}
+	eventsJSON, err := json.Marshal(events)
+	if err != nil {
+		return fmt.Errorf("store: save job trace: marshal events: %w", err)
+	}
+	const q = `
+		INSERT INTO job_traces (
+			job_id, project_id, build_no, outcome, mode, commit_sha, branch, remote,
+			session_id, cost_usd, tool_count, file_count, error_msg, events,
+			started_at, finished_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		ON CONFLICT (job_id) DO UPDATE SET
+			outcome     = EXCLUDED.outcome,
+			mode        = EXCLUDED.mode,
+			commit_sha  = EXCLUDED.commit_sha,
+			branch      = EXCLUDED.branch,
+			remote      = EXCLUDED.remote,
+			session_id  = EXCLUDED.session_id,
+			cost_usd    = EXCLUDED.cost_usd,
+			tool_count  = EXCLUDED.tool_count,
+			file_count  = EXCLUDED.file_count,
+			error_msg   = EXCLUDED.error_msg,
+			events      = EXCLUDED.events,
+			started_at  = EXCLUDED.started_at,
+			finished_at = EXCLUDED.finished_at`
+	if _, err := s.pool.Exec(ctx, q,
+		t.JobID, t.ProjectID, t.BuildNo, t.Outcome, t.Mode, t.CommitSHA, t.Branch, t.Remote,
+		t.SessionID, t.CostUSD, t.ToolCount, t.FileCount, t.ErrorMsg, eventsJSON,
+		t.StartedAt, t.FinishedAt,
+	); err != nil {
+		return fmt.Errorf("store: save job trace: %w", err)
+	}
+	return nil
+}
+
+// ListBuildTraces returns a project's traces newest build first (summary only —
+// Events left empty). Always returns a non-nil slice.
+func (s *pgStore) ListBuildTraces(ctx context.Context, projectID uuid.UUID) ([]*domain.BuildTrace, error) {
+	q := `SELECT` + traceListCols + `
+		FROM job_traces WHERE project_id = $1 ORDER BY build_no DESC`
+	rows, err := s.pool.Query(ctx, q, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list build traces: %w", err)
+	}
+	defer rows.Close()
+	return scanTraceSummaries(rows)
+}
+
+// RecentBuildTraces returns the most recent traces across all projects, newest
+// first (summary only). A non-positive limit falls back to 30.
+func (s *pgStore) RecentBuildTraces(ctx context.Context, limit int) ([]*domain.BuildTrace, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	q := `SELECT` + traceListCols + `
+		FROM job_traces ORDER BY created_at DESC LIMIT $1`
+	rows, err := s.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: recent build traces: %w", err)
+	}
+	defer rows.Close()
+	return scanTraceSummaries(rows)
+}
+
+// GetBuildTrace returns one trace by job id WITH its full event stream.
+func (s *pgStore) GetBuildTrace(ctx context.Context, jobID uuid.UUID) (*domain.BuildTrace, error) {
+	q := `SELECT` + traceListCols + `, events
+		FROM job_traces WHERE job_id = $1`
+	t := &domain.BuildTrace{}
+	var eventsJSON []byte
+	if err := scanTraceSummaryRow(s.pool.QueryRow(ctx, q, jobID), t, &eventsJSON); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(eventsJSON, &t.Events); err != nil {
+		return nil, fmt.Errorf("store: get build trace: unmarshal events: %w", err)
+	}
+	if t.Events == nil {
+		t.Events = []domain.BuildEventMsg{}
+	}
+	return t, nil
+}
+
+// scanTraceSummaries collects rows projecting traceListCols (no events).
+func scanTraceSummaries(rows pgx.Rows) ([]*domain.BuildTrace, error) {
+	out := []*domain.BuildTrace{}
+	for rows.Next() {
+		t := &domain.BuildTrace{}
+		if err := scanTraceSummaryRow(rows, t, nil); err != nil {
+			return nil, err
+		}
+		t.Events = []domain.BuildEventMsg{}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: scan build traces: %w", err)
+	}
+	return out, nil
+}
+
+// scanTraceSummaryRow scans one traceListCols row into t. When eventsJSON is
+// non-nil the caller has appended ", events" to the projection and the raw JSONB
+// is scanned into it (for GetBuildTrace); otherwise only the summary is read.
+func scanTraceSummaryRow(r scannable, t *domain.BuildTrace, eventsJSON *[]byte) error {
+	dest := []any{
+		&t.JobID, &t.ProjectID, &t.BuildNo, &t.Outcome, &t.Mode, &t.CommitSHA, &t.Branch, &t.Remote,
+		&t.SessionID, &t.CostUSD, &t.ToolCount, &t.FileCount, &t.ErrorMsg,
+		&t.StartedAt, &t.FinishedAt, &t.CreatedAt,
+	}
+	if eventsJSON != nil {
+		dest = append(dest, eventsJSON)
+	}
+	if err := r.Scan(dest...); err != nil {
+		return mapErr(err, "store: scan build trace")
+	}
+	return nil
+}
+
+// --- In-demo feedback (Edit Request Panel) ----------------------------------
+
+// feedbackCols is the full projection for a feedback_requests row.
+const feedbackCols = `
+	id, project_id, status, category, priority, note, page_url, reporter,
+	payload, job_id, created_at`
+
+// ListFeedback returns feedback requests newest first. A non-empty status
+// filters by lifecycle state (e.g. "new"); "" returns all. Non-nil slice.
+func (s *pgStore) ListFeedback(ctx context.Context, status string) ([]*domain.FeedbackRequest, error) {
+	var rows pgx.Rows
+	var err error
+	if status == "" {
+		rows, err = s.pool.Query(ctx, `SELECT`+feedbackCols+`
+			FROM feedback_requests ORDER BY created_at DESC`)
+	} else {
+		rows, err = s.pool.Query(ctx, `SELECT`+feedbackCols+`
+			FROM feedback_requests WHERE status = $1 ORDER BY created_at DESC`, status)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: list feedback: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*domain.FeedbackRequest{}
+	for rows.Next() {
+		f := &domain.FeedbackRequest{}
+		var payloadJSON []byte
+		if err := scanFeedbackRow(rows, f, &payloadJSON); err != nil {
+			return nil, err
+		}
+		if err := decodeFeedbackPayload(payloadJSON, f); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: scan feedback: %w", err)
+	}
+	return out, nil
+}
+
+// GetFeedback returns one feedback request by id, ErrNotFound when absent.
+func (s *pgStore) GetFeedback(ctx context.Context, id uuid.UUID) (*domain.FeedbackRequest, error) {
+	q := `SELECT` + feedbackCols + ` FROM feedback_requests WHERE id = $1`
+	f := &domain.FeedbackRequest{}
+	var payloadJSON []byte
+	if err := scanFeedbackRow(s.pool.QueryRow(ctx, q, id), f, &payloadJSON); err != nil {
+		return nil, err
+	}
+	if err := decodeFeedbackPayload(payloadJSON, f); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// SetFeedbackStatus updates status and, when jobID is non-nil, links the edit
+// build the request was merged into (existing job_id preserved when nil).
+func (s *pgStore) SetFeedbackStatus(ctx context.Context, id uuid.UUID, status string, jobID *uuid.UUID) error {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE feedback_requests SET status = $2, job_id = COALESCE($3, job_id)
+		WHERE id = $1`, id, status, jobID)
+	if err != nil {
+		return fmt.Errorf("store: set feedback status: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("store: set feedback status: %w", domain.ErrNotFound)
+	}
+	return nil
+}
+
+func scanFeedbackRow(r scannable, f *domain.FeedbackRequest, payloadJSON *[]byte) error {
+	if err := r.Scan(
+		&f.ID, &f.ProjectID, &f.Status, &f.Category, &f.Priority, &f.Note,
+		&f.PageURL, &f.Reporter, payloadJSON, &f.JobID, &f.CreatedAt,
+	); err != nil {
+		return mapErr(err, "store: scan feedback")
+	}
+	return nil
+}
+
+// decodeFeedbackPayload unmarshals the JSONB payload and guarantees Pins is a
+// non-nil slice (so JSON renders [] not null for the panel).
+func decodeFeedbackPayload(raw []byte, f *domain.FeedbackRequest) error {
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &f.Payload); err != nil {
+			return fmt.Errorf("store: decode feedback payload: %w", err)
+		}
+	}
+	if f.Payload.Pins == nil {
+		f.Payload.Pins = []domain.FeedbackPin{}
+	}
+	return nil
+}
+
 // --- Edit requests ----------------------------------------------------------
 
 // CreateEditRequest inserts an edit request and reads back generated columns.

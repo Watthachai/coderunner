@@ -8,14 +8,20 @@
 import Link from "next/link";
 import { API_BASE, GIT_REMOTE } from "./lib/config";
 import { useDashboard } from "./lib/useDashboard";
+import { useTraces } from "./lib/useTraces";
 import { VitalsRail } from "./components/VitalsRail";
 import { NowBuilding } from "./components/NowBuilding";
 import { QueuePanel } from "./components/QueuePanel";
 import { ProjectsTable } from "./components/ProjectsTable";
 import { ActivityFeed } from "./components/ActivityFeed";
+import { ThemeToggle } from "./components/ThemeToggle";
+import { FeedbackBell } from "./components/FeedbackBell";
 
 export default function Home() {
   const { data, error, loading } = useDashboard(2500);
+  // Most recent finished build, to keep the idle console "armed" after done.
+  const { traces } = useTraces(1);
+  const lastTrace = traces[0] ?? null;
 
   const conn = error ? "down" : loading ? "wait" : "live";
   const connLabel = error ? "disconnected" : loading ? "connecting" : "live";
@@ -31,6 +37,8 @@ export default function Home() {
           </div>
         </div>
         <div className="head-right">
+          <FeedbackBell />
+          <ThemeToggle />
           <Link className="navlink" href="/skills">
             skills
           </Link>
@@ -55,6 +63,7 @@ export default function Home() {
         <NowBuilding
           building={data?.building ?? []}
           queued={data?.vitals?.queued ?? 0}
+          lastTrace={lastTrace}
         />
         <QueuePanel queue={data?.queue ?? []} />
       </div>

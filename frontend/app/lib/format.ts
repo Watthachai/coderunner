@@ -24,6 +24,26 @@ export function formatElapsed(startIso: string | null, nowMs: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
+/** Compact wall-clock duration between two instants, e.g. "45s", "1m 3s",
+ *  "2h 5m". Used by the build-trace views (started_at -> finished_at). */
+export function formatDuration(
+  startIso: string | null,
+  endIso: string | null,
+): string {
+  if (!startIso || !endIso) return "—";
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return "—";
+  let s = Math.floor((end - start) / 1000);
+  const h = Math.floor(s / 3600);
+  s -= h * 3600;
+  const m = Math.floor(s / 60);
+  s -= m * 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 /** Compact relative time, e.g. "12s ago", "4m ago", "2h ago", "3d ago". */
 export function formatRelative(iso: string | null, nowMs: number): string {
   if (!iso) return "—";

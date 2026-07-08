@@ -142,6 +142,15 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	// in-flight builds, the queue, all projects, and a recent activity feed.
 	r.Get("/internal/dashboard", s.handleDashboard)
 
+	// No-auth build traces (durable per-build state history). The live WS stream
+	// is discarded when a build ends; these read the persisted snapshot so the
+	// console can show what a build did, what commit it produced, and where it
+	// pushed — retroactively. /traces = recent across all projects; /builds =
+	// one project's history; /jobs/{id}/trace = one build's full event replay.
+	r.Get("/internal/traces", s.handleRecentTraces)
+	r.Get("/internal/projects/{id}/builds", s.handleListBuilds)
+	r.Get("/internal/jobs/{id}/trace", s.handleGetTrace)
+
 	// No-auth skills CRUD for the operator console. Skills are the SKILL.md
 	// bodies injected into every build; built-in skills are editable but not
 	// deletable.
@@ -165,6 +174,13 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	// issues, or enqueue an EDIT build that fixes a given issue.
 	r.Get("/internal/projects/{id}/issues", s.handleListIssues)
 	r.Post("/internal/projects/{id}/issues/{number}/fix", s.handleFixIssue)
+
+	// No-auth in-demo feedback (Edit Request Panel): demo widgets write feedback
+	// via PostgREST; these read it and act on it. Approve enqueues an edit build.
+	r.Get("/internal/feedback", s.handleListFeedback)
+	r.Get("/internal/feedback/{id}", s.handleGetFeedback)
+	r.Post("/internal/feedback/{id}/approve", s.handleApproveFeedback)
+	r.Post("/internal/feedback/{id}/reject", s.handleRejectFeedback)
 
 	// Tenant-facing API, guarded by per-org API key.
 	r.Route("/api/v1", func(r chi.Router) {
@@ -285,6 +301,74 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, r, http.StatusOK, snap)
+}
+
+// --- Build traces (no-auth: durable per-build state history) ---
+
+// handleRecentTraces returns the most recent build traces across all projects
+// (summary only, no event stream) as {"traces":[...]}. ?limit=N caps the count
+// (default 30).
+func (s *server) handleRecentTraces(w http.ResponseWriter, r *http.Request) {
+	limit := 30
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	traces, err := s.store.RecentBuildTraces(r.Context(), limit)
+	if err != nil {
+		s.logger.Error("recent traces failed", "err", err,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "recent traces failed")
+		return
+	}
+	if traces == nil {
+		traces = []*domain.BuildTrace{}
+	}
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"traces": traces})
+}
+
+// handleListBuilds returns one project's build history newest-first (summary
+// only, no event stream) as {"builds":[...]}.
+func (s *server) handleListBuilds(w http.ResponseWriter, r *http.Request) {
+	projectID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	traces, err := s.store.ListBuildTraces(r.Context(), projectID)
+	if err != nil {
+		s.logger.Error("list builds failed", "err", err, "project_id", projectID,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "list builds failed")
+		return
+	}
+	if traces == nil {
+		traces = []*domain.BuildTrace{}
+	}
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"builds": traces})
+}
+
+// handleGetTrace returns one build's full trace (summary + event stream for
+// replay) by job id. 404 when no trace exists for the job.
+func (s *server) handleGetTrace(w http.ResponseWriter, r *http.Request) {
+	jobID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	trace, err := s.store.GetBuildTrace(r.Context(), jobID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "trace not found")
+			return
+		}
+		s.logger.Error("get trace failed", "err", err, "job_id", jobID,
+			"request_id", middleware.GetReqID(r.Context()))
+		s.writeError(w, r, http.StatusInternalServerError, "get trace failed")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, trace)
 }
 
 // --- Skills (no-auth operator console CRUD) ---
@@ -975,6 +1059,138 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 		"git_branch": "crn/" + branchSlug(project.Name) + "-" + project.ID.String()[:8],
 		"status":     job.Status,
 	})
+}
+
+// --- In-demo feedback (Edit Request Panel) ---
+
+// handleListFeedback returns feedback requests, optionally filtered by ?status=
+// (e.g. "new"), newest first. -> { "feedback": [...] }.
+func (s *server) handleListFeedback(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListFeedback(r.Context(), r.URL.Query().Get("status"))
+	if err != nil {
+		s.logger.Error("list feedback failed", "err", err)
+		s.writeError(w, r, http.StatusInternalServerError, "could not load feedback")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"feedback": items})
+}
+
+// handleGetFeedback returns one feedback request by id.
+func (s *server) handleGetFeedback(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid feedback id")
+		return
+	}
+	f, err := s.store.GetFeedback(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "feedback not found")
+			return
+		}
+		s.logger.Error("get feedback failed", "err", err, "feedback_id", id)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, f)
+}
+
+// handleApproveFeedback turns one feedback request into an EDIT build: it
+// composes a change prompt from the note + pinned elements and enqueues it the
+// same way as POST /internal/projects/{id}/edit, then links the job back and
+// marks the request approved.
+func (s *server) handleApproveFeedback(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid feedback id")
+		return
+	}
+	f, err := s.store.GetFeedback(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "feedback not found")
+			return
+		}
+		s.logger.Error("get feedback failed", "err", err, "feedback_id", id)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+
+	project, err := s.store.GetProject(r.Context(), f.ProjectID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "project for this feedback not found")
+			return
+		}
+		s.logger.Error("get project failed", "err", err, "project_id", f.ProjectID)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"mode":   "edit",
+		"change": feedbackChangePrompt(f),
+		"name":   project.Name,
+	})
+	if err != nil {
+		s.writeError(w, r, http.StatusInternalServerError, "could not encode payload")
+		return
+	}
+
+	job, err := s.jm.Enqueue(r.Context(), project.ID, project.OrgID, payload)
+	if err != nil {
+		s.logger.Error("enqueue feedback edit failed", "err", err, "feedback_id", id)
+		s.writeError(w, r, http.StatusInternalServerError, "could not enqueue build")
+		return
+	}
+
+	jobID := job.ID
+	if err := s.store.SetFeedbackStatus(r.Context(), id, "approved", &jobID); err != nil {
+		s.logger.Warn("link feedback to job failed", "err", err, "feedback_id", id)
+	}
+
+	s.writeJSON(w, r, http.StatusAccepted, map[string]any{
+		"job_id":   job.ID,
+		"build_no": job.BuildNo,
+		"status":   job.Status,
+	})
+}
+
+// handleRejectFeedback marks a feedback request rejected (no build).
+func (s *server) handleRejectFeedback(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid feedback id")
+		return
+	}
+	if err := s.store.SetFeedbackStatus(r.Context(), id, "rejected", nil); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "feedback not found")
+			return
+		}
+		s.logger.Error("reject feedback failed", "err", err, "feedback_id", id)
+		s.writeError(w, r, http.StatusInternalServerError, "could not update feedback")
+		return
+	}
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"status": "rejected"})
+}
+
+// feedbackChangePrompt composes a Claude edit prompt from a feedback request:
+// the overall note, then each pinned element (label, ask, and CSS selector).
+func feedbackChangePrompt(f *domain.FeedbackRequest) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(f.Note))
+	for _, p := range f.Payload.Pins {
+		b.WriteString("\n- ")
+		if p.Label != "" {
+			b.WriteString(p.Label + ": ")
+		}
+		b.WriteString(strings.TrimSpace(p.Note))
+		if p.Selector != "" {
+			b.WriteString(" (element: " + p.Selector + ")")
+		}
+	}
+	return b.String()
 }
 
 // repoSlugForProject returns the "owner/name" GitHub slug for a project under

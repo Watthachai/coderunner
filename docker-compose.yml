@@ -32,11 +32,35 @@ services:
       - ./migrations/0003_skill_files.sql:/docker-entrypoint-initdb.d/0003_skill_files.sql:ro
       - ./migrations/0004_skill_versions.sql:/docker-entrypoint-initdb.d/0004_skill_versions.sql:ro
       - ./migrations/0005_project_repo.sql:/docker-entrypoint-initdb.d/0005_project_repo.sql:ro
+      - ./migrations/0006_job_traces.sql:/docker-entrypoint-initdb.d/0006_job_traces.sql:ro
+      - ./migrations/0007_feedback_requests.sql:/docker-entrypoint-initdb.d/0007_feedback_requests.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U crn -d crn"]
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # PostgREST — the public write tier for demo feedback widgets. Exposes a REST
+  # API over the `crn` Postgres so a remotely-deployed demo can POST a feedback
+  # row without CRN ever being publicly reachable (CRN reads the same DB locally
+  # via pgx). Unauthenticated requests run as `web_anon` (INSERT-only on
+  # feedback_requests; see migrations/0007).
+  postgrest:
+    image: postgrest/postgrest:v12.2.3
+    container_name: crn-postgrest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:crn_dev_password@postgres:5432/crn
+      PGRST_DB_SCHEMA: public
+      PGRST_DB_ANON_ROLE: web_anon
+      PGRST_SERVER_PORT: "3000"
+      # Demo widgets live on arbitrary origins — allow cross-origin feedback POSTs.
+      PGRST_SERVER_CORS_ALLOWED_ORIGINS: "*"
+    ports:
+      # Host 3010 -> container 3000. Baked into the widget as its ingest URL.
+      - "3010:3000"
 
   mongo:
     image: mongo:7

@@ -73,6 +73,9 @@ type manager struct {
 	repoPrivate bool
 	// runClaude toggles invoking Claude Code after files are materialized.
 	runClaude bool
+	// feedbackIngestURL is baked into the in-demo feedback widget injected into
+	// every build (the PostgREST endpoint the widget POSTs to). Empty -> skip.
+	feedbackIngestURL string
 
 	mu   sync.Mutex
 	subs map[uuid.UUID][]*subscriber          // jobID -> live listeners
@@ -105,22 +108,24 @@ func NewManager(
 	githubOwner string,
 	repoPrivate bool,
 	runClaude bool,
+	feedbackIngestURL string,
 ) domain.JobManager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &manager{
-		store:       store,
-		runner:      runner,
-		notifier:    notifier,
-		logger:      logger.With("component", "jobs"),
-		projectsDir: projectsDir,
-		gitRemote:   gitRemote,
-		githubOwner: githubOwner,
-		repoPrivate: repoPrivate,
-		hist:        make(map[uuid.UUID][]domain.BuildEventMsg),
-		runClaude:   runClaude,
-		subs:        make(map[uuid.UUID][]*subscriber),
+		store:             store,
+		runner:            runner,
+		notifier:          notifier,
+		logger:            logger.With("component", "jobs"),
+		projectsDir:       projectsDir,
+		gitRemote:         gitRemote,
+		githubOwner:       githubOwner,
+		repoPrivate:       repoPrivate,
+		hist:              make(map[uuid.UUID][]domain.BuildEventMsg),
+		runClaude:         runClaude,
+		feedbackIngestURL: feedbackIngestURL,
+		subs:              make(map[uuid.UUID][]*subscriber),
 	}
 }
 
@@ -477,10 +482,37 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		m.publishPhase(job.ID, "claude_skipped")
 	}
 
+	// Inject the in-demo feedback widget into the generated app so every demo
+	// ships the "💬 feedback" control deterministically (not left to Claude). Runs
+	// after generation, before the git phase, so the widget is committed + shipped.
+	// Best-effort: a widget hiccup must not fail an otherwise-good build.
+	if n, injErr := buildstep.InjectFeedbackWidget(workDir, job.ProjectID.String(), m.feedbackIngestURL, m.logger); injErr != nil {
+		log.Warn("inject feedback widget failed", "err", injErr)
+	} else if n > 0 {
+		log.Info("injected feedback widget", "html_files", n)
+	}
+
+	// Scaffold a zero-setup runner (docker-compose + QUICKSTART) for DB-backed
+	// demos so a cloned repo "just runs". Best-effort; announce it in the stream
+	// (and thus the saved trace) so the operator sees how to run the result.
+	if scaffolded, sErr := buildstep.ScaffoldRun(workDir, m.logger); sErr != nil {
+		log.Warn("scaffold run helpers failed", "err", sErr)
+	} else if scaffolded {
+		log.Info("scaffolded one-command run (docker-compose + QUICKSTART)")
+		m.publish(job.ID, domain.BuildEventMsg{
+			Kind:      domain.WSAssistantText,
+			Text:      "✓ ready to run — `docker compose up` (Postgres + schema + seed included) → http://localhost:3000 · or see QUICKSTART.md",
+			JobID:     job.ID.String(),
+			Timestamp: time.Now().UTC(),
+		})
+	}
+
 	// --- success: git commit + force-push the build branch ---
 	// pushRemote/pushBranch were resolved above per git model: the owner model
 	// pushes the project's own repo "main"; the shared model pushes a
-	// "crn/<slug>-<id8>" branch to CRN_GIT_REMOTE.
+	// "crn/<slug>-<id8>" branch to CRN_GIT_REMOTE. commitSHA is captured so the
+	// durable build trace can record exactly what commit this build produced.
+	var commitSHA string
 	if pushRemote != "" {
 		m.publishPhase(job.ID, "git")
 		m.publishPhase(job.ID, "push")
@@ -491,7 +523,16 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			m.finishFailed(ctx, job, "git push failed: "+err.Error(), result.CostUSD)
 			return
 		}
+		commitSHA = commit
 		log.Info("git pushed", "branch", pushBranch, "commit", commit, "remote", pushRemote)
+		// Surface the push in the live stream so it also lands in the saved trace:
+		// the operator sees exactly what was committed and where it went.
+		m.publish(job.ID, domain.BuildEventMsg{
+			Kind:      domain.WSAssistantText,
+			Text:      fmt.Sprintf("✓ pushed %s · %s → %s", pushBranch, shortSHA(commit), pushRemote),
+			JobID:     job.ID.String(),
+			Timestamp: time.Now().UTC(),
+		})
 		// Reuse docker_tag to record the produced branch (no docker pipeline yet).
 		if err := m.store.SetJobDockerTag(ctx, job.ID, "branch:"+pushBranch); err != nil {
 			log.Warn("persist branch tag failed", "err", err)
@@ -530,6 +571,17 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result))
+
+	// Snapshot the full live event stream + derived summary into the durable
+	// trace store BEFORE closeSubscribers discards the in-memory buffer. This is
+	// what makes the build inspectable retroactively (state trace).
+	m.saveTrace(ctx, job, traceMeta{
+		mode:   buildMode(spec),
+		commit: commitSHA,
+		branch: pushBranch,
+		remote: pushRemote,
+		cost:   result.CostUSD,
+	})
 	m.closeSubscribers(job.ID)
 }
 
@@ -560,7 +612,95 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
+
+	// Persist the trace for the failed build too — the operator needs to see how
+	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
+	// discards the in-memory buffer.
+	m.saveTrace(ctx, job, traceMeta{cost: costUSD, errMsg: errMsg})
 	m.closeSubscribers(job.ID)
+}
+
+// traceMeta carries the terminal metadata a build trace records beyond the
+// event stream itself: commit/branch/remote from the git phase, cost from the
+// Claude result, errMsg from a failure. Zero values are fine (e.g. a failed
+// build has no commit).
+type traceMeta struct {
+	mode   string
+	commit string
+	branch string
+	remote string
+	cost   float64
+	errMsg string
+}
+
+// saveTrace snapshots the job's in-memory live event buffer plus derived
+// metadata into the durable job_traces store. It MUST run before
+// closeSubscribers, which discards the buffer. Tool/file counts are derived from
+// the stream; started/finished are the first/last event timestamps. Best-effort:
+// a failure is logged, never changing the (already persisted) build outcome.
+func (m *manager) saveTrace(ctx context.Context, job *domain.Job, meta traceMeta) {
+	m.mu.Lock()
+	events := append([]domain.BuildEventMsg(nil), m.hist[job.ID]...)
+	m.mu.Unlock()
+
+	toolCount := 0
+	files := map[string]struct{}{}
+	for _, e := range events {
+		if e.Kind == domain.WSToolCall {
+			toolCount++
+			if e.File != "" {
+				files[e.File] = struct{}{}
+			}
+		}
+	}
+
+	var startedAt, finishedAt *time.Time
+	if len(events) > 0 {
+		s := events[0].Timestamp
+		f := events[len(events)-1].Timestamp
+		startedAt, finishedAt = &s, &f
+	}
+
+	tr := &domain.BuildTrace{
+		JobID:      job.ID,
+		ProjectID:  job.ProjectID,
+		BuildNo:    job.BuildNo,
+		Outcome:    string(job.Status),
+		Mode:       meta.mode,
+		CommitSHA:  meta.commit,
+		Branch:     meta.branch,
+		Remote:     meta.remote,
+		SessionID:  job.SessionID,
+		CostUSD:    meta.cost,
+		ToolCount:  toolCount,
+		FileCount:  len(files),
+		ErrorMsg:   meta.errMsg,
+		Events:     events,
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+	}
+	if err := m.store.SaveJobTrace(ctx, tr); err != nil {
+		m.logger.Error("save job trace failed", "job_id", job.ID, "err", err)
+		return
+	}
+	m.logger.Info("build trace saved",
+		"job_id", job.ID, "events", len(events), "tool_count", toolCount, "file_count", len(files))
+}
+
+// buildMode maps a payload spec to the trace mode label ("edit" | "build").
+func buildMode(spec payloadSpec) string {
+	if spec.Mode == "edit" {
+		return "edit"
+	}
+	return "build"
+}
+
+// shortSHA truncates a git commit sha to a display length.
+func shortSHA(sha string) string {
+	if len(sha) > 10 {
+		return sha[:10]
+	}
+	return sha
 }
 
 // notify appends a build_event to the central DB; failures are logged, never
@@ -912,6 +1052,7 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 			msg.Kind = domain.WSToolCall
 			msg.Tool = ev.ToolName
 			msg.File = detailFromToolInput(ev.ToolInput)
+			msg.Before, msg.After = codeFromToolInput(ev.ToolName, ev.ToolInput)
 		} else {
 			msg.Kind = domain.WSAssistantText
 			msg.Text = ev.Text
@@ -920,6 +1061,7 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 		msg.Kind = domain.WSToolCall
 		msg.Tool = ev.ToolName
 		msg.File = detailFromToolInput(ev.ToolInput)
+		msg.Before, msg.After = codeFromToolInput(ev.ToolName, ev.ToolInput)
 	case domain.ClaudeToolResult:
 		msg.Kind = domain.WSToolResult
 		msg.Tool = ev.ToolName
@@ -964,6 +1106,62 @@ func detailFromToolInput(input json.RawMessage) string {
 		return in.URL
 	}
 	return ""
+}
+
+// maxDiffRunes caps the code carried per Write/Edit event so large files don't
+// bloat the live stream or the persisted trace JSONB.
+const maxDiffRunes = 8000
+
+// codeFromToolInput extracts the code a file-editing tool call produced so the
+// GUI can render a diff. Write -> (before="", after=content); Edit -> (old,new);
+// MultiEdit -> the edits' old/new blocks joined. Other tools yield ("","").
+func codeFromToolInput(tool string, input json.RawMessage) (before, after string) {
+	if len(input) == 0 {
+		return "", ""
+	}
+	switch tool {
+	case "Write":
+		var in struct {
+			Content string `json:"content"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return "", capDiff(in.Content)
+		}
+	case "Edit":
+		var in struct {
+			OldString string `json:"old_string"`
+			NewString string `json:"new_string"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			return capDiff(in.OldString), capDiff(in.NewString)
+		}
+	case "MultiEdit":
+		var in struct {
+			Edits []struct {
+				OldString string `json:"old_string"`
+				NewString string `json:"new_string"`
+			} `json:"edits"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			var ob, ab strings.Builder
+			for _, e := range in.Edits {
+				ob.WriteString(e.OldString + "\n")
+				ab.WriteString(e.NewString + "\n")
+			}
+			return capDiff(ob.String()), capDiff(ab.String())
+		}
+	}
+	return "", ""
+}
+
+// capDiff truncates s to maxDiffRunes on a rune boundary (never splitting a
+// multibyte character), appending a marker when it had to cut.
+func capDiff(s string) string {
+	r := []rune(s)
+	if len(r) <= maxDiffRunes {
+		return s
+	}
+	return string(r[:maxDiffRunes]) + "\n… (truncated)"
 }
 
 // truncateOneLine collapses a value to a single line and caps its length so a

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FeedEvent, WSEventKind } from "../lib/types";
+import { lineDiff } from "../lib/linediff";
 
 const KIND_LABEL: Record<WSEventKind, string> = {
   assistant_text: "text",
@@ -14,7 +15,7 @@ const KIND_LABEL: Record<WSEventKind, string> = {
 
 const KIND_COLOR: Record<WSEventKind, string> = {
   assistant_text: "#ededed",
-  tool_call: "#64cefb",
+  tool_call: "#1cb0f6",
   tool_result: "#34d399",
   build_phase: "#a78bfa",
   result: "#34d399",
@@ -63,6 +64,63 @@ function EventBody({ e }: { e: FeedEvent }) {
   }
 }
 
+// The green/red diff a Write/Edit produced (Write => all additions).
+function DiffBlock({ before, after }: { before: string; after: string }) {
+  const lines = lineDiff(before, after);
+  return (
+    <pre className="diff mono feed-diff">
+      {lines.map((ln, i) => (
+        <span
+          key={i}
+          className={
+            ln.kind === "add"
+              ? "diff-add"
+              : ln.kind === "del"
+                ? "diff-del"
+                : "diff-ctx"
+          }
+        >
+          {ln.kind === "add" ? "+ " : ln.kind === "del" ? "- " : "  "}
+          {ln.text}
+          {"\n"}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
+function FeedRow({ e }: { e: FeedEvent }) {
+  const [open, setOpen] = useState(false);
+  const hasDiff =
+    e.event === "tool_call" && (Boolean(e.before) || Boolean(e.after));
+
+  return (
+    <div className="feed-item">
+      <div className="feed-row">
+        <span className="feed-time">{formatTime(e.timestamp)}</span>
+        <span className="feed-kind" style={{ color: KIND_COLOR[e.event] ?? "#ededed" }}>
+          {KIND_LABEL[e.event] ?? e.event}
+        </span>
+        <span className="feed-content">
+          <EventBody e={e} />
+          {hasDiff ? (
+            <button
+              type="button"
+              className="feed-difftoggle"
+              onClick={() => setOpen((o) => !o)}
+            >
+              {open ? "hide ▾" : "diff ▸"}
+            </button>
+          ) : null}
+        </span>
+      </div>
+      {hasDiff && open ? (
+        <DiffBlock before={e.before ?? ""} after={e.after ?? ""} />
+      ) : null}
+    </div>
+  );
+}
+
 export function EventFeed({ events }: { events: FeedEvent[] }) {
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -73,27 +131,14 @@ export function EventFeed({ events }: { events: FeedEvent[] }) {
 
   if (events.length === 0) {
     return (
-      <div className="feed feed--empty">
-        Waiting for the Claude Code stream…
-      </div>
+      <div className="feed feed--empty">Waiting for the Claude Code stream…</div>
     );
   }
 
   return (
     <div className="feed">
       {events.map((e) => (
-        <div key={e._id} className="feed-row">
-          <span className="feed-time">{formatTime(e.timestamp)}</span>
-          <span
-            className="feed-kind"
-            style={{ color: KIND_COLOR[e.event] ?? "#ededed" }}
-          >
-            {KIND_LABEL[e.event] ?? e.event}
-          </span>
-          <span className="feed-content">
-            <EventBody e={e} />
-          </span>
-        </div>
+        <FeedRow key={e._id} e={e} />
       ))}
       <div ref={endRef} />
     </div>

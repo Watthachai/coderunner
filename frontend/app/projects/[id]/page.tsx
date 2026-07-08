@@ -11,6 +11,7 @@ import { API_BASE } from "../../lib/config";
 import { ProjectTerminal } from "../../components/ProjectTerminal";
 import { RequestEdit } from "../../components/RequestEdit";
 import { ProjectIssues } from "../../components/ProjectIssues";
+import { ProjectBuilds } from "../../components/ProjectBuilds";
 
 export default async function ProjectTerminalPage(
   props: PageProps<"/projects/[id]">,
@@ -47,6 +48,8 @@ export default async function ProjectTerminalPage(
       <div className="term-panel">
         <ProjectTerminal projectId={id} />
       </div>
+
+      <ProjectBuilds projectId={id} />
     </main>
   );
 }

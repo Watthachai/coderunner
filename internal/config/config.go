@@ -64,6 +64,12 @@ type Config struct {
 	// harness skill. Set CRN_RUN_CLAUDE=false to materialize + push only.
 	RunClaude bool
 
+	// FeedbackIngestURL is the PostgREST endpoint baked into the in-demo feedback
+	// widget injected into every build (where the widget POSTs feedback). Defaults
+	// to the local PostgREST; set a public URL for deployed demos. Empty disables
+	// the widget injection.
+	FeedbackIngestURL string
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -115,6 +121,7 @@ func Load() (*Config, error) {
 		GithubOwner:        os.Getenv("CRN_GITHUB_OWNER"),
 		RepoPrivate:        getEnvBool("CRN_REPO_PRIVATE", true),
 		RunClaude:          getEnvBool("CRN_RUN_CLAUDE", true),
+		FeedbackIngestURL:  getEnv("CRN_FEEDBACK_INGEST_URL", "http://localhost:3010/feedback_requests"),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),

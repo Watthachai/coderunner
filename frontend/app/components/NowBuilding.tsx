@@ -1,12 +1,19 @@
 "use client";
 
 import { useMemo } from "react";
-import type { BuildingJob, FeedEvent } from "../lib/types";
+import type { BuildingJob, BuildTrace, FeedEvent } from "../lib/types";
 import { useJobStream } from "../lib/useJobStream";
 import { useTick } from "../lib/useTick";
-import { formatElapsed } from "../lib/format";
+import { formatElapsed, formatDuration, formatRelative } from "../lib/format";
 import { PhasePipeline, phaseRank } from "./PhaseTrack";
 import { BuildConsole } from "./BuildConsole";
+import { SpanGraph, traceNodeStates } from "./TraceSpanGraph";
+
+const OUTCOME_COLOR: Record<string, string> = {
+  done: "var(--done)",
+  failed: "var(--error)",
+  cancelled: "var(--fg-dim)",
+};
 
 // Derived readouts for the telemetry HUD, computed once per event batch.
 interface Telemetry {
@@ -125,12 +132,91 @@ function BuildingCard({ job, nowMs }: { job: BuildingJob; nowMs: number }) {
   );
 }
 
+// The idle console. When nothing is building, the reactor stays lit and the
+// console holds the last finished build's trace on screen — "armed" and ready
+// for the next build or an incoming edit-request API call, rather than snapping
+// to a blank standby.
+function IdleConsole({
+  queued,
+  lastTrace,
+  nowMs,
+}: {
+  queued: number;
+  lastTrace: BuildTrace | null;
+  nowMs: number;
+}) {
+  const outcomeColor = lastTrace
+    ? (OUTCOME_COLOR[lastTrace.outcome] ?? "var(--fg-dim)")
+    : "var(--fg-dim)";
+
+  return (
+    <div className={`standby${lastTrace ? " standby--armed" : ""}`}>
+      <div className="reactor" aria-hidden="true">
+        <span className="reactor-core" />
+        <span className="reactor-ring" />
+      </div>
+      <p className="standby-title">
+        {lastTrace ? "ARMED · awaiting request" : "STANDBY · systems nominal"}
+      </p>
+      <p className="standby-sub">
+        {queued > 0
+          ? `${queued} ${queued === 1 ? "build" : "builds"} holding in the queue`
+          : lastTrace
+            ? "Console idle — ready for the next build or an edit request."
+            : "No builds in flight. Console is armed and idle."}
+      </p>
+
+      {lastTrace ? (
+        <div className="idle-last">
+          <div className="idle-last-head">
+            <span className="bc-eyebrow">last build</span>
+            <span className="idle-last-proj">
+              {lastTrace.project_id.slice(0, 8)} #{lastTrace.build_no}
+            </span>
+            <span
+              className="pill"
+              style={{ color: outcomeColor, borderColor: outcomeColor }}
+            >
+              <span
+                className="pill-dot"
+                style={{ background: outcomeColor }}
+                aria-hidden
+              />
+              {lastTrace.outcome}
+            </span>
+            <span className="idle-last-rel">
+              {formatRelative(
+                lastTrace.finished_at ?? lastTrace.created_at,
+                nowMs,
+              )}
+            </span>
+          </div>
+          <SpanGraph states={traceNodeStates(lastTrace)} compact />
+          <div className="idle-last-meta">
+            {lastTrace.commit_sha ? (
+              <code>commit {lastTrace.commit_sha.slice(0, 7)}</code>
+            ) : (
+              <span>no commit</span>
+            )}
+            {lastTrace.branch ? <code>{lastTrace.branch}</code> : null}
+            <span>
+              {formatDuration(lastTrace.started_at, lastTrace.finished_at)}
+            </span>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function NowBuilding({
   building,
   queued,
+  lastTrace = null,
 }: {
   building: BuildingJob[];
   queued: number;
+  lastTrace?: BuildTrace | null;
 }) {
   const nowMs = useTick(1000);
 
@@ -142,18 +228,7 @@ export function NowBuilding({
       </header>
 
       {building.length === 0 ? (
-        <div className="standby">
-          <div className="reactor" aria-hidden="true">
-            <span className="reactor-core" />
-            <span className="reactor-ring" />
-          </div>
-          <p className="standby-title">STANDBY · systems nominal</p>
-          <p className="standby-sub">
-            {queued > 0
-              ? `${queued} ${queued === 1 ? "build" : "builds"} holding in the queue`
-              : "No builds in flight. Console is armed and idle."}
-          </p>
-        </div>
+        <IdleConsole queued={queued} lastTrace={lastTrace} nowMs={nowMs} />
       ) : (
         <div className="bc-list">
           {building.map((j) => (

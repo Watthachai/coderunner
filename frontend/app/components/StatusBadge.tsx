@@ -14,14 +14,15 @@ const LABEL: Record<BadgeStatus, string> = {
   cancelled: "cancelled",
 };
 
-// One accent + semantic colors against the black canvas (midnight studio).
+// Duolingo palette — status color is information (queued=amber, building=blue,
+// done=green, failed=red, idle/cancelled=nav-gray).
 const COLOR: Record<BadgeStatus, string> = {
-  idle: "#6b7280",
-  queued: "#a78bfa",
-  building: "#64cefb",
-  done: "#34d399",
-  failed: "#f87171",
-  cancelled: "#9ca3af",
+  idle: "#afafaf",
+  queued: "#ff9600",
+  building: "#1cb0f6",
+  done: "#58cc02",
+  failed: "#ff4b4b",
+  cancelled: "#afafaf",
 };
 
 export function StatusBadge({ status }: { status: BadgeStatus }) {

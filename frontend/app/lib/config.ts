@@ -94,6 +94,45 @@ export function dashboardUrl(): string {
   return `${API_BASE}/internal/dashboard`;
 }
 
+// Durable build traces (no auth): the persisted per-build state history that
+// survives after the live WS stream is discarded. Summary reads omit `events`;
+// the single-trace read includes the full replayable event stream.
+//   GET /internal/traces?limit=N            -> { traces: BuildTrace[] }
+//   GET /internal/jobs/{id}/trace           -> BuildTrace (with events)
+//   GET /internal/projects/{id}/builds      -> { builds: BuildTrace[] }
+export function tracesUrl(limit?: number): string {
+  return limit === undefined
+    ? `${API_BASE}/internal/traces`
+    : `${API_BASE}/internal/traces?limit=${limit}`;
+}
+
+export function traceUrl(jobId: string): string {
+  return `${API_BASE}/internal/jobs/${encodeURIComponent(jobId)}/trace`;
+}
+
+export function projectBuildsUrl(projectId: string): string {
+  return `${API_BASE}/internal/projects/${encodeURIComponent(
+    projectId,
+  )}/builds`;
+}
+
+// In-demo feedback (Edit Request Panel). Demo widgets write via PostgREST; these
+// are the CRN read/act endpoints the dashboard uses.
+//   GET  /internal/feedback?status=new        -> { feedback: FeedbackRequest[] }
+//   POST /internal/feedback/{id}/approve      -> enqueues an edit build
+//   POST /internal/feedback/{id}/reject
+export function feedbackUrl(status?: string): string {
+  return status
+    ? `${API_BASE}/internal/feedback?status=${encodeURIComponent(status)}`
+    : `${API_BASE}/internal/feedback`;
+}
+export function feedbackApproveUrl(id: string): string {
+  return `${API_BASE}/internal/feedback/${encodeURIComponent(id)}/approve`;
+}
+export function feedbackRejectUrl(id: string): string {
+  return `${API_BASE}/internal/feedback/${encodeURIComponent(id)}/reject`;
+}
+
 // Skill management (no auth): the harness Agent Skills injected into builds.
 //   GET  /internal/skills          -> list
 //   PUT  /internal/skills/{name}   -> upsert

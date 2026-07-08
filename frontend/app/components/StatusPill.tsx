@@ -3,7 +3,7 @@
 
 const COLOR: Record<string, string> = {
   queued: "var(--queued)",
-  building: "var(--accent)",
+  building: "var(--building)",
   done: "var(--done)",
   failed: "var(--error)",
   cancelled: "var(--fg-dim)",
