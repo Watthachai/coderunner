@@ -28,11 +28,11 @@ datasource db {
 
 // Derived from src/types.ts `Task` + BRD "task board" entity.
 model Task {
-  id        String   @id @default(cuid())
-  title     String
-  done      Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(cuid())
+  title      String
+  done       Boolean  @default(false)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 }
 ```
 
@@ -42,7 +42,24 @@ Mapping guide from a TS mock to Prisma:
 - optional `foo?: T` -> `foo T?`.
 - union/enum literal (`"todo" | "doing" | "done"`) -> a Prisma `enum`.
 - nested arrays/relations -> separate models + a relation (`@relation`) with a foreign-key field.
-- always add `createdAt DateTime @default(now())` where it helps seeding/ordering.
+- add a `created_at DateTime @default(now())` where it helps seeding/ordering.
+
+### Column naming — pick ONE convention and use it EVERYWHERE (critical)
+
+Choose a single style for scalar/column names and apply it to **every field in every
+model**. Mixing styles is a real bug: the Prisma field name is exactly what your
+queries use, so `prisma.customer.findMany({ orderBy: { createdAt } })` fails at
+runtime if the schema declared `created_at` (and vice-versa).
+
+- **Recommended: `snake_case`** for all DB columns (`created_at`, `order_id`,
+  `product_name`) — it mirrors the prototype's `src/types.ts` UI shapes 1:1, so the
+  `.map()` from Prisma rows to UI props stays trivial.
+- Do **NOT** mix — e.g. `Customer.createdAt` in one model and `Order.created_at` in
+  another. Grep the finished `schema.prisma` and every `orderBy`/`where`/`select`
+  in `app/` to confirm they all use the same names.
+- If code truly needs camelCase Prisma fields but snake_case DB columns, use
+  `@map`: `createdAt DateTime @default(now()) @map("created_at")` — but consistency
+  beats cleverness; prefer plain snake_case throughout.
 
 ## 3. Prisma client singleton — `lib/prisma.ts`
 
@@ -72,7 +89,7 @@ import { prisma } from "@/lib/prisma";
 import AppView from "@/components/AppView"; // the ported "use client" UI
 
 export default async function Page() {
-  const tasks = await prisma.task.findMany({ orderBy: { createdAt: "asc" } });
+  const tasks = await prisma.task.findMany({ orderBy: { created_at: "asc" } });
   return <AppView initialTasks={tasks} />;
 }
 ```

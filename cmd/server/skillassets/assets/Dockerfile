@@ -8,9 +8,12 @@ FROM node:20-alpine AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-# Install with whichever lockfile is present.
+# Install with whichever lockfile is present. --ignore-scripts skips lifecycle
+# scripts (e.g. a `postinstall: prisma generate`) at this stage: the Prisma
+# schema isn't copied yet, so postinstall would fail. The client is generated
+# explicitly in the builder stage below, after the full source is copied.
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 # 2. Build the app (also generates the Prisma client).
 FROM node:20-alpine AS builder
