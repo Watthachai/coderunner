@@ -56,8 +56,11 @@ services:
       PGRST_DB_SCHEMA: public
       PGRST_DB_ANON_ROLE: web_anon
       PGRST_SERVER_PORT: "3000"
-      # Demo widgets live on arbitrary origins — allow cross-origin feedback POSTs.
-      PGRST_SERVER_CORS_ALLOWED_ORIGINS: "*"
+      # Demo widgets live on arbitrary origins. LEAVE cors-allowed-origins UNSET:
+      # unset = PostgREST's default fully-permissive CORS (ACAO:* plus the
+      # Allow-Methods/Allow-Headers a JSON POST preflight needs). Setting it to
+      # "*" treats "*" as a literal origin, drops those preflight headers, and
+      # breaks the widget's cross-origin POST. (Verified on postgrest v12.2.3.)
     ports:
       # Host 3010 -> container 3000. Baked into the widget as its ingest URL.
       - "3010:3000"

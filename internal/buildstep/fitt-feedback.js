@@ -11,7 +11,12 @@
 (function () {
   "use strict";
 
-  var script = document.currentScript;
+  // document.currentScript is set for a parser-inserted <script> (the inline
+  // HTML case), but is null when a framework (React/Next) inserts the external
+  // <script> itself — fall back to finding our tag by its marker attribute.
+  var script =
+    document.currentScript ||
+    document.querySelector("script[data-fitt-feedback]");
   var cfg = (script && script.dataset) || {};
   var PROJECT = cfg.project || "";
   var INGEST = cfg.ingest || "";
@@ -23,6 +28,9 @@
   var GREEN = "#58cc02";
   var pins = []; // { selector, label, note, box, region_shot }
   var pointing = false;
+  var cropOverlay = null,
+    cropRect = null,
+    cropStart = null;
   var category = "feature";
   var priority = "med";
 
@@ -68,7 +76,34 @@
     return txt ? t + ' "' + txt.slice(0, 24) + '"' : t;
   }
 
+  // Rasterize an already-loaded <img> to a (downscaled) data URI. An SVG loaded
+  // as an <img> runs in restricted mode and cannot fetch external image URLs, so
+  // a cloned <img src="https://…"> renders blank — the "placeholder div" look.
+  // Painting the live element to a canvas embeds its actual pixels instead.
+  // Returns null when the image isn't loaded yet or is a cross-origin canvas
+  // taint (no client-side capture can read those — a browser security limit).
+  function imgToDataURL(img) {
+    try {
+      var nw = img.naturalWidth,
+        nh = img.naturalHeight;
+      if (!img.complete || !nw || !nh) return null;
+      var MAX = 1000; // cap the longest side to keep the base64 payload sane
+      var scale = Math.min(1, MAX / Math.max(nw, nh));
+      var cw = Math.max(1, Math.round(nw * scale));
+      var ch = Math.max(1, Math.round(nh * scale));
+      var c = document.createElement("canvas");
+      c.width = cw;
+      c.height = ch;
+      c.getContext("2d").drawImage(img, 0, 0, cw, ch);
+      return c.toDataURL("image/png"); // throws if the canvas is CORS-tainted
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Copy computed styles onto a clone tree so an SVG <foreignObject> renders it.
+  // <img> elements are additionally rasterized to data URIs (see imgToDataURL);
+  // background-image URLs still won't load (that would need async fetching).
   function inlineStyles(src, dst) {
     var cs = getComputedStyle(src);
     var s = "";
@@ -77,6 +112,13 @@
       s += p + ":" + cs.getPropertyValue(p) + ";";
     }
     dst.setAttribute("style", s);
+    if (src.tagName === "IMG" && dst.tagName === "IMG") {
+      var uri = imgToDataURL(src);
+      if (uri) {
+        dst.setAttribute("src", uri);
+        dst.removeAttribute("srcset"); // else the browser may re-pick the URL
+      }
+    }
     var sc = src.children || [];
     var dc = dst.children || [];
     for (var j = 0; j < sc.length && j < dc.length; j++) inlineStyles(sc[j], dc[j]);
@@ -154,6 +196,9 @@
     ".pinbtn{width:100%;padding:9px;border:2px dashed #cfcfcf;border-radius:10px;background:#fafafa;color:#777;" +
     "font-size:13px;font-weight:800;cursor:pointer;margin-bottom:10px}" +
     ".pinbtn.on{border-color:" + GREEN + ";color:" + GREEN + ";border-style:solid;background:rgba(88,204,2,.06)}" +
+    ".cropbtn{width:100%;padding:9px;border:2px dashed #cfcfcf;border-radius:10px;background:#fafafa;color:#777;" +
+    "font-size:13px;font-weight:800;cursor:pointer;margin-bottom:10px}" +
+    ".cropbtn.on{border-color:" + GREEN + ";color:" + GREEN + ";border-style:solid;background:rgba(88,204,2,.06)}" +
     ".pins{list-style:none;margin:0 0 10px;padding:0;display:flex;flex-direction:column;gap:6px}" +
     ".pin{display:flex;gap:8px;align-items:flex-start;border:1px solid #eee;border-radius:8px;padding:6px}" +
     ".pin img{width:64px;height:auto;max-height:48px;border-radius:4px;border:1px solid #eee;object-fit:cover}" +
@@ -180,6 +225,7 @@
     "<button class='chip prio on' data-prio='med'>med</button>" +
     "<button class='chip prio' data-prio='high'>high</button></div>" +
     "<button class='pinbtn'>📍 ปักจุดบนหน้า</button>" +
+    "<button class='cropbtn'>◻ ลากครอปพื้นที่</button>" +
     "<ul class='pins'></ul>" +
     "<label>รายละเอียด</label>" +
     "<textarea placeholder='อยากให้เปลี่ยนเป็นแบบไหน?'></textarea>" +
@@ -190,6 +236,7 @@
   var fab = root.querySelector(".fab");
   var panel = root.querySelector(".panel");
   var pinbtn = root.querySelector(".pinbtn");
+  var cropbtn = root.querySelector(".cropbtn");
   var pinsEl = root.querySelector(".pins");
   var noteEl = root.querySelector("textarea");
   var sendBtn = root.querySelector(".send");
@@ -197,7 +244,10 @@
 
   fab.addEventListener("click", function () {
     panel.hidden = !panel.hidden;
-    if (panel.hidden) stopPointing();
+    if (panel.hidden) {
+      stopPointing();
+      stopCrop();
+    }
   });
 
   root.querySelectorAll(".cat .chip").forEach(function (c) {
@@ -218,6 +268,11 @@
   pinbtn.addEventListener("click", function () {
     if (pointing) stopPointing();
     else startPointing();
+  });
+
+  cropbtn.addEventListener("click", function () {
+    if (cropOverlay) stopCrop();
+    else startCrop();
   });
 
   function renderPins() {
@@ -268,6 +323,7 @@
   }
 
   function startPointing() {
+    stopCrop();
     pointing = true;
     pinbtn.classList.add("on");
     pinbtn.textContent = "📍 คลิก element ที่ต้องการ (Esc ยกเลิก)";
@@ -289,6 +345,120 @@
 
   function onEsc(e) {
     if (e.key === "Escape") { stopPointing(); panel.hidden = false; }
+  }
+
+  // --- region crop (drag a rectangle to capture an area) ----------------------
+
+  function startCrop() {
+    stopPointing();
+    cropbtn.classList.add("on");
+    cropbtn.textContent = "◻ ลากคลุมพื้นที่ (Esc ยกเลิก)";
+    panel.hidden = true;
+    cropOverlay = document.createElement("div");
+    cropOverlay.style.cssText =
+      "position:fixed;inset:0;z-index:2147483646;cursor:crosshair;background:rgba(0,0,0,0.06)";
+    cropRect = document.createElement("div");
+    cropRect.style.cssText =
+      "position:fixed;display:none;pointer-events:none;border:2px solid " +
+      GREEN +
+      ";background:rgba(88,204,2,0.12)";
+    cropOverlay.appendChild(cropRect);
+    document.documentElement.appendChild(cropOverlay);
+    cropOverlay.addEventListener("mousedown", onCropDown);
+    document.addEventListener("keydown", onCropEsc, true);
+  }
+
+  function stopCrop() {
+    cropbtn.classList.remove("on");
+    cropbtn.textContent = "◻ ลากครอปพื้นที่";
+    document.removeEventListener("keydown", onCropEsc, true);
+    document.removeEventListener("mousemove", onCropMove, true);
+    document.removeEventListener("mouseup", onCropUp, true);
+    if (cropOverlay) {
+      cropOverlay.remove();
+      cropOverlay = null;
+      cropRect = null;
+    }
+    cropStart = null;
+  }
+
+  function onCropEsc(e) {
+    if (e.key === "Escape") { stopCrop(); panel.hidden = false; }
+  }
+
+  function drawCropRect(e) {
+    var x = Math.min(cropStart.x, e.clientX),
+      y = Math.min(cropStart.y, e.clientY);
+    var w = Math.abs(e.clientX - cropStart.x),
+      h = Math.abs(e.clientY - cropStart.y);
+    cropRect.style.left = x + "px";
+    cropRect.style.top = y + "px";
+    cropRect.style.width = w + "px";
+    cropRect.style.height = h + "px";
+  }
+
+  function onCropDown(e) {
+    e.preventDefault();
+    cropStart = { x: e.clientX, y: e.clientY };
+    cropRect.style.display = "block";
+    drawCropRect(e);
+    document.addEventListener("mousemove", onCropMove, true);
+    document.addEventListener("mouseup", onCropUp, true);
+  }
+
+  function onCropMove(e) {
+    if (cropStart) drawCropRect(e);
+  }
+
+  function onCropUp(e) {
+    if (!cropStart) return;
+    var x = Math.min(cropStart.x, e.clientX),
+      y = Math.min(cropStart.y, e.clientY);
+    var w = Math.abs(e.clientX - cropStart.x),
+      h = Math.abs(e.clientY - cropStart.y);
+    stopCrop();
+    panel.hidden = false;
+    if (w < 8 || h < 8) return; // ignore tiny drags
+    pins.push({
+      selector: "region",
+      label: "พื้นที่ " + Math.round(w) + "×" + Math.round(h),
+      note: "",
+      box: {
+        x: Math.round(x + window.scrollX),
+        y: Math.round(y + window.scrollY),
+        w: Math.round(w),
+        h: Math.round(h),
+      },
+      region_shot: captureRegion(x, y, w, h),
+    });
+    renderPins();
+  }
+
+  // Capture a viewport rectangle by cloning <body> into an SVG foreignObject,
+  // offset so the selected rect aligns to the image origin. Cross-origin images
+  // won't render (CORS) but layout/text/colors do — enough to point at a spot.
+  function captureRegion(vx, vy, w, h) {
+    try {
+      w = Math.max(1, Math.round(w));
+      h = Math.max(1, Math.round(h));
+      var body = document.body;
+      var clone = body.cloneNode(true);
+      inlineStyles(body, clone);
+      clone.style.margin = "0";
+      var html = new XMLSerializer().serializeToString(clone);
+      var fw = Math.max(body.scrollWidth, window.innerWidth);
+      var fh = Math.max(body.scrollHeight, window.innerHeight);
+      var ox = -(vx + window.scrollX),
+        oy = -(vy + window.scrollY);
+      var svg =
+        "<svg xmlns='http://www.w3.org/2000/svg' width='" + w + "' height='" + h + "'>" +
+        "<foreignObject x='" + ox + "' y='" + oy + "' width='" + fw + "' height='" + fh + "'>" +
+        "<div xmlns='http://www.w3.org/1999/xhtml'>" + html + "</div>" +
+        "</foreignObject></svg>";
+      return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svg)));
+    } catch (e) {
+      return "";
+    }
   }
 
   // --- submit -----------------------------------------------------------------
