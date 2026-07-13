@@ -38,16 +38,23 @@ go version   | grep -qE 'go1\.(2[3-9]|[3-9][0-9])'    || warn "Go 1.23+ recommen
 node -v      | grep -qE 'v(2[0-9]|[3-9][0-9])'         || warn "Node 20+ recommended (got: $(node -v))"
 
 # --- 3) Docker Desktop ------------------------------------------------------
-if ! command -v docker >/dev/null 2>&1; then
+if [ ! -d /Applications/Docker.app ]; then
   info "Installing Docker Desktop…"
   brew install --cask docker
 fi
-info "Starting Docker Desktop and waiting for the daemon…"
-open -ga Docker 2>/dev/null || true
+# Clear the quarantine flag so a freshly-installed Docker.app / docker CLI isn't
+# killed by Gatekeeper on first exec ("Killed: 9").
+xattr -dr com.apple.quarantine /Applications/Docker.app 2>/dev/null || true
+info "Opening Docker Desktop…"
+open -a Docker 2>/dev/null || true
+echo "    → On Docker's FIRST launch, accept the terms and enter your password"
+echo "      when prompted, then leave it running. Waiting for the daemon"
+echo "      (first launch can take a couple of minutes)…"
 tries=0
 until docker info >/dev/null 2>&1; do
-  tries=$((tries + 1)); [ "$tries" -gt 60 ] && die "Docker daemon not ready — open Docker Desktop, then re-run."
-  sleep 2
+  tries=$((tries + 1))
+  [ "$tries" -gt 90 ] && die "Docker daemon still not ready. Finish Docker Desktop's first-run setup — wait until the menu-bar whale reads 'Docker Desktop is running' — then re-run this script."
+  sleep 3
 done
 info "Docker is running."
 
