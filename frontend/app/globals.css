@@ -3243,6 +3243,17 @@ body {
   font-size: 0.66rem;
   color: var(--fg-dim);
 }
+.fb-issue {
+  margin-left: 0.5rem;
+  text-decoration: none;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  color: #1cb0f6;
+  border: 1px solid rgba(28, 176, 246, 0.4);
+}
+.fb-issue:hover {
+  background: rgba(28, 176, 246, 0.1);
+}
 .fb-note {
   margin: 0.7rem 0 0;
   font-size: 0.92rem;
@@ -3377,4 +3388,164 @@ body {
   max-height: 300px;
   overflow: auto;
   font-size: 0.72rem;
+}
+
+/* --- feedback screenshot lightbox (click any shot to enlarge) --- */
+.fb-zoomable {
+  cursor: zoom-in;
+  outline: 2px solid transparent;
+  transition: outline-color 0.12s;
+}
+.fb-zoomable:hover {
+  outline-color: var(--accent);
+}
+.fb-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem;
+  cursor: zoom-out;
+}
+.fb-lightbox img {
+  max-width: 96vw;
+  max-height: 92vh;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+}
+.fb-lightbox-close {
+  position: fixed;
+  top: 18px;
+  right: 22px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+/* --- Activity: live vertical timeline (btop-ish) --- */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tl-row {
+  display: flex;
+  gap: 0.7rem;
+  position: relative;
+}
+.tl-rail {
+  position: relative;
+  width: 14px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+}
+.tl-rail::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--hairline);
+}
+.tl-row:first-child .tl-rail::before {
+  top: 13px;
+}
+.tl-row:last-child .tl-rail::before {
+  bottom: calc(100% - 13px);
+}
+.tl-node {
+  position: relative;
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  margin-top: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px var(--panel);
+}
+.tl-node--live {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.tl-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.tl-row:last-child .tl-body {
+  border-bottom: none;
+}
+.tl-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.tl-kind {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 800;
+}
+.tl-proj {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--brand-fg);
+}
+.tl-build {
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+.tl-time {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  color: var(--fg-dim);
+}
+
+/* --- Vitals load-bar meter (btop-ish pipeline proportions) --- */
+.vitals-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.vitals-meter {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.vm-seg {
+  min-width: 8px;
+  border-radius: 999px;
+  transition: flex-grow 0.5s ease;
+}
+.vm-empty {
+  flex: 1;
 }

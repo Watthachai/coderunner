@@ -5,7 +5,7 @@
 // operator actions on it. Fed by real requests (useFeedback); approve enqueues
 // an edit build, reject closes the request.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type {
   FeedbackRequest,
   FeedbackCategory,
@@ -32,12 +32,14 @@ function FeedbackCard({
   busy,
   onApprove,
   onReject,
+  onZoom,
 }: {
   req: FeedbackRequest;
   nowMs: number;
   busy: boolean;
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  onZoom: (src: string) => void;
 }) {
   const cat = (CAT_GLYPH[req.category as FeedbackCategory] ?? "•") + " ";
   return (
@@ -54,6 +56,16 @@ function FeedbackCard({
           {formatRelative(req.created_at, nowMs)} ·{" "}
           {req.reporter || "anonymous"}
         </span>
+        {req.issue_url ? (
+          <a
+            className="pill fb-issue"
+            href={req.issue_url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            #{req.issue_number} ↗
+          </a>
+        ) : null}
       </header>
 
       <p className="fb-note">{req.note}</p>
@@ -62,8 +74,13 @@ function FeedbackCard({
         <div className="fb-shots">
           <figure className="fb-shot">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={req.payload.full_shot} alt="full page" />
-            <figcaption>full page</figcaption>
+            <img
+              className="fb-zoomable"
+              src={req.payload.full_shot}
+              alt="full page"
+              onClick={() => onZoom(req.payload.full_shot)}
+            />
+            <figcaption>full page · click to enlarge</figcaption>
           </figure>
         </div>
       ) : null}
@@ -74,7 +91,12 @@ function FeedbackCard({
             <li className="fb-pin" key={i}>
               {p.region_shot ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img className="fb-pin-shot" src={p.region_shot} alt={p.label} />
+                <img
+                  className="fb-pin-shot fb-zoomable"
+                  src={p.region_shot}
+                  alt={p.label}
+                  onClick={() => onZoom(p.region_shot)}
+                />
               ) : null}
               <div className="fb-pin-body">
                 <span className="fb-pin-label">📍 {p.label || "element"}</span>
@@ -133,16 +155,20 @@ export function FeedbackModal({
   onClose: () => void;
 }) {
   const nowMs = useTick(30000);
+  const [zoom, setZoom] = useState<string | null>(null);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (zoom) setZoom(null); // close the lightbox first, then the modal
+      else onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, zoom]);
 
   return (
+    <>
     <div className="fb-overlay" onClick={onClose}>
       <div
         className="fb-modal"
@@ -187,11 +213,27 @@ export function FeedbackModal({
                 busy={busyId === r.id}
                 onApprove={onApprove}
                 onReject={onReject}
+                onZoom={setZoom}
               />
             ))
           )}
         </div>
       </div>
     </div>
+    {zoom ? (
+      <div
+        className="fb-lightbox"
+        onClick={() => setZoom(null)}
+        role="dialog"
+        aria-label="Screenshot"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={zoom} alt="feedback screenshot" />
+        <button type="button" className="fb-lightbox-close" aria-label="Close">
+          ✕
+        </button>
+      </div>
+    ) : null}
+    </>
   );
 }

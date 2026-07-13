@@ -237,4 +237,6 @@ export interface FeedbackRequest {
   reporter: string; // optional; "" when anonymous
   payload: FeedbackPayload;
   created_at: string; // RFC3339
+  issue_number?: number; // set once mirrored to GitHub
+  issue_url?: string;
 }
