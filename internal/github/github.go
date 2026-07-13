@@ -113,20 +113,24 @@ var crnFeedbackLabels = []struct{ name, color, desc string }{
 }
 
 // EnsureLabels idempotently upserts the CRN feedback label set on repoSlug
-// (`gh label create --force`). Best-effort: per-label failures are logged, not
-// returned, so a missing-label race never blocks issue creation.
+// (`gh label create --force`). Per-label failures are logged and the first is
+// returned, so the caller can retry rather than create issues with missing labels.
 func EnsureLabels(ctx context.Context, repoSlug string, logger *slog.Logger) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	log := logger.With("component", "github", "repo", repoSlug)
+	var firstErr error
 	for _, l := range crnFeedbackLabels {
 		if _, err := runGH(ctx, log, "label", "create", l.name,
 			"--repo", repoSlug, "--color", l.color, "--description", l.desc, "--force"); err != nil {
 			log.Warn("ensure label failed", "label", l.name, "err", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("github: ensure label %q on %s: %w", l.name, repoSlug, err)
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // CreateIssue opens an issue on repoSlug and returns its number + URL. gh prints

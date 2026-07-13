@@ -13,15 +13,17 @@ import (
 
 // FeedbackStore is the subset of domain.Store the watcher needs.
 type FeedbackStore interface {
-	ListFeedbackNeedingIssue(ctx context.Context, limit int) ([]*domain.FeedbackRequest, error)
+	ListFeedbackNeedingIssue(ctx context.Context, limit int, exclude []uuid.UUID) ([]*domain.FeedbackRequest, error)
 	GetProject(ctx context.Context, id uuid.UUID) (*domain.Project, error)
-	SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int, url string) error
+	SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int, url string) (bool, error)
 }
 
-// Issuer creates GitHub issues and ensures the label set exists.
+// Issuer creates GitHub issues, ensures the label set exists, and can close a
+// duplicate it just created if it lost the create race.
 type Issuer interface {
 	EnsureLabels(ctx context.Context, repoSlug string) error
 	CreateIssue(ctx context.Context, repoSlug, title, body string, labels []string) (github.Issue, error)
+	CloseIssue(ctx context.Context, repoSlug string, number int, reason, comment string) error
 }
 
 // Watcher periodically mirrors un-mirrored feedback rows into GitHub issues.
@@ -69,15 +71,18 @@ func (w *Watcher) Run(ctx context.Context) {
 }
 
 func (w *Watcher) reconcileOnce(ctx context.Context) {
-	rows, err := w.store.ListFeedbackNeedingIssue(ctx, 20)
+	// Exclude rows we've given up on so permanently-unresolvable feedback can't
+	// occupy the fixed-size batch and starve newer feedback.
+	exclude := make([]uuid.UUID, 0, len(w.skip))
+	for id := range w.skip {
+		exclude = append(exclude, id)
+	}
+	rows, err := w.store.ListFeedbackNeedingIssue(ctx, 20, exclude)
 	if err != nil {
 		w.logger.Warn("list feedback needing issue failed", "err", err)
 		return
 	}
 	for _, f := range rows {
-		if w.skip[f.ID] {
-			continue
-		}
 		project, err := w.store.GetProject(ctx, f.ProjectID)
 		if err != nil {
 			// Unknown/deleted project (the widget tolerates unknown ids). Skip for
@@ -94,7 +99,10 @@ func (w *Watcher) reconcileOnce(ctx context.Context) {
 		}
 		if !w.ensured[repoSlug] {
 			if err := w.issuer.EnsureLabels(ctx, repoSlug); err != nil {
-				w.logger.Warn("ensure labels failed", "err", err, "repo", repoSlug)
+				// Don't mark ensured — retry next tick instead of creating issues
+				// whose (missing) labels would make gh fail.
+				w.logger.Warn("ensure labels failed; retrying next tick", "err", err, "repo", repoSlug)
+				continue
 			}
 			w.ensured[repoSlug] = true
 		}
@@ -105,8 +113,16 @@ func (w *Watcher) reconcileOnce(ctx context.Context) {
 			w.logger.Warn("create issue failed", "err", err, "feedback_id", f.ID)
 			continue
 		}
-		if err := w.store.SetFeedbackIssue(ctx, f.ID, iss.Number, iss.URL); err != nil {
+		won, err := w.store.SetFeedbackIssue(ctx, f.ID, iss.Number, iss.URL)
+		if err != nil {
 			w.logger.Warn("persist feedback issue failed", "err", err, "feedback_id", f.ID)
+			continue
+		}
+		if !won {
+			// The approve handler mirrored this row first — our issue is a duplicate.
+			if cerr := w.issuer.CloseIssue(ctx, repoSlug, iss.Number, "not planned", "Duplicate — feedback already mirrored."); cerr != nil {
+				w.logger.Warn("close duplicate issue failed", "err", cerr, "issue", iss.Number)
+			}
 			continue
 		}
 		w.logger.Info("mirrored feedback to issue", "feedback_id", f.ID, "issue", iss.Number, "repo", repoSlug)

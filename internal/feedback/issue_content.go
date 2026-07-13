@@ -11,11 +11,24 @@ import (
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 )
 
+var validCategory = map[string]bool{"bug": true, "feature": true, "style": true}
+var validPriority = map[string]bool{"low": true, "med": true, "high": true}
+
 // IssueContent renders a feedback request into a GitHub issue title, body, and
-// label set. Deterministic — no network, no LLM.
+// label set. Deterministic — no network, no LLM. category/priority arrive from
+// the public, unauthenticated widget insert (free text), so they are clamped to
+// the known label set — an unknown value would become a nonexistent gh label and
+// fail issue creation.
 func IssueContent(f *domain.FeedbackRequest) (title, body string, labels []string) {
+	cat, prio := f.Category, f.Priority
+	if !validCategory[cat] {
+		cat = "feature"
+	}
+	if !validPriority[prio] {
+		prio = "med"
+	}
 	return issueTitle(f), issueBody(f), []string{
-		"fitt:feedback", "type:" + f.Category, "prio:" + f.Priority,
+		"fitt:feedback", "type:" + cat, "prio:" + prio,
 	}
 }
 
@@ -27,8 +40,8 @@ func issueTitle(f *domain.FeedbackRequest) string {
 	if summary == "" {
 		summary = "no description"
 	}
-	if len(summary) > 60 {
-		summary = strings.TrimSpace(summary[:60]) + "…"
+	if r := []rune(summary); len(r) > 60 {
+		summary = strings.TrimSpace(string(r[:60])) + "…"
 	}
 	return "[feedback] " + f.Category + ": " + summary
 }

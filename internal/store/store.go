@@ -775,10 +775,10 @@ func (s *pgStore) SetFeedbackStatus(ctx context.Context, id uuid.UUID, status st
 
 // ListFeedbackNeedingIssue returns un-mirrored feedback (issue_number IS NULL),
 // oldest first, capped at limit. Non-nil slice.
-func (s *pgStore) ListFeedbackNeedingIssue(ctx context.Context, limit int) ([]*domain.FeedbackRequest, error) {
+func (s *pgStore) ListFeedbackNeedingIssue(ctx context.Context, limit int, exclude []uuid.UUID) ([]*domain.FeedbackRequest, error) {
 	rows, err := s.pool.Query(ctx, `SELECT`+feedbackCols+`
-		FROM feedback_requests WHERE issue_number IS NULL
-		ORDER BY created_at ASC LIMIT $1`, limit)
+		FROM feedback_requests WHERE issue_number IS NULL AND id <> ALL($2::uuid[])
+		ORDER BY created_at ASC LIMIT $1`, limit, exclude)
 	if err != nil {
 		return nil, fmt.Errorf("store: list feedback needing issue: %w", err)
 	}
@@ -802,18 +802,18 @@ func (s *pgStore) ListFeedbackNeedingIssue(ctx context.Context, limit int) ([]*d
 	return out, nil
 }
 
-// SetFeedbackIssue records the GitHub issue a feedback row was mirrored into.
-func (s *pgStore) SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int, url string) error {
+// SetFeedbackIssue records the GitHub issue a feedback row was mirrored into,
+// but only if it has none yet (compare-and-set on issue_number IS NULL). It
+// returns whether this call won — a false result means another creator mirrored
+// the row first, so the caller's just-created issue is a duplicate.
+func (s *pgStore) SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int, url string) (bool, error) {
 	ct, err := s.pool.Exec(ctx, `
 		UPDATE feedback_requests SET issue_number = $2, issue_url = $3
-		WHERE id = $1`, id, number, url)
+		WHERE id = $1 AND issue_number IS NULL`, id, number, url)
 	if err != nil {
-		return fmt.Errorf("store: set feedback issue: %w", err)
+		return false, fmt.Errorf("store: set feedback issue: %w", err)
 	}
-	if ct.RowsAffected() == 0 {
-		return fmt.Errorf("store: set feedback issue: %w", domain.ErrNotFound)
-	}
-	return nil
+	return ct.RowsAffected() == 1, nil
 }
 
 func scanFeedbackRow(r scannable, f *domain.FeedbackRequest, payloadJSON *[]byte) error {
