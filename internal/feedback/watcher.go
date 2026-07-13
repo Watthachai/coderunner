@@ -18,12 +18,13 @@ type FeedbackStore interface {
 	SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int, url string) (bool, error)
 }
 
-// Issuer creates GitHub issues, ensures the label set exists, and can close a
-// duplicate it just created if it lost the create race.
+// Issuer creates GitHub issues, ensures the label set exists, finds an existing
+// issue for a feedback (idempotency), and can close a duplicate it just created.
 type Issuer interface {
 	EnsureLabels(ctx context.Context, repoSlug string) error
 	CreateIssue(ctx context.Context, repoSlug, title, body string, labels []string) (github.Issue, error)
 	CloseIssue(ctx context.Context, repoSlug string, number int, reason, comment string) error
+	FindByFeedback(ctx context.Context, repoSlug, feedbackID string) (github.Issue, bool, error)
 }
 
 // Watcher periodically mirrors un-mirrored feedback rows into GitHub issues.
@@ -95,6 +96,16 @@ func (w *Watcher) reconcileOnce(ctx context.Context) {
 		repoSlug := github.RepoSlug(w.owner, project.RepoURL, project.Name, project.ID.String())
 		if repoSlug == "" {
 			w.skip[f.ID] = true
+			continue
+		}
+		// Idempotency: adopt an existing issue for this feedback (survives a crash
+		// between GitHub-create and DB-persist, and the create race with approve).
+		if existing, found, ferr := w.issuer.FindByFeedback(ctx, repoSlug, f.ID.String()); ferr != nil {
+			w.logger.Warn("search existing issue failed", "err", ferr, "feedback_id", f.ID)
+		} else if found {
+			if _, serr := w.store.SetFeedbackIssue(ctx, f.ID, existing.Number, existing.URL); serr != nil {
+				w.logger.Warn("persist adopted issue failed", "err", serr, "feedback_id", f.ID)
+			}
 			continue
 		}
 		if !w.ensured[repoSlug] {

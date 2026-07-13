@@ -49,6 +49,9 @@ func (i *fakeIssuer) CloseIssue(ctx context.Context, repoSlug string, number int
 	i.closed++
 	return nil
 }
+func (i *fakeIssuer) FindByFeedback(ctx context.Context, repoSlug, feedbackID string) (github.Issue, bool, error) {
+	return github.Issue{}, false, nil
+}
 
 func TestWatcherMirrorsOnce(t *testing.T) {
 	pid, fid := uuid.New(), uuid.New()

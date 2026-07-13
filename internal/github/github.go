@@ -176,6 +176,32 @@ func CloseIssue(ctx context.Context, repoSlug string, number int, reason, commen
 	return nil
 }
 
+// FindIssueByFeedback searches repoSlug for an issue whose body carries the
+// feedback marker (see the feedback package's issue body), returning it and true
+// when one exists. This makes issue creation idempotent across retries/restarts.
+// GitHub search is eventually consistent, so a miss right after creation is
+// possible — callers still guard with the DB compare-and-set.
+func FindIssueByFeedback(ctx context.Context, repoSlug, feedbackID string, logger *slog.Logger) (Issue, bool, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	log := logger.With("component", "github", "repo", repoSlug)
+	out, err := runGH(ctx, log, "issue", "list", "--repo", repoSlug,
+		"--state", "all", "--search", feedbackID+" in:body",
+		"--json", "number,title,url", "--limit", "1")
+	if err != nil {
+		return Issue{}, false, fmt.Errorf("github: search issue %s: %w", repoSlug, err)
+	}
+	var issues []Issue
+	if err := json.Unmarshal([]byte(out), &issues); err != nil {
+		return Issue{}, false, fmt.Errorf("github: parse search %s: %w", repoSlug, err)
+	}
+	if len(issues) == 0 {
+		return Issue{}, false, nil
+	}
+	return issues[0], true, nil
+}
+
 // issueNumberFromURL extracts the trailing issue number from a gh issue URL.
 func issueNumberFromURL(url string) (int, error) {
 	i := strings.LastIndex(url, "/")

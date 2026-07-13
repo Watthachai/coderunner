@@ -141,6 +141,9 @@ type Store interface {
 	// SetFeedbackIssue records the GitHub issue a feedback row was mirrored into,
 	// only when it has none yet (compare-and-set); reports whether this call won.
 	SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int, url string) (bool, error)
+	// ClaimFeedbackForApproval atomically moves a request from new/reviewing to
+	// approved, reporting whether this call won (guards double-approve).
+	ClaimFeedbackForApproval(ctx context.Context, id uuid.UUID) (bool, error)
 
 	// Ping verifies connectivity (used by /healthz and startup checks).
 	Ping(ctx context.Context) error

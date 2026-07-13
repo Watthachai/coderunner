@@ -1099,9 +1099,13 @@ func (s *server) handleApproveFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard against re-approving an already-actioned request (e.g. a double
-	// submit), which would enqueue a second edit build.
-	if f.Status != "new" && f.Status != "reviewing" {
+	// Atomically claim the request so a concurrent double-approve can't enqueue
+	// two edit builds.
+	if won, cerr := s.store.ClaimFeedbackForApproval(r.Context(), id); cerr != nil {
+		s.logger.Error("claim feedback failed", "err", cerr, "feedback_id", id)
+		s.writeError(w, r, http.StatusInternalServerError, "lookup failed")
+		return
+	} else if !won {
 		s.writeError(w, r, http.StatusConflict, "feedback already actioned")
 		return
 	}
@@ -1124,25 +1128,33 @@ func (s *server) handleApproveFeedback(w http.ResponseWriter, r *http.Request) {
 	if f.IssueNumber != nil {
 		issueNumber = *f.IssueNumber
 	} else if repoSlug != "" {
-		if err := github.EnsureLabels(r.Context(), repoSlug, s.logger); err != nil {
-			s.logger.Warn("ensure labels failed", "err", err, "repo", repoSlug)
-		}
-		title, body, labels := feedback.IssueContent(f)
-		iss, cerr := github.CreateIssue(r.Context(), repoSlug, title, body, labels, s.logger)
-		if cerr != nil {
-			s.logger.Warn("create issue on approve failed", "err", cerr, "feedback_id", id)
-		} else if won, serr := s.store.SetFeedbackIssue(r.Context(), id, iss.Number, iss.URL); serr != nil {
-			s.logger.Warn("persist feedback issue failed", "err", serr, "feedback_id", id)
-			issueNumber = iss.Number
-		} else if won {
-			issueNumber = iss.Number
-		} else {
-			// Lost the create race to the watcher — close our duplicate, adopt the winner.
-			if e := github.CloseIssue(r.Context(), repoSlug, iss.Number, "not planned", "Duplicate — feedback already mirrored.", s.logger); e != nil {
-				s.logger.Warn("close duplicate issue failed", "err", e, "issue", iss.Number)
+		// Idempotency: adopt an existing mirrored issue if one already exists.
+		if existing, found, ferr := github.FindIssueByFeedback(r.Context(), repoSlug, id.String(), s.logger); ferr == nil && found {
+			issueNumber = existing.Number
+			if _, serr := s.store.SetFeedbackIssue(r.Context(), id, existing.Number, existing.URL); serr != nil {
+				s.logger.Warn("persist adopted issue failed", "err", serr, "feedback_id", id)
 			}
-			if reloaded, rerr := s.store.GetFeedback(r.Context(), id); rerr == nil && reloaded.IssueNumber != nil {
-				issueNumber = *reloaded.IssueNumber
+		} else {
+			if err := github.EnsureLabels(r.Context(), repoSlug, s.logger); err != nil {
+				s.logger.Warn("ensure labels failed", "err", err, "repo", repoSlug)
+			}
+			title, body, labels := feedback.IssueContent(f)
+			iss, cerr := github.CreateIssue(r.Context(), repoSlug, title, body, labels, s.logger)
+			if cerr != nil {
+				s.logger.Warn("create issue on approve failed", "err", cerr, "feedback_id", id)
+			} else if won, serr := s.store.SetFeedbackIssue(r.Context(), id, iss.Number, iss.URL); serr != nil {
+				s.logger.Warn("persist feedback issue failed", "err", serr, "feedback_id", id)
+				issueNumber = iss.Number
+			} else if won {
+				issueNumber = iss.Number
+			} else {
+				// Lost the create race to the watcher — close our duplicate, adopt the winner.
+				if e := github.CloseIssue(r.Context(), repoSlug, iss.Number, "not planned", "Duplicate — feedback already mirrored.", s.logger); e != nil {
+					s.logger.Warn("close duplicate issue failed", "err", e, "issue", iss.Number)
+				}
+				if reloaded, rerr := s.store.GetFeedback(r.Context(), id); rerr == nil && reloaded.IssueNumber != nil {
+					issueNumber = *reloaded.IssueNumber
+				}
 			}
 		}
 	}

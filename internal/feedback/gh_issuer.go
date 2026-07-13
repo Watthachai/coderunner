@@ -24,3 +24,7 @@ func (g *GHIssuer) CreateIssue(ctx context.Context, repoSlug, title, body string
 func (g *GHIssuer) CloseIssue(ctx context.Context, repoSlug string, number int, reason, comment string) error {
 	return github.CloseIssue(ctx, repoSlug, number, reason, comment, g.logger)
 }
+
+func (g *GHIssuer) FindByFeedback(ctx context.Context, repoSlug, feedbackID string) (github.Issue, bool, error) {
+	return github.FindIssueByFeedback(ctx, repoSlug, feedbackID, g.logger)
+}

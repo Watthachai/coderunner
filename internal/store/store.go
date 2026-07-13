@@ -816,6 +816,19 @@ func (s *pgStore) SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int
 	return ct.RowsAffected() == 1, nil
 }
 
+// ClaimFeedbackForApproval atomically transitions a feedback request from
+// new/reviewing to approved, reporting whether this call won. It guards against a
+// concurrent double-approve enqueuing two edit builds.
+func (s *pgStore) ClaimFeedbackForApproval(ctx context.Context, id uuid.UUID) (bool, error) {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE feedback_requests SET status = 'approved'
+		WHERE id = $1 AND status IN ('new', 'reviewing')`, id)
+	if err != nil {
+		return false, fmt.Errorf("store: claim feedback for approval: %w", err)
+	}
+	return ct.RowsAffected() == 1, nil
+}
+
 func scanFeedbackRow(r scannable, f *domain.FeedbackRequest, payloadJSON *[]byte) error {
 	if err := r.Scan(
 		&f.ID, &f.ProjectID, &f.Status, &f.Category, &f.Priority, &f.Note,
