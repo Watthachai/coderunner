@@ -34,6 +34,7 @@ services:
       - ./migrations/0005_project_repo.sql:/docker-entrypoint-initdb.d/0005_project_repo.sql:ro
       - ./migrations/0006_job_traces.sql:/docker-entrypoint-initdb.d/0006_job_traces.sql:ro
       - ./migrations/0007_feedback_requests.sql:/docker-entrypoint-initdb.d/0007_feedback_requests.sql:ro
+      - ./migrations/0008_feedback_issue_link.sql:/docker-entrypoint-initdb.d/0008_feedback_issue_link.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U crn -d crn"]
       interval: 5s

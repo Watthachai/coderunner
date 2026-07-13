@@ -7,7 +7,7 @@ MIGRATIONS_DIR ?= migrations
 # Port the backend listens on (matches CRN_LISTEN_ADDR's default :8080).
 PORT ?= 8080
 
-.PHONY: help build run stop restart vet tidy test migrate db-up db-down fmt frontend-dev
+.PHONY: help build run stop restart vet tidy test migrate migrate-baseline db-up db-down fmt frontend-dev
 
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -50,10 +50,31 @@ db-up: ## Start Postgres + Mongo via docker compose.
 db-down: ## Stop and remove the dev datastores (keeps volumes).
 	docker compose down
 
-migrate: ## Apply migrations/0001_init.sql to Postgres (inside the compose container).
-	# Runs psql inside the container via its local connection, so it is immune to
-	# the host-side port (5433) and needs no host psql.
-	docker compose exec -T postgres psql -U crn -d crn -f /docker-entrypoint-initdb.d/0001_init.sql
+migrate: ## Apply un-applied migrations/*.sql in order (tracked in schema_migrations).
+	# The initdb mounts only run on a fresh volume, and old migrations are not
+	# idempotent, so a plain "apply all" re-run errors. This tracks applied
+	# versions in schema_migrations and applies only the ones not yet recorded.
+	# NOTE: on a pre-existing DB, run `make migrate-baseline` ONCE first so the
+	# already-applied migrations are recorded (else this re-applies and fails).
+	@docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn -qc \
+		"CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());"
+	@for f in $$(ls $(MIGRATIONS_DIR)/*.sql | sort); do \
+		v=$$(basename $$f .sql); \
+		if [ "$$(docker compose exec -T postgres psql -tAqc "SELECT 1 FROM schema_migrations WHERE version='$$v'" -U crn -d crn)" = "1" ]; then \
+			echo "skip   $$v"; continue; fi; \
+		echo "apply  $$v"; \
+		docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn < $$f || exit 1; \
+		docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn -qc "INSERT INTO schema_migrations(version) VALUES ('$$v');"; \
+	done
+
+migrate-baseline: ## Record ALL current migrations as applied WITHOUT running them (adopt an existing DB).
+	@docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn -qc \
+		"CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());"
+	@for f in $$(ls $(MIGRATIONS_DIR)/*.sql | sort); do \
+		v=$$(basename $$f .sql); \
+		docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn -qc "INSERT INTO schema_migrations(version) VALUES ('$$v') ON CONFLICT DO NOTHING;"; \
+		echo "baseline $$v"; \
+	done
 
 frontend-dev: ## Run the Next.js dashboard dev server.
 	cd frontend && npm install && npm run dev
