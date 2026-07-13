@@ -87,8 +87,12 @@
       var nw = img.naturalWidth,
         nh = img.naturalHeight;
       if (!img.complete || !nw || !nh) return null;
-      var MAX = 1000; // cap the longest side to keep the base64 payload sane
-      var scale = Math.min(1, MAX / Math.max(nw, nh));
+      var MAX = 1000; // hard cap on the longest side
+      // Capture at the element's DISPLAYED size (never upscale), so a thumbnail
+      // isn't stored at full natural resolution.
+      var rect = img.getBoundingClientRect();
+      var target = Math.min(MAX, Math.max(rect.width, rect.height) || Math.max(nw, nh));
+      var scale = Math.min(1, target / Math.max(nw, nh));
       var cw = Math.max(1, Math.round(nw * scale));
       var ch = Math.max(1, Math.round(nh * scale));
       var c = document.createElement("canvas");
@@ -101,10 +105,16 @@
     }
   }
 
+  function rectsIntersect(r, clip) {
+    return r.right > clip.left && r.left < clip.right && r.bottom > clip.top && r.top < clip.bottom;
+  }
+
   // Copy computed styles onto a clone tree so an SVG <foreignObject> renders it.
-  // <img> elements are additionally rasterized to data URIs (see imgToDataURL);
-  // background-image URLs still won't load (that would need async fetching).
-  function inlineStyles(src, dst) {
+  // <img> elements are rasterized to data URIs (see imgToDataURL); an optional
+  // clip rect (viewport coords) limits rasterization to images inside it, so a
+  // small region crop doesn't embed every image on the page. background-image
+  // URLs still won't load (that would need async fetching).
+  function inlineStyles(src, dst, clip) {
     var cs = getComputedStyle(src);
     var s = "";
     for (var i = 0; i < cs.length; i++) {
@@ -112,7 +122,11 @@
       s += p + ":" + cs.getPropertyValue(p) + ";";
     }
     dst.setAttribute("style", s);
-    if (src.tagName === "IMG" && dst.tagName === "IMG") {
+    if (
+      src.tagName === "IMG" &&
+      dst.tagName === "IMG" &&
+      (!clip || rectsIntersect(src.getBoundingClientRect(), clip))
+    ) {
       var uri = imgToDataURL(src);
       if (uri) {
         dst.setAttribute("src", uri);
@@ -121,7 +135,7 @@
     }
     var sc = src.children || [];
     var dc = dst.children || [];
-    for (var j = 0; j < sc.length && j < dc.length; j++) inlineStyles(sc[j], dc[j]);
+    for (var j = 0; j < sc.length && j < dc.length; j++) inlineStyles(sc[j], dc[j], clip);
   }
 
   // Best-effort "screenshot" of one element as an SVG data URI (self-contained;
@@ -140,7 +154,7 @@
         "<foreignObject width='100%' height='100%'>" +
         "<div xmlns='http://www.w3.org/1999/xhtml'>" + html + "</div>" +
         "</foreignObject></svg>";
-      return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svg)));
+      return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
     } catch (e) {
       return "";
     }
@@ -443,7 +457,10 @@
       h = Math.max(1, Math.round(h));
       var body = document.body;
       var clone = body.cloneNode(true);
-      inlineStyles(body, clone);
+      // Only rasterize images inside the crop rectangle (viewport coords), so a
+      // small crop over an image-heavy page stays small instead of embedding
+      // every full-res image on the page.
+      inlineStyles(body, clone, { left: vx, top: vy, right: vx + w, bottom: vy + h });
       clone.style.margin = "0";
       var html = new XMLSerializer().serializeToString(clone);
       var fw = Math.max(body.scrollWidth, window.innerWidth);
@@ -455,7 +472,7 @@
         "<foreignObject x='" + ox + "' y='" + oy + "' width='" + fw + "' height='" + fh + "'>" +
         "<div xmlns='http://www.w3.org/1999/xhtml'>" + html + "</div>" +
         "</foreignObject></svg>";
-      return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svg)));
+      return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
     } catch (e) {
       return "";
     }
