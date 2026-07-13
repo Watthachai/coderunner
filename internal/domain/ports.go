@@ -134,6 +134,11 @@ type Store interface {
 	// SetFeedbackStatus updates a request's status and, when jobID is non-nil,
 	// links the edit build it was merged into. ErrNotFound when the id is absent.
 	SetFeedbackStatus(ctx context.Context, id uuid.UUID, status string, jobID *uuid.UUID) error
+	// ListFeedbackNeedingIssue returns feedback rows not yet mirrored to a GitHub
+	// issue (issue_number IS NULL), oldest first, capped at limit.
+	ListFeedbackNeedingIssue(ctx context.Context, limit int) ([]*FeedbackRequest, error)
+	// SetFeedbackIssue records the GitHub issue a feedback row was mirrored into.
+	SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int, url string) error
 
 	// Ping verifies connectivity (used by /healthz and startup checks).
 	Ping(ctx context.Context) error

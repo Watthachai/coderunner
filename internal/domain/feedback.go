@@ -43,6 +43,8 @@ type FeedbackRequest struct {
 	PageURL   string          `json:"page_url"`
 	Reporter  string          `json:"reporter"`
 	Payload   FeedbackPayload `json:"payload"`
-	JobID     *uuid.UUID      `json:"job_id"`
-	CreatedAt time.Time       `json:"created_at"`
+	JobID       *uuid.UUID      `json:"job_id"`
+	CreatedAt   time.Time       `json:"created_at"`
+	IssueNumber *int            `json:"issue_number,omitempty"` // nil until mirrored to GitHub
+	IssueURL    string          `json:"issue_url,omitempty"`
 }

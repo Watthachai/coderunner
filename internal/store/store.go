@@ -707,7 +707,7 @@ func scanTraceSummaryRow(r scannable, t *domain.BuildTrace, eventsJSON *[]byte) 
 // feedbackCols is the full projection for a feedback_requests row.
 const feedbackCols = `
 	id, project_id, status, category, priority, note, page_url, reporter,
-	payload, job_id, created_at`
+	payload, job_id, created_at, issue_number, issue_url`
 
 // ListFeedback returns feedback requests newest first. A non-empty status
 // filters by lifecycle state (e.g. "new"); "" returns all. Non-nil slice.
@@ -773,10 +773,54 @@ func (s *pgStore) SetFeedbackStatus(ctx context.Context, id uuid.UUID, status st
 	return nil
 }
 
+// ListFeedbackNeedingIssue returns un-mirrored feedback (issue_number IS NULL),
+// oldest first, capped at limit. Non-nil slice.
+func (s *pgStore) ListFeedbackNeedingIssue(ctx context.Context, limit int) ([]*domain.FeedbackRequest, error) {
+	rows, err := s.pool.Query(ctx, `SELECT`+feedbackCols+`
+		FROM feedback_requests WHERE issue_number IS NULL
+		ORDER BY created_at ASC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list feedback needing issue: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*domain.FeedbackRequest{}
+	for rows.Next() {
+		f := &domain.FeedbackRequest{}
+		var payloadJSON []byte
+		if err := scanFeedbackRow(rows, f, &payloadJSON); err != nil {
+			return nil, err
+		}
+		if err := decodeFeedbackPayload(payloadJSON, f); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: scan feedback needing issue: %w", err)
+	}
+	return out, nil
+}
+
+// SetFeedbackIssue records the GitHub issue a feedback row was mirrored into.
+func (s *pgStore) SetFeedbackIssue(ctx context.Context, id uuid.UUID, number int, url string) error {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE feedback_requests SET issue_number = $2, issue_url = $3
+		WHERE id = $1`, id, number, url)
+	if err != nil {
+		return fmt.Errorf("store: set feedback issue: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("store: set feedback issue: %w", domain.ErrNotFound)
+	}
+	return nil
+}
+
 func scanFeedbackRow(r scannable, f *domain.FeedbackRequest, payloadJSON *[]byte) error {
 	if err := r.Scan(
 		&f.ID, &f.ProjectID, &f.Status, &f.Category, &f.Priority, &f.Note,
 		&f.PageURL, &f.Reporter, payloadJSON, &f.JobID, &f.CreatedAt,
+		&f.IssueNumber, &f.IssueURL,
 	); err != nil {
 		return mapErr(err, "store: scan feedback")
 	}
