@@ -99,6 +99,94 @@ func CommentIssue(ctx context.Context, repoSlug string, number int, body string,
 	return nil
 }
 
+// crnFeedbackLabels is the fixed label set feedback issues use. EnsureLabels
+// upserts all of them so any category/priority combination is valid.
+var crnFeedbackLabels = []struct{ name, color, desc string }{
+	{"fitt:feedback", "1f6feb", "In-demo feedback mirrored from CRN"},
+	{"type:bug", "d73a4a", "Bug report"},
+	{"type:feature", "0e8a16", "Feature request"},
+	{"type:style", "a2eeef", "Style / polish"},
+	{"prio:low", "c5def5", "Low priority"},
+	{"prio:med", "fbca04", "Medium priority"},
+	{"prio:high", "b60205", "High priority"},
+	{"fitt:building", "fef2c0", "Edit build in progress"},
+}
+
+// EnsureLabels idempotently upserts the CRN feedback label set on repoSlug
+// (`gh label create --force`). Best-effort: per-label failures are logged, not
+// returned, so a missing-label race never blocks issue creation.
+func EnsureLabels(ctx context.Context, repoSlug string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	log := logger.With("component", "github", "repo", repoSlug)
+	for _, l := range crnFeedbackLabels {
+		if _, err := runGH(ctx, log, "label", "create", l.name,
+			"--repo", repoSlug, "--color", l.color, "--description", l.desc, "--force"); err != nil {
+			log.Warn("ensure label failed", "label", l.name, "err", err)
+		}
+	}
+	return nil
+}
+
+// CreateIssue opens an issue on repoSlug and returns its number + URL. gh prints
+// the issue URL on stdout; the number is parsed from its trailing path segment.
+func CreateIssue(ctx context.Context, repoSlug, title, body string, labels []string, logger *slog.Logger) (Issue, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	log := logger.With("component", "github", "repo", repoSlug)
+	args := []string{"issue", "create", "--repo", repoSlug, "--title", title, "--body", body}
+	for _, l := range labels {
+		args = append(args, "--label", l)
+	}
+	out, err := runGH(ctx, log, args...)
+	if err != nil {
+		return Issue{}, fmt.Errorf("github: create issue %s: %w", repoSlug, err)
+	}
+	url := lastLine(out)
+	num, err := issueNumberFromURL(url)
+	if err != nil {
+		return Issue{}, fmt.Errorf("github: parse created issue url %q: %w", url, err)
+	}
+	log.Info("github issue created", "number", num, "url", url)
+	return Issue{Number: num, Title: title, URL: url}, nil
+}
+
+// CloseIssue closes issue #number with reason ("completed" | "not planned"),
+// optionally leaving a closing comment. Best-effort.
+func CloseIssue(ctx context.Context, repoSlug string, number int, reason, comment string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	log := logger.With("component", "github", "repo", repoSlug, "issue", number)
+	args := []string{"issue", "close", strconv.Itoa(number), "--repo", repoSlug, "--reason", reason}
+	if comment != "" {
+		args = append(args, "--comment", comment)
+	}
+	if _, err := runGH(ctx, log, args...); err != nil {
+		log.Warn("github close issue failed", "err", err)
+		return fmt.Errorf("github: close issue %s#%d: %w", repoSlug, number, err)
+	}
+	log.Info("github issue closed", "reason", reason)
+	return nil
+}
+
+// issueNumberFromURL extracts the trailing issue number from a gh issue URL.
+func issueNumberFromURL(url string) (int, error) {
+	i := strings.LastIndex(url, "/")
+	if i < 0 || i == len(url)-1 {
+		return 0, fmt.Errorf("no trailing number in %q", url)
+	}
+	return strconv.Atoi(url[i+1:])
+}
+
+// lastLine returns the last non-empty line (gh may print warnings before the URL).
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
 // runGH runs one `gh` subcommand, returning its trimmed stdout. A non-zero exit
 // yields an error that includes the captured stderr so callers can inspect it
 // (e.g. the "already exists" check in EnsureRepo).

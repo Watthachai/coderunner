@@ -468,28 +468,9 @@ func (s *server) handlePutSkill(w http.ResponseWriter, r *http.Request) {
 // [a-z0-9] runs joined by single '-', trimmed, capped, fallback "project"). It
 // mirrors jobs.slugify so the branch advertised at ingest matches the one the
 // build actually pushes.
-func branchSlug(s string) string {
-	const maxLen = 40
-	var b strings.Builder
-	prevDash := false
-	for _, r := range strings.ToLower(s) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			prevDash = false
-		} else if !prevDash {
-			b.WriteByte('-')
-			prevDash = true
-		}
-	}
-	slug := strings.Trim(b.String(), "-")
-	if len(slug) > maxLen {
-		slug = strings.Trim(slug[:maxLen], "-")
-	}
-	if slug == "" {
-		return "project"
-	}
-	return slug
-}
+// branchSlug delegates to github.Slugify — a single slug implementation shared
+// with the feedback watcher's repo-slug resolution.
+func branchSlug(s string) string { return github.Slugify(s) }
 
 // validSkillFilePath reports whether p is a safe relative path for a skill's
 // extra file: non-empty, not absolute, and not climbing above the skill dir via
@@ -1199,28 +1180,7 @@ func feedbackChangePrompt(f *domain.FeedbackRequest) string {
 // falls back to deriving "owner/crn-<slug>-<id8>" from the configured owner +
 // the project name/id (matching what the jobs layer creates).
 func (s *server) repoSlugForProject(p *domain.Project) string {
-	if s.githubOwner == "" {
-		return ""
-	}
-	if slug := repoSlugFromURL(p.RepoURL); slug != "" {
-		return slug
-	}
-	return s.githubOwner + "/crn-" + branchSlug(p.Name) + "-" + p.ID.String()[:8]
-}
-
-// repoSlugFromURL parses "owner/name" out of a GitHub https clone URL
-// (https://github.com/<owner>/<name>.git). Returns "" when the URL is empty or
-// not in that shape.
-func repoSlugFromURL(repoURL string) string {
-	const prefix = "https://github.com/"
-	if !strings.HasPrefix(repoURL, prefix) {
-		return ""
-	}
-	slug := strings.TrimSuffix(strings.TrimPrefix(repoURL, prefix), ".git")
-	if strings.Count(slug, "/") != 1 || strings.HasPrefix(slug, "/") || strings.HasSuffix(slug, "/") {
-		return ""
-	}
-	return slug
+	return github.RepoSlug(s.githubOwner, p.RepoURL, p.Name, p.ID.String())
 }
 
 // handleListIssues returns the open GitHub issues of a project's repo as
