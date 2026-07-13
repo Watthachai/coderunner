@@ -54,8 +54,9 @@ migrate: ## Apply un-applied migrations/*.sql in order (tracked in schema_migrat
 	# The initdb mounts only run on a fresh volume, and old migrations are not
 	# idempotent, so a plain "apply all" re-run errors. This tracks applied
 	# versions in schema_migrations and applies only the ones not yet recorded.
-	# NOTE: on a pre-existing DB, run `make migrate-baseline` ONCE first so the
-	# already-applied migrations are recorded (else this re-applies and fails).
+	# NOTE: on a pre-existing DB, run `make migrate-baseline BASELINE_UPTO=<last
+	# applied version, e.g. 0007>` ONCE first so already-applied migrations are
+	# recorded and NEW ones (e.g. 0008) still get applied by this target.
 	@docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn -qc \
 		"CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());"
 	@for f in $$(ls $(MIGRATIONS_DIR)/*.sql | sort); do \
@@ -67,11 +68,17 @@ migrate: ## Apply un-applied migrations/*.sql in order (tracked in schema_migrat
 		docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn -qc "INSERT INTO schema_migrations(version) VALUES ('$$v');"; \
 	done
 
-migrate-baseline: ## Record ALL current migrations as applied WITHOUT running them (adopt an existing DB).
+BASELINE_UPTO ?=
+
+migrate-baseline: ## Record migrations <= BASELINE_UPTO as applied WITHOUT running them (adopt existing DB). Usage: make migrate-baseline BASELINE_UPTO=0007
+	@if [ -z "$(BASELINE_UPTO)" ]; then \
+		echo "error: set BASELINE_UPTO to the last version already applied, e.g. make migrate-baseline BASELINE_UPTO=0007"; exit 1; fi
 	@docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn -qc \
 		"CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());"
 	@for f in $$(ls $(MIGRATIONS_DIR)/*.sql | sort); do \
 		v=$$(basename $$f .sql); \
+		n=$${v%%_*}; \
+		if [ "$$n" \> "$(BASELINE_UPTO)" ]; then echo "leave    $$v (> $(BASELINE_UPTO))"; continue; fi; \
 		docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U crn -d crn -qc "INSERT INTO schema_migrations(version) VALUES ('$$v') ON CONFLICT DO NOTHING;"; \
 		echo "baseline $$v"; \
 	done
