@@ -34,6 +34,10 @@ against them, not against concrete types.
 
 ## Run it (local dev)
 
+**Fresh macOS machine?** Run `./scripts/setup-macos.sh` — it installs everything
+below (Homebrew, Go, Node, Docker, gh, git, Claude Code), writes `.env`, starts
+the datastores, and applies migrations. Otherwise, do it by hand:
+
 Prereqs: Go 1.23+, Docker, Node 20+, and the `claude` CLI on PATH.
 
 ```bash
