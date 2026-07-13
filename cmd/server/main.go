@@ -17,6 +17,7 @@ import (
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/config"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
+	"github.com/Watthachai/fitt-coderunner/internal/feedback"
 	"github.com/Watthachai/fitt-coderunner/internal/jobs"
 	"github.com/Watthachai/fitt-coderunner/internal/store"
 )
@@ -95,6 +96,16 @@ func run() error {
 	// jobs.NewManager composes store + runner + notifier and the build-step
 	// config (projects dir, git remote, run-Claude toggle).
 	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL)
+
+	// --- Feedback→GitHub watcher (owner model only) ---
+	// Mirrors every in-demo feedback row into a GitHub issue so the panel's
+	// history is visible in the repo. No-op when CRN_GITHUB_OWNER is unset.
+	if cfg.GithubOwner != "" {
+		watcher := feedback.NewWatcher(st, feedback.NewGHIssuer(logger),
+			cfg.GithubOwner, cfg.FeedbackIssuePollInterval, logger)
+		go watcher.Run(rootCtx)
+		logger.Info("feedback→issue watcher started", "interval", cfg.FeedbackIssuePollInterval)
+	}
 
 	// --- HTTP / WebSocket server (chi router) ---
 	// api.NewServer registers all routes and returns an http.Handler. The git

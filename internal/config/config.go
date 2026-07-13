@@ -70,6 +70,10 @@ type Config struct {
 	// the widget injection.
 	FeedbackIngestURL string
 
+	// FeedbackIssuePollInterval is how often the feedback→issue watcher scans for
+	// un-mirrored feedback. Only used when GithubOwner is set.
+	FeedbackIssuePollInterval time.Duration
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -137,6 +141,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.ShutdownTimeout = timeout
+
+	pollInterval, err := getEnvDuration("CRN_FEEDBACK_ISSUE_POLL_INTERVAL", 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	cfg.FeedbackIssuePollInterval = pollInterval
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
