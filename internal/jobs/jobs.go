@@ -542,9 +542,10 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		// Owner model: an edit driven by a GitHub issue comments the commit back on
 		// the issue (best-effort — never fails the build).
 		if ownerMode && spec.Mode == "edit" && spec.IssueNumber > 0 && repoSlug != "" {
-			body := "Fixed by CRN in " + commit
-			if err := github.CommentIssue(ctx, repoSlug, spec.IssueNumber, body, m.logger); err != nil {
-				log.Warn("comment issue failed", "err", err, "issue", spec.IssueNumber)
+			summary := fmt.Sprintf("🛠 Fixed by CRN — build #%d\n\nBranch `%s` · commit `%s`",
+				job.BuildNo, pushBranch, shortSHA(commit))
+			if err := github.CloseIssue(ctx, repoSlug, spec.IssueNumber, "completed", summary, m.logger); err != nil {
+				log.Warn("close issue failed", "err", err, "issue", spec.IssueNumber)
 			}
 		}
 	} else {

@@ -31,6 +31,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -49,6 +50,7 @@ import (
 
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
+	"github.com/Watthachai/fitt-coderunner/internal/feedback"
 	"github.com/Watthachai/fitt-coderunner/internal/github"
 )
 
@@ -1108,10 +1110,33 @@ func (s *server) handleApproveFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, err := json.Marshal(map[string]string{
-		"mode":   "edit",
-		"change": feedbackChangePrompt(f),
-		"name":   project.Name,
+	repoSlug := s.repoSlugForProject(project)
+
+	// Ensure the feedback is mirrored (the watcher may not have caught up yet).
+	issueNumber := 0
+	if f.IssueNumber != nil {
+		issueNumber = *f.IssueNumber
+	} else if repoSlug != "" {
+		if err := github.EnsureLabels(r.Context(), repoSlug, s.logger); err != nil {
+			s.logger.Warn("ensure labels failed", "err", err, "repo", repoSlug)
+		}
+		title, body, labels := feedback.IssueContent(f)
+		iss, cerr := github.CreateIssue(r.Context(), repoSlug, title, body, labels, s.logger)
+		if cerr != nil {
+			s.logger.Warn("create issue on approve failed", "err", cerr, "feedback_id", id)
+		} else {
+			issueNumber = iss.Number
+			if serr := s.store.SetFeedbackIssue(r.Context(), id, iss.Number, iss.URL); serr != nil {
+				s.logger.Warn("persist feedback issue failed", "err", serr, "feedback_id", id)
+			}
+		}
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"mode":         "edit",
+		"change":       feedbackChangePrompt(f),
+		"name":         project.Name,
+		"issue_number": issueNumber,
 	})
 	if err != nil {
 		s.writeError(w, r, http.StatusInternalServerError, "could not encode payload")
@@ -1130,6 +1155,14 @@ func (s *server) handleApproveFeedback(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("link feedback to job failed", "err", err, "feedback_id", id)
 	}
 
+	// Best-effort: note the approval on the mirrored issue.
+	if repoSlug != "" && issueNumber > 0 {
+		note := fmt.Sprintf("🛠 Approved → edit build #%d queued.", job.BuildNo)
+		if err := github.CommentIssue(r.Context(), repoSlug, issueNumber, note, s.logger); err != nil {
+			s.logger.Warn("comment approve failed", "err", err, "issue", issueNumber)
+		}
+	}
+
 	s.writeJSON(w, r, http.StatusAccepted, map[string]any{
 		"job_id":   job.ID,
 		"build_no": job.BuildNo,
@@ -1144,6 +1177,18 @@ func (s *server) handleRejectFeedback(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusBadRequest, "invalid feedback id")
 		return
 	}
+	// Best-effort: close the mirrored issue before marking rejected.
+	if f, gerr := s.store.GetFeedback(r.Context(), id); gerr == nil && f.IssueNumber != nil {
+		if project, perr := s.store.GetProject(r.Context(), f.ProjectID); perr == nil {
+			if repoSlug := s.repoSlugForProject(project); repoSlug != "" {
+				if cerr := github.CloseIssue(r.Context(), repoSlug, *f.IssueNumber,
+					"not planned", "Closed as not planned by the operator.", s.logger); cerr != nil {
+					s.logger.Warn("close rejected issue failed", "err", cerr, "issue", *f.IssueNumber)
+				}
+			}
+		}
+	}
+
 	if err := s.store.SetFeedbackStatus(r.Context(), id, "rejected", nil); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			s.writeError(w, r, http.StatusNotFound, "feedback not found")
