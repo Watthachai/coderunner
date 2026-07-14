@@ -56,7 +56,11 @@ func injectIntoHTML(dir, tag string, logger *slog.Logger) (int, error) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "node_modules", ".claude", "dist", "build":
+			// Skip build OUTPUT dirs: patching prerendered .html there is useless
+			// (gitignored, regenerated) AND, because injectIntoHTML returns early
+			// once anything is patched, it would suppress the Next-layout injection
+			// that actually ships the widget. `.next` is the common culprit.
+			case ".git", "node_modules", ".claude", "dist", "build", ".next", "out", ".turbo", ".vercel":
 				return filepath.SkipDir
 			}
 			return nil

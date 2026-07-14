@@ -102,3 +102,47 @@ func TestInjectFeedbackWidgetNextLayout(t *testing.T) {
 		t.Errorf("second pass patched %d, want 0 (idempotent)", n2)
 	}
 }
+
+// Regression: a built Next.js app has a gitignored .next/ dir full of prerendered
+// .html. injectIntoHTML must skip it — otherwise it patches those throwaway pages,
+// returns early, and the real app/layout.tsx never gets the widget script.
+func TestInjectFeedbackWidgetSkipsNextBuildOutput(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	layoutPath := filepath.Join(dir, "app", "layout.tsx")
+	layout := "export default function RootLayout({ children }) {\n" +
+		"  return (<html><body>{children}</body></html>);\n}\n"
+	if err := os.WriteFile(layoutPath, []byte(layout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nextDir := filepath.Join(dir, ".next", "server", "app")
+	if err := os.MkdirAll(nextDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nextHTML := filepath.Join(nextDir, "_not-found.html")
+	if err := os.WriteFile(nextHTML, []byte("<html><body>404</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := InjectFeedbackWidget(dir, "proj-next", "http://localhost:3010/feedback_requests", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("patched = %d, want 1 (the layout, not .next)", n)
+	}
+	// The layout — not the .next html — must carry the widget.
+	out, _ := os.ReadFile(layoutPath)
+	if !strings.Contains(string(out), `src="/fitt-feedback.js"`) {
+		t.Errorf("layout missing widget script (injection short-circuited by .next)")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "public", "fitt-feedback.js")); err != nil {
+		t.Errorf("public/fitt-feedback.js not written: %v", err)
+	}
+	nx, _ := os.ReadFile(nextHTML)
+	if strings.Contains(string(nx), "data-fitt-feedback") {
+		t.Errorf(".next html was patched but must be skipped")
+	}
+}
