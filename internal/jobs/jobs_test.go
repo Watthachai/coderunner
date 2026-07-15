@@ -2,8 +2,14 @@ package jobs
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestCodeFromToolInput(t *testing.T) {
@@ -40,5 +46,104 @@ func TestCapDiff(t *testing.T) {
 	got := capDiff(thai)
 	if strings.ContainsRune(got, '�') {
 		t.Errorf("cap split a multibyte rune")
+	}
+}
+
+// allowAnyDial relaxes the zip_uri SSRF address screen for a test (httptest
+// binds to loopback, which downloadZip blocks by default).
+func allowAnyDial(t *testing.T) {
+	t.Helper()
+	orig := zipDialAllowed
+	zipDialAllowed = func(string) error { return nil }
+	t.Cleanup(func() { zipDialAllowed = orig })
+}
+
+func TestParsePayloadZipURI(t *testing.T) {
+	allowAnyDial(t)
+	const zipContent = "PK\x03\x04 fake zip bytes"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(zipContent))
+	}))
+	defer srv.Close()
+
+	payload := []byte(`{"name":"X","zip_name":"proto.zip","zip_uri":"` + srv.URL + `"}`)
+	spec := parsePayload(json.RawMessage(payload), nil)
+
+	if len(spec.Files) != 1 {
+		t.Fatalf("zip_uri should materialize 1 file, got %d", len(spec.Files))
+	}
+	if spec.Files[0].Path != "proto.zip" {
+		t.Errorf("path = %q, want proto.zip", spec.Files[0].Path)
+	}
+	if spec.Files[0].Content != zipContent {
+		t.Errorf("downloaded content mismatch: %q", spec.Files[0].Content)
+	}
+}
+
+func TestParsePayloadZipURIFailureIsBestEffort(t *testing.T) {
+	allowAnyDial(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	payload := []byte(`{"name":"X","zip_name":"proto.zip","zip_uri":"` + srv.URL + `"}`)
+	spec := parsePayload(json.RawMessage(payload), nil) // nil logger must be safe
+
+	if len(spec.Files) != 0 {
+		t.Errorf("failed download should materialize nothing, got %d files", len(spec.Files))
+	}
+}
+
+func TestFTCCallback(t *testing.T) {
+	var gotMethod, gotAuth, gotBody, gotCT string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotAuth = r.Header.Get("Authorization")
+		gotCT = r.Header.Get("Content-Type")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m := &manager{ftcdvCallbackURL: srv.URL, ftcdvCallbackToken: "secret-tok", logger: slog.Default()}
+	m.ftcCallback(uuid.New(), 7, "", "released", "")
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotAuth != "Bearer secret-tok" {
+		t.Errorf("auth = %q, want 'Bearer secret-tok'", gotAuth)
+	}
+	if gotCT != "application/json" {
+		t.Errorf("content-type = %q", gotCT)
+	}
+	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Errorf("body missing %q\n%s", want, gotBody)
+		}
+	}
+}
+
+func TestFTCCallbackDisabledWhenNoURL(t *testing.T) {
+	m := &manager{logger: slog.Default()} // no URL configured
+	// Must be a silent no-op (no panic, no network).
+	m.ftcCallback(uuid.New(), 1, "", "building", "")
+}
+
+func TestDownloadZipBlocksLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("nope"))
+	}))
+	defer srv.Close()
+	if _, err := downloadZip(srv.URL); err == nil {
+		t.Fatal("expected loopback address to be blocked (SSRF guard)")
+	}
+}
+
+func TestDownloadZipRejectsNonHTTPScheme(t *testing.T) {
+	if _, err := downloadZip("file:///etc/passwd"); err == nil {
+		t.Fatal("expected non-http scheme to be rejected")
 	}
 }

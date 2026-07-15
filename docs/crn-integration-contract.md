@@ -5,11 +5,13 @@
 
 ---
 
-## ⚠️ สถานะ (อ่านก่อน)
+## ✅ สถานะ (อ่านก่อน)
 
-ตอนนี้ CRN ยังเป็น **MVP**. ฝั่งปลายทางที่ build ตามดีไซน์ (`zip_uri` + FTC DV HTTP callback) **ยังต่อกับ CRN ไม่ได้ทันที** — ต้องเติม 2 จุดฝั่ง CRN ก่อน (ดู [§3](#3--ช่องที่ต้องเติมฝั่ง-crn-ตกลงจะทำ)).
+CRN **ต่อกับฝั่งดีไซน์ได้แล้ว** (เพิ่มแบบ *ไม่ทับ* ของเดิม):
+- **ส่งงาน:** เลือกได้ทั้ง **`zip_base64`** (inline) หรือ **`zip_uri`** (ให้ CRN โหลด zip จาก URL / LAN IP เอง)
+- **รับผล:** ได้ทั้ง **`build_events`** (เขียนลง DB กลางเสมอ) และ **HTTP callback ไป FTC DV** (เปิดด้วย env `CRN_FTC_DV_CALLBACK_URL`)
 
-ระหว่างนี้ ถ้าจะทดสอบให้ทะลุได้เลย ต่อแบบ MVP ตาม §1–§2: **ส่ง `zip_base64` + อ่านผลจาก `build_events`**.
+ทำตาม §1–§3 ได้เลย.
 
 ---
 
@@ -32,7 +34,7 @@ Content-Type: application/json
 ```
 - **ไม่มี auth** (service-to-service ในเน็ตเวิร์กที่เชื่อถือกัน) — ไม่ต้องส่ง `Authorization` / `X-API-Key`
 - **ไม่มี `Idempotency-Key`** — ยิงซ้ำ = build ใหม่ทุกครั้ง (`build_no` เพิ่มขึ้น), ส่ง `project_id` เดิมจะใช้ project row เดิมแต่ยัง build ซ้ำ
-- decoder **เข้มงวด** (`DisallowUnknownFields`) → มีฟิลด์แปลกปลอม (เช่น `zip_uri`) = **`400`**
+- decoder **เข้มงวด** (`DisallowUnknownFields`) → ฟิลด์ที่ **ไม่ได้ประกาศไว้** = **`400`** (`zip_uri` ประกาศแล้ว รับได้)
 
 ### Body
 ```jsonc
@@ -45,11 +47,14 @@ Content-Type: application/json
   "prd": "<markdown>",
   "prompts": ["…"],           // ไม่มี limit บังคับ
   "zip_name": "prototype.zip",
-  "zip_base64": "<base64 ของ zip ทั้งก้อน>",   // ⚠️ แนบมาในตัว ไม่ใช่ URL
+  // ส่ง zip แบบใดแบบหนึ่ง (ถ้ามีทั้งคู่ CRN ใช้ base64 ก่อน):
+  "zip_base64": "<base64 ของ zip>",               // (ก) แนบ inline
+  "zip_uri": "http://172.168.1.167:8080/…zip",     // (ข) หรือให้ CRN โหลดเอง (LAN OK · ≤26MB · timeout 60s)
   "zip_bytes": 12345,         // metadata (CRN ยังไม่ verify)
   "file_count": 8
 }
 ```
+> **zip_uri (security):** โหลดเฉพาะ `http`/`https`, **ไม่ตาม redirect**, และ **บล็อก** loopback (`127.0.0.1`) + link-local (`169.254.*` เช่น cloud-metadata) — ส่วน LAN/private (`192.168.*`, `10.*`, `172.16–31.*`) และ public **อนุญาต**. เกิน 26MB = error (ไม่ตัดเงียบ).
 
 ### Response — สำเร็จ `202 Accepted`
 ```json
@@ -103,19 +108,34 @@ UPDATE build_events SET notified_ftcdv = true WHERE id = $1;
 | `payload` (jsonb) | `build_done` → `{cost_usd, session_id}` · `build_failed` → `{error}` |
 | `created_at`, `notified_fbd`, `notified_ftcdv` | เวลา + flag การส่งต่อ consumer |
 
-> **ไม่มี** สถานะ `released` (สำเร็จ = `build_done`), **ไม่มี** `build_no`/`image_ref` ใน event (docker image push ยัง TODO), **ไม่มี** `409` (ไม่ใช่ HTTP)
+> ใน `build_events`: **ไม่มี** สถานะ `released` (สำเร็จ = `build_done`), **ไม่มี** `409`. ถ้าอยากได้ HTTP callback แบบ `building`/`released`/`failed` + token → ดู §3
 
 ---
 
-## §3 · ช่องที่ต้องเติมฝั่ง CRN (ตกลงจะทำ)
+## §3 · HTTP callback ไป FTC DV — ✅ ทำแล้ว
 
-เพื่อให้ตรงกับฝั่งที่ทีม build ตามดีไซน์ไว้แล้ว (Gateway `172.168.1.167:8080` ใช้ `zip_uri`, FTC DV `172.168.1.167:3101` มี callback + token) CRN ต้องเพิ่ม (แบบ **เพิ่ม ไม่ทับของเดิม**):
+เมื่อ set env `CRN_FTC_DV_CALLBACK_URL` CRN จะยิง callback หลัง build **เพิ่มจาก** `build_events` (ไม่ใช่แทน):
 
-1. **รับ `zip_uri`** ใน body ของ `/internal/projects` แล้ว **`HTTP GET` โหลด zip** จาก LAN IP (ทำงานคู่กับ `zip_base64` เดิม)
-2. **ยิง HTTP callback ไป FTC DV** หลัง build — `POST {FTC_DV_URL}/api/ingest/crn/callback` + `Authorization: Bearer <token>`, แมปสถานะ `build_started→building`, `build_done→released`, `build_failed→failed` (ทำเพิ่มจากการเขียน `build_events`)
-3. **config ใหม่**: `CRN_FTC_DV_CALLBACK_URL`, `CRN_FTC_DV_CALLBACK_TOKEN`
+```
+POST {CRN_FTC_DV_CALLBACK_URL}
+Authorization: Bearer {CRN_FTC_DV_CALLBACK_TOKEN}
+Content-Type: application/json
 
-> จนกว่า 2 ข้อแรกจะเสร็จ ให้ฝั่งทีมใช้ path MVP: **ส่ง `zip_base64`** และ **อ่าน `build_events`** ไปก่อน
+{ "status": "building" | "released" | "failed",
+  "job_id": "<uuid ตรงกับ response §1>",
+  "build_no": 7,
+  "image_ref": "branch:…",   // ใส่มาถ้ามี docker_tag
+  "message": "…" }           // ใส่มาเฉพาะตอน failed
+```
+- แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
+- **best-effort**: ยิงไม่ผ่าน (หรือได้ non-2xx) = log แล้วปล่อย ไม่ล้ม build — `build_events` ยังเป็นแหล่งความจริงเสมอ
+- ไม่ set `CRN_FTC_DV_CALLBACK_URL` = ปิด callback (ใช้ `build_events` อย่างเดียว)
+
+**config**
+```
+CRN_FTC_DV_CALLBACK_URL=http://172.168.1.167:3101/api/ingest/crn/callback
+CRN_FTC_DV_CALLBACK_TOKEN=<token>
+```
 
 ---
 

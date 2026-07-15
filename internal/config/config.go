@@ -74,6 +74,12 @@ type Config struct {
 	// un-mirrored feedback. Only used when GithubOwner is set.
 	FeedbackIssuePollInterval time.Duration
 
+	// FTCDVCallbackURL / FTCDVCallbackToken: when set, CRN POSTs a build-status
+	// callback to FTC DV on each lifecycle transition (in addition to the
+	// build_events fan-out). Empty URL disables the callback.
+	FTCDVCallbackURL   string
+	FTCDVCallbackToken string
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -126,6 +132,8 @@ func Load() (*Config, error) {
 		RepoPrivate:        getEnvBool("CRN_REPO_PRIVATE", true),
 		RunClaude:          getEnvBool("CRN_RUN_CLAUDE", true),
 		FeedbackIngestURL:  getEnv("CRN_FEEDBACK_INGEST_URL", "http://localhost:3010/feedback_requests"),
+		FTCDVCallbackURL:   os.Getenv("CRN_FTC_DV_CALLBACK_URL"),
+		FTCDVCallbackToken: os.Getenv("CRN_FTC_DV_CALLBACK_TOKEN"),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),

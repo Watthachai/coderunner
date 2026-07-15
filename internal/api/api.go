@@ -880,8 +880,13 @@ type ingestBody struct {
 	Prompts   []string `json:"prompts"`
 	ZipName   string   `json:"zip_name"`
 	ZipBase64 string   `json:"zip_base64"`
-	FileCount int      `json:"file_count"`
-	ZipBytes  int      `json:"zip_bytes"`
+	// ZipURI, when set (and zip_base64 empty), is a URL the build downloads the
+	// prototype zip from instead of receiving it inline — for large exports and
+	// cross-machine (LAN) transfer. The strict decoder requires this field to be
+	// declared, so a caller may send either zip_base64 or zip_uri.
+	ZipURI    string `json:"zip_uri"`
+	FileCount int    `json:"file_count"`
+	ZipBytes  int    `json:"zip_bytes"`
 }
 
 // handleIngest accepts a full project payload from FBD, ensures the org and

@@ -22,16 +22,22 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -76,6 +82,11 @@ type manager struct {
 	// feedbackIngestURL is baked into the in-demo feedback widget injected into
 	// every build (the PostgREST endpoint the widget POSTs to). Empty -> skip.
 	feedbackIngestURL string
+	// ftcdvCallbackURL / ftcdvCallbackToken: when set, CRN POSTs a build-status
+	// callback to FTC DV on each lifecycle transition, IN ADDITION to the
+	// build_events fan-out. Empty URL -> callback disabled.
+	ftcdvCallbackURL   string
+	ftcdvCallbackToken string
 
 	mu   sync.Mutex
 	subs map[uuid.UUID][]*subscriber          // jobID -> live listeners
@@ -109,23 +120,27 @@ func NewManager(
 	repoPrivate bool,
 	runClaude bool,
 	feedbackIngestURL string,
+	ftcdvCallbackURL string,
+	ftcdvCallbackToken string,
 ) domain.JobManager {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &manager{
-		store:             store,
-		runner:            runner,
-		notifier:          notifier,
-		logger:            logger.With("component", "jobs"),
-		projectsDir:       projectsDir,
-		gitRemote:         gitRemote,
-		githubOwner:       githubOwner,
-		repoPrivate:       repoPrivate,
-		hist:              make(map[uuid.UUID][]domain.BuildEventMsg),
-		runClaude:         runClaude,
-		feedbackIngestURL: feedbackIngestURL,
-		subs:              make(map[uuid.UUID][]*subscriber),
+		store:              store,
+		runner:             runner,
+		notifier:           notifier,
+		logger:             logger.With("component", "jobs"),
+		projectsDir:        projectsDir,
+		gitRemote:          gitRemote,
+		githubOwner:        githubOwner,
+		repoPrivate:        repoPrivate,
+		hist:               make(map[uuid.UUID][]domain.BuildEventMsg),
+		runClaude:          runClaude,
+		feedbackIngestURL:  feedbackIngestURL,
+		ftcdvCallbackURL:   ftcdvCallbackURL,
+		ftcdvCallbackToken: ftcdvCallbackToken,
+		subs:               make(map[uuid.UUID][]*subscriber),
 	}
 }
 
@@ -308,6 +323,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	job.Status = domain.JobBuilding
 	m.notify(ctx, job.ID, domain.EventBuildStarted, nil)
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "building", "")
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSBuildPhase,
 		Phase:     string(domain.JobBuilding),
@@ -319,7 +335,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// git push targets the same directory.
 	workDir := filepath.Join(m.projectsDir, job.ProjectID.String())
 
-	spec := parsePayload(job.Payload)
+	spec := parsePayload(job.Payload, m.logger)
 
 	// --- resolve the git model for this build ---------------------------------
 	// SHARED (githubOwner == ""): push a "crn/<slug>-<id8>" branch to gitRemote —
@@ -572,6 +588,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result))
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "released", "")
 
 	// Snapshot the full live event stream + derived summary into the durable
 	// trace store BEFORE closeSubscribers discards the in-memory buffer. This is
@@ -613,6 +630,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "failed", errMsg)
 
 	// Persist the trace for the failed build too — the operator needs to see how
 	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
@@ -717,6 +735,56 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 	if err := m.notifier.Notify(ctx, ev); err != nil {
 		m.logger.Error("notify failed", "job_id", jobID, "event_type", kind, "err", err)
 	}
+}
+
+// ftcCallback POSTs a build-status callback to FTC DV, IN ADDITION to the
+// build_events fan-out. Config-gated (no-op unless ftcdvCallbackURL is set) and
+// best-effort: failures are logged, never fatal. status is FTC DV's vocabulary
+// ("building" / "released" / "failed").
+// Takes job fields by value so callers can dispatch it in a goroutine (it is
+// best-effort telemetry — never block the build lifecycle on a slow FTC DV).
+func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, status, message string) {
+	if m.ftcdvCallbackURL == "" {
+		return
+	}
+	payload := map[string]any{
+		"status":   status,
+		"job_id":   jobID,
+		"build_no": buildNo,
+	}
+	if message != "" {
+		payload["message"] = message
+	}
+	if imageRef != "" {
+		payload["image_ref"] = imageRef
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		m.logger.Warn("ftc callback marshal failed", "err", err, "job_id", jobID)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.ftcdvCallbackURL, bytes.NewReader(body))
+	if err != nil {
+		m.logger.Warn("ftc callback request build failed", "err", err, "job_id", jobID)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if m.ftcdvCallbackToken != "" {
+		req.Header.Set("Authorization", "Bearer "+m.ftcdvCallbackToken)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		m.logger.Warn("ftc callback POST failed", "err", err, "job_id", jobID, "status", status)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		m.logger.Warn("ftc callback non-2xx", "code", resp.StatusCode, "job_id", jobID, "status", status)
+		return
+	}
+	m.logger.Info("ftc callback sent", "job_id", jobID, "status", status, "code", resp.StatusCode)
 }
 
 // --- internal: live subscriber fan-out -------------------------------------
@@ -919,6 +987,8 @@ type ingestPayload struct {
 	Prompts   []string `json:"prompts"`
 	ZipName   string   `json:"zip_name"`
 	ZipBase64 string   `json:"zip_base64"`
+	// ZipURI (alternative to ZipBase64): a URL the build fetches the zip from.
+	ZipURI string `json:"zip_uri"`
 
 	// Edit build fields. When Mode == "edit" the payload carries a Change
 	// instruction instead of a prototype zip; the existing repo is edited in place.
@@ -929,12 +999,73 @@ type ingestPayload struct {
 	IssueNumber int `json:"issue_number"`
 }
 
+// zipDialAllowed reports whether downloadZip may connect to a resolved dial
+// address. It blocks loopback / link-local / unspecified targets — closing the
+// SSRF vectors that matter (the cloud metadata endpoint 169.254.169.254 and
+// localhost admin ports) while ALLOWING private LAN addresses, which are exactly
+// what zip_uri is for. Checked on every dial (post-DNS), so it also defends
+// against DNS rebinding. A package var so tests can point at a loopback server.
+var zipDialAllowed = func(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return fmt.Errorf("zip_uri: blocked address %s", address)
+	}
+	return nil
+}
+
+// downloadZip fetches the prototype zip from a (LAN) URL for the zip_uri ingest
+// path — an alternative to inline base64 for large or cross-machine exports.
+// Hardened against SSRF (the ingest route is unauthenticated): only http/https,
+// redirects are NOT followed, and the resolved address is screened by
+// zipDialAllowed. Bounded by a timeout and a hard size cap — an oversize body is
+// an error, not a silent truncation.
+func downloadZip(rawurl string) ([]byte, error) {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return nil, fmt.Errorf("zip_uri: parse %q: %w", rawurl, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("zip_uri: scheme %q not allowed", u.Scheme)
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	dialer.Control = func(_, address string, _ syscall.RawConn) error {
+		return zipDialAllowed(address)
+	}
+	client := &http.Client{
+		Timeout:       60 * time.Second,
+		Transport:     &http.Transport{DialContext: dialer.DialContext},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Get(rawurl)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("zip_uri %s: HTTP %d", rawurl, resp.StatusCode)
+	}
+	const maxZip = 26 << 20 // 26 MB cap (just above the 25 MB contract limit)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxZip+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxZip {
+		return nil, fmt.Errorf("zip_uri %s: body exceeds %d-byte cap", rawurl, maxZip)
+	}
+	return raw, nil
+}
+
 // parsePayload materializes the prototype zip and composes the Claude prompt
 // from idea/brd/prd/prompts. The zip is written into the workdir as a single
 // file; the build agent extracts it itself (see the "# Source" prompt section).
 // When no brief/prompt is present it falls back to promptFromPayload (raw JSON /
-// legacy "prompt"/"change" shapes).
-func parsePayload(payload json.RawMessage) payloadSpec {
+// legacy "prompt"/"change" shapes). logger is used only to report a failed
+// zip_uri download (best-effort; may be nil).
+func parsePayload(payload json.RawMessage, logger *slog.Logger) payloadSpec {
 	var p ingestPayload
 	_ = json.Unmarshal(payload, &p) // best-effort; an unknown shape yields zero values
 
@@ -966,6 +1097,15 @@ func parsePayload(payload json.RawMessage) payloadSpec {
 			spec.Files = []buildstep.FileEntry{{Path: zipName, Content: string(raw)}}
 		} else {
 			zipName = "" // bad base64 → nothing materialized; don't ask the agent to extract
+		}
+	} else if p.ZipURI != "" {
+		if raw, err := downloadZip(p.ZipURI); err == nil {
+			spec.Files = []buildstep.FileEntry{{Path: zipName, Content: string(raw)}}
+		} else {
+			if logger != nil {
+				logger.Warn("zip_uri download failed", "url", p.ZipURI, "err", err)
+			}
+			zipName = "" // download failed → nothing materialized
 		}
 	} else {
 		zipName = ""

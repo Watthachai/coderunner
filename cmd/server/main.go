@@ -95,7 +95,7 @@ func run() error {
 	// --- Job manager (queue + lifecycle + per-org advisory lock) ---
 	// jobs.NewManager composes store + runner + notifier and the build-step
 	// config (projects dir, git remote, run-Claude toggle).
-	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL)
+	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken)
 
 	// --- Feedback→GitHub watcher (owner model only) ---
 	// Mirrors every in-demo feedback row into a GitHub issue so the panel's
