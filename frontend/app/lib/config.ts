@@ -1,11 +1,19 @@
 // Backend location. NEXT_PUBLIC_CRN_API is the canonical env var (the skeleton
 // also defines NEXT_PUBLIC_CRN_API_BASE in next.config.ts; we accept either,
-// preferring CRN_API). Both default to localhost:8080.
+// preferring CRN_API).
+//
+// With no env override, derive the backend host from the page so the dashboard
+// "just works" when opened over the LAN: the backend runs on the SAME box on
+// port 8080, so `<page-protocol>//<page-host>:8080` is correct whether that host
+// is localhost or a LAN IP. Falls back to localhost during SSR (no window).
+// Set NEXT_PUBLIC_CRN_API only when the backend lives on a different host.
 
 const RAW_BASE =
   process.env.NEXT_PUBLIC_CRN_API ??
   process.env.NEXT_PUBLIC_CRN_API_BASE ??
-  "http://localhost:8080";
+  (typeof window !== "undefined"
+    ? `${window.location.protocol}//${window.location.hostname}:8080`
+    : "http://localhost:8080");
 
 // Normalize: strip any trailing slash so path joins are predictable.
 export const API_BASE = RAW_BASE.replace(/\/+$/, "");
