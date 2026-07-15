@@ -15,6 +15,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { FeedEvent } from "../lib/types";
+import { lineDiff } from "../lib/linediff";
 
 // The stream well is a touch darker/bluer than the panel so the terminal reads
 // as a separate instrument surface set into the console.
@@ -51,6 +52,27 @@ const BLUE = "\x1b[38;5;39m"; // tool-call detail
 const GREEN = "\x1b[32m"; // result tick
 const GREEN_BOLD = "\x1b[1;32m"; // build complete
 const RED_BOLD = "\x1b[1;31m"; // error
+const DIFF_ADD = "\x1b[38;5;42m"; // + added lines (green)
+const DIFF_DEL = "\x1b[38;5;203m"; // - removed lines (red)
+const DIFF_CTX = "\x1b[38;5;244m"; // unchanged context (gray)
+const MAX_DIFF_LINES = 40;
+
+// A Write/Edit's code as a colored unified diff, capped so a big file doesn't
+// flood the terminal. Write => all-green additions; Edit => green/red hunks.
+function renderDiff(before: string, after: string): string {
+  const lines = lineDiff(before, after);
+  let out = "";
+  for (const ln of lines.slice(0, MAX_DIFF_LINES)) {
+    const color =
+      ln.kind === "add" ? DIFF_ADD : ln.kind === "del" ? DIFF_DEL : DIFF_CTX;
+    const sign = ln.kind === "add" ? "+" : ln.kind === "del" ? "-" : " ";
+    out += `${color}  ${sign} ${ln.text.replace(/\t/g, "  ")}${RESET}\r\n`;
+  }
+  if (lines.length > MAX_DIFF_LINES) {
+    out += `${DIFF_CTX}  … ${lines.length - MAX_DIFF_LINES} more lines${RESET}\r\n`;
+  }
+  return out;
+}
 
 // Collapse whitespace so multi-line assistant text stays on one flowing line
 // (xterm soft-wraps it to the terminal width).
@@ -78,7 +100,9 @@ function render(e: FeedEvent): string | null {
       const tool = e.tool ?? "tool";
       const detail = toolDetail(e);
       const tail = detail ? ` ${BLUE}${detail}${RESET}` : "";
-      return `${CYAN_BOLD}▸ ${tool}${RESET}${tail}\r\n`;
+      let out = `${CYAN_BOLD}▸ ${tool}${RESET}${tail}\r\n`;
+      if (e.before || e.after) out += renderDiff(e.before ?? "", e.after ?? "");
+      return out;
     }
     case "assistant_text": {
       const t = oneLine(e.text ?? "");
