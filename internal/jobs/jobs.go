@@ -323,7 +323,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	job.Status = domain.JobBuilding
 	m.notify(ctx, job.ID, domain.EventBuildStarted, nil)
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "building", "")
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "building", "")
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSBuildPhase,
 		Phase:     string(domain.JobBuilding),
@@ -588,7 +588,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "released", "")
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, pushRemote, pushBranch, "released", "")
 
 	// Snapshot the full live event stream + derived summary into the durable
 	// trace store BEFORE closeSubscribers discards the in-memory buffer. This is
@@ -630,7 +630,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "failed", errMsg)
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", errMsg)
 
 	// Persist the trace for the failed build too — the operator needs to see how
 	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
@@ -743,7 +743,7 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 // ("building" / "released" / "failed").
 // Takes job fields by value so callers can dispatch it in a goroutine (it is
 // best-effort telemetry — never block the build lifecycle on a slow FTC DV).
-func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, status, message string) {
+func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, gitRemote, gitBranch, status, message string) {
 	if m.ftcdvCallbackURL == "" {
 		return
 	}
@@ -757,6 +757,16 @@ func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, status, me
 	}
 	if imageRef != "" {
 		payload["image_ref"] = imageRef
+	}
+	// On "released", carry the ACTUAL push target so FTC DV clones the right repo
+	// regardless of git model (owner: per-project repo + "main"; shared:
+	// CRN_GIT_REMOTE + "crn/<slug>-<id8>"). The 202 ingest response can't know
+	// this — in owner mode it always advertises the shared remote.
+	if gitRemote != "" {
+		payload["git_remote"] = gitRemote
+	}
+	if gitBranch != "" {
+		payload["git_branch"] = gitBranch
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

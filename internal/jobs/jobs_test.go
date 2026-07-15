@@ -108,7 +108,7 @@ func TestFTCCallback(t *testing.T) {
 	defer srv.Close()
 
 	m := &manager{ftcdvCallbackURL: srv.URL, ftcdvCallbackToken: "secret-tok", logger: slog.Default()}
-	m.ftcCallback(uuid.New(), 7, "", "released", "")
+	m.ftcCallback(uuid.New(), 7, "", "acme/repo", "main", "released", "")
 
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
@@ -119,7 +119,7 @@ func TestFTCCallback(t *testing.T) {
 	if gotCT != "application/json" {
 		t.Errorf("content-type = %q", gotCT)
 	}
-	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`} {
+	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`, `"git_remote":"acme/repo"`, `"git_branch":"main"`} {
 		if !strings.Contains(gotBody, want) {
 			t.Errorf("body missing %q\n%s", want, gotBody)
 		}
@@ -129,7 +129,7 @@ func TestFTCCallback(t *testing.T) {
 func TestFTCCallbackDisabledWhenNoURL(t *testing.T) {
 	m := &manager{logger: slog.Default()} // no URL configured
 	// Must be a silent no-op (no panic, no network).
-	m.ftcCallback(uuid.New(), 1, "", "building", "")
+	m.ftcCallback(uuid.New(), 1, "", "", "", "building", "")
 }
 
 func TestDownloadZipBlocksLoopback(t *testing.T) {

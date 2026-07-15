@@ -124,10 +124,13 @@ Content-Type: application/json
 { "status": "building" | "released" | "failed",
   "job_id": "<uuid ตรงกับ response §1>",
   "build_no": 7,
+  "git_remote": "https://github.com/owner/repo.git",  // เฉพาะ released
+  "git_branch": "main",                                 // เฉพาะ released
   "image_ref": "branch:…",   // ใส่มาถ้ามี docker_tag
   "message": "…" }           // ใส่มาเฉพาะตอน failed
 ```
 - แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
+- **`git_remote`/`git_branch` ใส่มาเฉพาะตอน `released`** = repo/branch จริงที่ build push ไป (ถูกทั้งโหมด **shared** และ **owner**) → **FTC DV ควร clone จากค่านี้** ไม่ใช่ค่าใน `202` (โหมด owner ค่าใน 202 เป็น shared remote ซึ่งไม่ตรง)
 - **best-effort**: ยิงไม่ผ่าน (หรือได้ non-2xx) = log แล้วปล่อย ไม่ล้ม build — `build_events` ยังเป็นแหล่งความจริงเสมอ
 - ไม่ set `CRN_FTC_DV_CALLBACK_URL` = ปิด callback (ใช้ `build_events` อย่างเดียว)
 
