@@ -407,7 +407,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		// ships a full export, so stale artifacts from a prior build (old zips,
 		// extracted source, a previous .git) must not leak in — two leftover zips
 		// would make the harness ambiguous about which to extract.
-		if err := os.RemoveAll(workDir); err != nil {
+		if err := resetWorkspace(workDir, job.ID.String(), log); err != nil {
 			log.Error("reset workspace failed", "err", err, "workdir", workDir)
 			m.finishFailed(ctx, job, "reset workspace failed: "+err.Error(), 0)
 			return
@@ -660,6 +660,47 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 	if len(orphans) > 0 {
 		m.logger.Warn("reconciled orphaned builds on startup", "count", len(orphans))
 	}
+}
+
+// resetWorkspace clears workDir for a fresh (non-edit) build WITHOUT removing it
+// in place. An in-place os.RemoveAll(workDir) races with concurrent writers of
+// the same tree — on the macOS build box, Spotlight/fseventsd indexing a large
+// node_modules, or a leftover watcher/dev-server from a prior build — so the
+// final rmdir of workDir fails with ENOTEMPTY ("directory not empty") and kills
+// the build on resubmit. Instead: atomically rename the current tree aside (the
+// inode moves; a new entry appearing in the renamed dir no longer blocks
+// creating a fresh workDir), then remove the aside copy best-effort. A stale
+// tree a racing indexer keeps alive can no longer fail the build; asides left
+// behind are swept on the next reset. uniq must be unique per build (the job id)
+// so rapid resubmits never collide on the aside name.
+func resetWorkspace(workDir, uniq string, logger *slog.Logger) error {
+	if _, err := os.Stat(workDir); errors.Is(err, os.ErrNotExist) {
+		return nil // first build for this project — nothing to reset
+	} else if err != nil {
+		return fmt.Errorf("stat workspace: %w", err)
+	}
+
+	// Sweep asides left by prior builds whose removal couldn't finish at the time
+	// (an indexer/watcher held a handle); best-effort — the handle is usually
+	// gone by now.
+	if olds, _ := filepath.Glob(workDir + ".stale-*"); olds != nil {
+		for _, old := range olds {
+			_ = os.RemoveAll(old)
+		}
+	}
+
+	// Atomic swap: free the canonical path immediately. uniq (job id) guarantees
+	// the aside name is unused, so rename never hits an existing target.
+	stale := workDir + ".stale-" + uniq
+	if err := os.Rename(workDir, stale); err != nil {
+		return fmt.Errorf("rename workspace aside: %w", err)
+	}
+	if err := os.RemoveAll(stale); err != nil {
+		// Best-effort: workDir is already free for materialize. A racing indexer
+		// can keep the aside non-empty; it's swept on the next reset.
+		logger.Warn("stale workspace cleanup incomplete (harmless)", "dir", stale, "err", err)
+	}
+	return nil
 }
 
 // traceMeta carries the terminal metadata a build trace records beyond the

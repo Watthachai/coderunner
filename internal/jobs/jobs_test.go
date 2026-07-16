@@ -2,15 +2,49 @@ package jobs
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestResetWorkspace(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "proj")
+
+	// Build a non-empty tree (file + nested dir + file) — what a prior build left.
+	if err := os.MkdirAll(filepath.Join(work, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "src", "b.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := resetWorkspace(work, "job1", slog.Default()); err != nil {
+		t.Fatalf("resetWorkspace: %v", err)
+	}
+	if _, err := os.Stat(work); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("workDir should be gone after reset, stat err = %v", err)
+	}
+	if olds, _ := filepath.Glob(work + ".stale-*"); len(olds) != 0 {
+		t.Errorf("stale asides not cleaned up: %v", olds)
+	}
+
+	// A second reset on a now-missing workDir is a no-op (first-build path).
+	if err := resetWorkspace(work, "job2", slog.Default()); err != nil {
+		t.Errorf("reset on missing dir should be nil, got %v", err)
+	}
+}
 
 func TestCodeFromToolInput(t *testing.T) {
 	cases := []struct {
