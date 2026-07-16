@@ -54,6 +54,9 @@ type Store interface {
 	// build at startup, so any lingering 'building' row is a ghost left by a
 	// restart/crash mid-build. Called once on boot.
 	FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*Job, error)
+	// OrgsWithQueuedJobs returns the distinct org ids that currently have at least
+	// one job in 'queued'. Used on boot to resume queues stranded by a restart.
+	OrgsWithQueuedJobs(ctx context.Context) ([]uuid.UUID, error)
 	// SetJobSession persists the Claude Code session id (for --resume).
 	SetJobSession(ctx context.Context, id uuid.UUID, sessionID string) error
 	// SetJobDockerTag persists the produced image tag.
@@ -219,6 +222,12 @@ type JobManager interface {
 	// a lingering 'building' row is always a ghost. Runs once, at startup, before
 	// the HTTP server accepts work.
 	ReconcileOrphans(ctx context.Context)
+
+	// ResumeQueued kicks the per-org worker for every org that still has queued
+	// jobs at boot. Queued work is otherwise only drained on Enqueue/HandleTrigger;
+	// a job queued before a restart would sit forever. Runs once at startup, after
+	// ReconcileOrphans has cleared orphaned 'building' jobs.
+	ResumeQueued(ctx context.Context)
 }
 
 // Notifier writes build_events to the central DB for fan-out to FBD and

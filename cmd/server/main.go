@@ -104,6 +104,12 @@ func run() error {
 	// request.
 	jobManager.ReconcileOrphans(rootCtx)
 
+	// Resume any queue stranded by the restart: a job queued while a prior build
+	// held the org has no Enqueue/trigger to chain to it once that process is
+	// gone, so it would sit 'queued' forever. Kick the worker per org now (after
+	// the orphan reconcile freed the per-org "1 building" slot).
+	jobManager.ResumeQueued(rootCtx)
+
 	// --- Feedback→GitHub watcher (owner model only) ---
 	// Mirrors every in-demo feedback row into a GitHub issue so the panel's
 	// history is visible in the repo. No-op when CRN_GITHUB_OWNER is unset.

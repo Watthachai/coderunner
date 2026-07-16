@@ -190,14 +190,12 @@ func (m *manager) HandleTrigger(ctx context.Context, t domain.TriggerRequest) er
 	return nil
 }
 
-// Cancel requests cancellation of a queued or building job.
-//
-// TODO(crn): cancelling a *building* job must also signal the in-flight
-// runner.Run goroutine (cancel its ctx) so the spawned `claude`/docker
-// processes are killed. For now we only flip the persisted status; a build
-// already running will still finish and overwrite this on completion. We
-// pre-validate the transition to return domain.ErrInvalidTransition cleanly
-// instead of relying on the store's CHECK constraint to surface it.
+// Cancel cancels a queued or building job. A building job is interrupted for
+// real: the registered per-job cancel func is called, cancelling runCtx so the
+// runner kills the Claude process group; runJob then finalizes the job as
+// 'cancelled'. A queued job is simply flipped to cancelled so the worker skips
+// it. Pre-validates the transition to return domain.ErrInvalidTransition cleanly
+// (rather than relying on the store's CHECK constraint) when already terminal.
 func (m *manager) Cancel(ctx context.Context, jobID uuid.UUID) error {
 	job, err := m.store.GetJob(ctx, jobID)
 	if err != nil {
@@ -754,6 +752,25 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 	}
 	if len(orphans) > 0 {
 		m.logger.Warn("reconciled orphaned builds on startup", "count", len(orphans))
+	}
+}
+
+// ResumeQueued kicks the per-org worker for every org that still has queued jobs
+// at startup. Queued work is otherwise only drained when Enqueue/HandleTrigger
+// fires; a job queued before a restart (while a prior build held the org) has no
+// one to chain to it once that process is gone, so it would sit 'queued' forever.
+// Runs once at boot, after ReconcileOrphans has cleared orphaned 'building' jobs
+// (so the per-org "1 building" slot is free for the queued job to start).
+func (m *manager) ResumeQueued(ctx context.Context) {
+	orgs, err := m.store.OrgsWithQueuedJobs(ctx)
+	if err != nil {
+		m.logger.Error("resume queued: list orgs failed", "err", err)
+		return
+	}
+	for _, orgID := range orgs {
+		m.logger.Info("resuming queued builds for org", "org_id", orgID)
+		// Background ctx: a build outlives this startup call.
+		go m.processOrg(context.Background(), orgID)
 	}
 }
 

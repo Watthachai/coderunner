@@ -316,6 +316,31 @@ func (s *pgStore) FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*dom
 	return jobs, nil
 }
 
+// OrgsWithQueuedJobs returns the distinct orgs that currently have a queued job.
+// Used on boot to resume queues that a restart stranded (no Enqueue/trigger will
+// fire for a job that was already queued).
+func (s *pgStore) OrgsWithQueuedJobs(ctx context.Context) ([]uuid.UUID, error) {
+	const q = `SELECT DISTINCT org_id FROM project_jobs WHERE status = 'queued'`
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, mapErr(err, "store: orgs with queued jobs")
+	}
+	defer rows.Close()
+
+	var orgs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapErr(err, "store: scan queued org")
+		}
+		orgs = append(orgs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapErr(err, "store: iterate queued orgs")
+	}
+	return orgs, nil
+}
+
 // SetJobSession persists the Claude Code session id (for --resume).
 func (s *pgStore) SetJobSession(ctx context.Context, id uuid.UUID, sessionID string) error {
 	const q = `UPDATE project_jobs SET session_id = $2 WHERE id = $1`
