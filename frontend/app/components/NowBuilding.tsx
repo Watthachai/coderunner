@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { BuildingJob, BuildTrace, FeedEvent } from "../lib/types";
+import { jobCancelUrl } from "../lib/config";
 import { useJobStream } from "../lib/useJobStream";
 import { useTick } from "../lib/useTick";
 import { formatElapsed, formatDuration, formatRelative } from "../lib/format";
@@ -80,6 +81,29 @@ function BuildingCard({ job, nowMs }: { job: BuildingJob; nowMs: number }) {
 
   const live = streamPhase === "live";
 
+  // Cancel: two-click confirm (a build is expensive, so guard against misclicks).
+  // First click arms; second POSTs the cancel. The dashboard poll drops this
+  // card once the job's status flips away from 'building'.
+  const [armed, setArmed] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  async function onCancel() {
+    if (cancelling) return;
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
+    setCancelling(true);
+    try {
+      const res = await fetch(jobCancelUrl(job.job_id), { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      // Reset so the operator can retry; the card stays until the poll updates.
+      setCancelling(false);
+      setArmed(false);
+    }
+  }
+
   return (
     <article className={`bc ${live ? "bc--live" : ""}`}>
       <div className="bc-scan" aria-hidden="true" />
@@ -92,7 +116,19 @@ function BuildingCard({ job, nowMs }: { job: BuildingJob; nowMs: number }) {
           </span>
           <span className="bc-org">{job.org_name || "—"}</span>
         </div>
-        <span className="bc-build">build #{job.build_no}</span>
+        <div className="bc-head-right">
+          <span className="bc-build">build #{job.build_no}</span>
+          <button
+            type="button"
+            className={`bc-cancel ${armed ? "bc-cancel--armed" : ""}`}
+            onClick={onCancel}
+            onBlur={() => !cancelling && setArmed(false)}
+            disabled={cancelling || terminal}
+            title="Cancel this build"
+          >
+            {cancelling ? "cancelling…" : armed ? "confirm?" : "cancel"}
+          </button>
+        </div>
       </header>
 
       {/* TELEMETRY HUD — live mission readouts. */}

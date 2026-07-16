@@ -935,6 +935,51 @@ body {
   white-space: nowrap;
 }
 
+/* build # badge + cancel control, right-aligned in the header */
+.bc-head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bc-cancel {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.bc-cancel:hover:not(:disabled) {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* armed = one click in; the next click actually cancels */
+.bc-cancel--armed,
+.bc-cancel--armed:hover:not(:disabled) {
+  color: #fff;
+  background: var(--error);
+  border-color: var(--error);
+}
+
+.bc-cancel:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /* --- TELEMETRY HUD --- */
 
 .hud {

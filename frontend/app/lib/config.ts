@@ -118,6 +118,14 @@ export function traceUrl(jobId: string): string {
   return `${API_BASE}/internal/jobs/${encodeURIComponent(jobId)}/trace`;
 }
 
+// Cancel a queued or in-flight build (no auth). For a running build this
+// interrupts the Claude process group; the job finalizes as 'cancelled'.
+// -> 202 { status: "cancelling" } · 409 if already finished.
+//   POST /internal/jobs/{id}/cancel
+export function jobCancelUrl(jobId: string): string {
+  return `${API_BASE}/internal/jobs/${encodeURIComponent(jobId)}/cancel`;
+}
+
 export function projectBuildsUrl(projectId: string): string {
   return `${API_BASE}/internal/projects/${encodeURIComponent(
     projectId,

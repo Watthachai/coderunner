@@ -153,6 +153,10 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	r.Get("/internal/projects/{id}/builds", s.handleListBuilds)
 	r.Get("/internal/jobs/{id}/trace", s.handleGetTrace)
 
+	// Cancel a queued or in-flight build (no auth; operator console). Interrupts
+	// the running Claude process group and marks the job cancelled.
+	r.Post("/internal/jobs/{id}/cancel", s.handleCancelJob)
+
 	// No-auth skills CRUD for the operator console. Skills are the SKILL.md
 	// bodies injected into every build; built-in skills are editable but not
 	// deletable.
@@ -1679,6 +1683,31 @@ func (s *server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("rollback requested (not yet implemented)",
 		"project_id", projectID, "build_no", buildNo, "org_id", org.ID)
 	s.writeError(w, r, http.StatusNotImplemented, "rollback not yet implemented")
+}
+
+// handleCancelJob cancels a queued or in-flight build (no auth; operator
+// console). For a running build it interrupts the Claude process group; the job
+// finalizes as 'cancelled'. Returns 409 if the job already reached a terminal
+// state, 404 if it does not exist.
+func (s *server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
+	jobID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid job id")
+		return
+	}
+	if err := s.jm.Cancel(r.Context(), jobID); err != nil {
+		switch {
+		case errors.Is(err, domain.ErrInvalidTransition):
+			s.writeError(w, r, http.StatusConflict, "job already finished")
+		case errors.Is(err, domain.ErrNotFound):
+			s.writeError(w, r, http.StatusNotFound, "job not found")
+		default:
+			s.logger.Error("cancel job failed", "err", err, "job_id", jobID)
+			s.writeError(w, r, http.StatusInternalServerError, "cancel failed")
+		}
+		return
+	}
+	s.writeJSON(w, r, http.StatusAccepted, map[string]any{"status": "cancelling"})
 }
 
 // --- Helpers ---

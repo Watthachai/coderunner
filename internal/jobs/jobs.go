@@ -88,9 +88,10 @@ type manager struct {
 	ftcdvCallbackURL   string
 	ftcdvCallbackToken string
 
-	mu   sync.Mutex
-	subs map[uuid.UUID][]*subscriber          // jobID -> live listeners
-	hist map[uuid.UUID][]domain.BuildEventMsg // jobID -> capped replay buffer
+	mu      sync.Mutex
+	subs    map[uuid.UUID][]*subscriber          // jobID -> live listeners
+	hist    map[uuid.UUID][]domain.BuildEventMsg // jobID -> capped replay buffer
+	cancels map[uuid.UUID]context.CancelFunc     // jobID -> interrupt the running build
 }
 
 // subscriber is one live WebSocket listener for a job's normalized events.
@@ -141,6 +142,7 @@ func NewManager(
 		ftcdvCallbackURL:   ftcdvCallbackURL,
 		ftcdvCallbackToken: ftcdvCallbackToken,
 		subs:               make(map[uuid.UUID][]*subscriber),
+		cancels:            make(map[uuid.UUID]context.CancelFunc),
 	}
 }
 
@@ -204,10 +206,23 @@ func (m *manager) Cancel(ctx context.Context, jobID uuid.UUID) error {
 	if job.Status.IsTerminal() {
 		return fmt.Errorf("jobs: cancel %s: %w", job.Status, domain.ErrInvalidTransition)
 	}
+
+	// Running: interrupt the process group. runJob detects the cancelled runCtx
+	// and finalizes the job as 'cancelled' (persisting status + events itself), so
+	// we must NOT also flip the status here or we would race its finalizer.
+	if cancel := m.takeCancel(jobID); cancel != nil {
+		m.logger.Info("cancelling running job", "job_id", jobID)
+		cancel()
+		return nil
+	}
+
+	// Queued (not yet running): flip to cancelled so the worker skips it, and
+	// close out any listeners.
 	if err := m.store.UpdateJobStatus(ctx, jobID, domain.JobCancelled, ""); err != nil {
 		return fmt.Errorf("jobs: cancel: update status: %w", err)
 	}
-	m.logger.Info("job cancelled", "job_id", jobID, "from", job.Status)
+	m.logger.Info("cancelled queued job", "job_id", jobID)
+	m.notify(ctx, jobID, domain.EventBuildFailed, failedPayload("cancelled by operator"))
 	m.closeSubscribers(jobID)
 	return nil
 }
@@ -315,6 +330,15 @@ func (m *manager) processOrg(ctx context.Context, orgID uuid.UUID) {
 // lifecycle boundaries. It assumes the org lock is held by the caller.
 func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	log := m.logger.With("job_id", job.ID, "project_id", job.ProjectID, "org_id", job.OrgID, "build_no", job.BuildNo)
+
+	// Per-job cancellable context so an operator can interrupt THIS build:
+	// Cancel(job.ID) calls the registered func, which cancels runCtx → the runner
+	// kills the Claude process group. Finalization below deliberately uses the
+	// parent ctx (NOT runCtx) so a cancel can still persist the terminal status.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel() // release runCtx resources on every exit (idempotent)
+	m.registerCancel(job.ID, cancel)
+	defer m.unregisterCancel(job.ID)
 
 	// --- building ---
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobBuilding, ""); err != nil {
@@ -467,7 +491,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 
 		var runErr error
-		result, runErr = m.runner.Run(ctx, runSpec, emit)
+		result, runErr = m.runner.Run(runCtx, runSpec, emit)
 
 		// Remove the injected .claude dir (success OR fail) BEFORE the git phase so
 		// the harness skills are never committed/pushed.
@@ -483,8 +507,22 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			}
 		}
 
-		// --- terminal: failed ---
+		// --- terminal: cancelled / failed ---
 		if runErr != nil || !result.Success {
+			// runCtx cancelled while the parent is still alive == an operator hit
+			// Cancel. Finalize as cancelled (using the parent ctx, which is NOT
+			// cancelled) instead of failed.
+			if runCtx.Err() != nil && ctx.Err() == nil {
+				log.Info("build cancelled by operator", "cost_usd", result.CostUSD)
+				m.finishCancelled(ctx, job, result.CostUSD)
+				return
+			}
+			// Parent ctx cancelled == server shutdown mid-build: leave the job
+			// 'building' for startup reconcile rather than recording a false failure.
+			if ctx.Err() != nil {
+				log.Info("build interrupted by shutdown; leaving for reconcile")
+				return
+			}
 			errMsg := "claude run reported failure"
 			if runErr != nil {
 				errMsg = runErr.Error()
@@ -638,6 +676,62 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 	// discards the in-memory buffer.
 	m.saveTrace(ctx, job, traceMeta{cost: costUSD, errMsg: errMsg})
 	m.closeSubscribers(job.ID)
+}
+
+// finishCancelled records an operator-cancelled build: status=cancelled, a
+// terminal event to live subscribers, a build_failed fan-out (build_events has
+// no 'cancelled' type — a cancelled build simply did not succeed), the trace,
+// and a best-effort FTC callback. Uses the caller's ctx (the parent, alive on a
+// user cancel) — never the cancelled runCtx.
+func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, costUSD float64) {
+	const msg = "build cancelled by operator"
+	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobCancelled, ""); err != nil {
+		m.logger.Error("mark cancelled failed", "job_id", job.ID, "err", err)
+	}
+	job.Status = domain.JobCancelled
+
+	m.publish(job.ID, domain.BuildEventMsg{
+		Kind:      domain.WSError,
+		Phase:     string(domain.JobCancelled),
+		Text:      msg,
+		CostUSD:   costUSD,
+		JobID:     job.ID.String(),
+		Timestamp: time.Now().UTC(),
+	})
+	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(msg))
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", msg)
+
+	m.saveTrace(ctx, job, traceMeta{cost: costUSD, errMsg: msg})
+	m.closeSubscribers(job.ID)
+}
+
+// registerCancel stores a running job's interrupt func so Cancel can find it.
+func (m *manager) registerCancel(jobID uuid.UUID, cancel context.CancelFunc) {
+	m.mu.Lock()
+	m.cancels[jobID] = cancel
+	m.mu.Unlock()
+}
+
+// unregisterCancel removes a job's interrupt func and (idempotently) calls it.
+// Invoked via defer at the end of runJob so WithCancel resources are released.
+func (m *manager) unregisterCancel(jobID uuid.UUID) {
+	m.mu.Lock()
+	cancel := m.cancels[jobID]
+	delete(m.cancels, jobID)
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// takeCancel removes and returns a running job's interrupt func, or nil if the
+// job is not currently running (queued, or already finished).
+func (m *manager) takeCancel(jobID uuid.UUID) context.CancelFunc {
+	m.mu.Lock()
+	cancel := m.cancels[jobID]
+	delete(m.cancels, jobID)
+	m.mu.Unlock()
+	return cancel
 }
 
 // ReconcileOrphans fails every job the store still has in 'building' and reports
