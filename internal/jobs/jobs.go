@@ -639,6 +639,29 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 	m.closeSubscribers(job.ID)
 }
 
+// ReconcileOrphans fails every job the store still has in 'building' and reports
+// each as build_failed. A single-process server has no genuine in-flight build
+// at boot, so a lingering 'building' row is a ghost from a restart/crash
+// mid-build (otherwise it would show as "building" forever with an ever-growing
+// elapsed timer). The build_events fan-out is emitted synchronously (source of
+// truth); the FTC DV callback is fired best-effort so consumers see the build
+// closed out. Runs once at startup, before the HTTP server accepts work.
+func (m *manager) ReconcileOrphans(ctx context.Context) {
+	const msg = "build orphaned: server restarted mid-build"
+	orphans, err := m.store.FailOrphanedBuilds(ctx, msg)
+	if err != nil {
+		m.logger.Error("reconcile orphaned builds failed", "err", err)
+		return
+	}
+	for _, o := range orphans {
+		m.notify(ctx, o.ID, domain.EventBuildFailed, failedPayload(msg))
+		go m.ftcCallback(o.ID, o.BuildNo, o.DockerTag, "", "", "failed", msg)
+	}
+	if len(orphans) > 0 {
+		m.logger.Warn("reconciled orphaned builds on startup", "count", len(orphans))
+	}
+}
+
 // traceMeta carries the terminal metadata a build trace records beyond the
 // event stream itself: commit/branch/remote from the git phase, cost from the
 // Claude result, errMsg from a failure. Zero values are fine (e.g. a failed

@@ -97,6 +97,13 @@ func run() error {
 	// config (projects dir, git remote, run-Claude toggle).
 	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken)
 
+	// Reconcile ghost builds: any job still 'building' at boot was orphaned by a
+	// prior process (restart/crash mid-build). Fail them now so the dashboard
+	// doesn't show a build stuck "building" forever, and subscribers get a
+	// terminal event. Runs before ListenAndServe so the state is clean on first
+	// request.
+	jobManager.ReconcileOrphans(rootCtx)
+
 	// --- Feedback→GitHub watcher (owner model only) ---
 	// Mirrors every in-demo feedback row into a GitHub issue so the panel's
 	// history is visible in the repo. No-op when CRN_GITHUB_OWNER is unset.

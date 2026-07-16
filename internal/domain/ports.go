@@ -48,6 +48,12 @@ type Store interface {
 	// UpdateJobStatus moves a job to a new status. errMsg is stored only for
 	// JobFailed; pass "" otherwise.
 	UpdateJobStatus(ctx context.Context, id uuid.UUID, status JobStatus, errMsg string) error
+	// FailOrphanedBuilds marks every job still in 'building' as failed (stamping
+	// error_msg + finished_at) and returns the reconciled rows with id, build_no,
+	// and docker_tag populated. A single-process server has no genuine in-flight
+	// build at startup, so any lingering 'building' row is a ghost left by a
+	// restart/crash mid-build. Called once on boot.
+	FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*Job, error)
 	// SetJobSession persists the Claude Code session id (for --resume).
 	SetJobSession(ctx context.Context, id uuid.UUID, sessionID string) error
 	// SetJobDockerTag persists the produced image tag.
@@ -206,6 +212,13 @@ type JobManager interface {
 
 	// Status returns the read model for a project's current/last job.
 	Status(ctx context.Context, projectID uuid.UUID) (*ProjectStatusView, error)
+
+	// ReconcileOrphans fails every job left in 'building' by a prior process
+	// (restart/crash mid-build) and reports each as build_failed to subscribers
+	// and FTC DV. A single-process server has no real in-flight build at boot, so
+	// a lingering 'building' row is always a ghost. Runs once, at startup, before
+	// the HTTP server accepts work.
+	ReconcileOrphans(ctx context.Context)
 }
 
 // Notifier writes build_events to the central DB for fan-out to FBD and
