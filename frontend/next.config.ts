@@ -21,6 +21,12 @@ function lanHosts(): string[] {
 // default here: the old `env` block pinned it to localhost:8080 and broke LAN
 // access, since the browser then hit localhost on the VIEWER's machine.
 const nextConfig: NextConfig = {
+  // Pin the workspace root to this app's dir. Otherwise Next 16 walks UP looking
+  // for a lockfile and can latch onto a stray ~/package-lock.json in the home
+  // dir — then Turbopack watches the entire home tree and the dev server becomes
+  // unstable / exits on its own. (`next dev` always runs from here, so cwd is
+  // the frontend dir; this stops the upward workspace-root inference.)
+  turbopack: { root: process.cwd() },
   allowedDevOrigins: lanHosts(),
 };
 
