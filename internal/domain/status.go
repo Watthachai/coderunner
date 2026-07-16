@@ -70,7 +70,8 @@ const (
 type BuildEventType string
 
 const (
-	EventBuildStarted BuildEventType = "build_started"
-	EventBuildDone    BuildEventType = "build_done"
-	EventBuildFailed  BuildEventType = "build_failed"
+	EventBuildStarted   BuildEventType = "build_started"
+	EventBuildDone      BuildEventType = "build_done"
+	EventBuildFailed    BuildEventType = "build_failed"
+	EventBuildCancelled BuildEventType = "build_cancelled"
 )

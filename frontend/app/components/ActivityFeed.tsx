@@ -1,17 +1,20 @@
 import type { ActivityRow } from "../lib/types";
 import { formatClock } from "../lib/format";
 
-// Status color is information: started=blue, done=green, failed=red.
+// Status color is information: started=blue, done=green, failed=red,
+// cancelled=gray (a deliberate stop, not an error).
 const TONE: Record<string, string> = {
   build_started: "var(--building)",
   build_done: "var(--done)",
   build_failed: "var(--error)",
+  build_cancelled: "var(--fg-dim)",
 };
 
 const LABEL: Record<string, string> = {
   build_started: "started",
   build_done: "done",
   build_failed: "failed",
+  build_cancelled: "cancelled",
 };
 
 // A live vertical timeline of recent build events: a connected rail of

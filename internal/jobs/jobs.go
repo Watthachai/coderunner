@@ -220,7 +220,7 @@ func (m *manager) Cancel(ctx context.Context, jobID uuid.UUID) error {
 		return fmt.Errorf("jobs: cancel: update status: %w", err)
 	}
 	m.logger.Info("cancelled queued job", "job_id", jobID)
-	m.notify(ctx, jobID, domain.EventBuildFailed, failedPayload("cancelled by operator"))
+	m.notify(ctx, jobID, domain.EventBuildCancelled, cancelledPayload("cancelled by operator"))
 	m.closeSubscribers(jobID)
 	return nil
 }
@@ -696,7 +696,10 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, costUSD 
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
-	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(msg))
+	// build_events gets the distinct 'build_cancelled' (dashboard shows
+	// "cancelled" not "failed"); the FTC HTTP callback maps to "failed" since its
+	// vocabulary is only building/released/failed.
+	m.notify(ctx, job.ID, domain.EventBuildCancelled, cancelledPayload(msg))
 	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", msg)
 
 	m.saveTrace(ctx, job, traceMeta{cost: costUSD, errMsg: msg})
@@ -1520,6 +1523,18 @@ func failedPayload(errMsg string) json.RawMessage {
 	b, err := json.Marshal(struct {
 		Error string `json:"error"`
 	}{Error: errMsg})
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// cancelledPayload is the build_events payload for a build_cancelled event:
+// { "reason": "..." } — a deliberate stop, not an error.
+func cancelledPayload(reason string) json.RawMessage {
+	b, err := json.Marshal(struct {
+		Reason string `json:"reason"`
+	}{Reason: reason})
 	if err != nil {
 		return nil
 	}

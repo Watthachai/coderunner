@@ -104,8 +104,10 @@ UPDATE build_events SET notified_ftcdv = true WHERE id = $1;
 | คอลัมน์ | ค่า |
 |---|---|
 | `job_id` | uuid ของงาน (ตรงกับ `job_id` ใน response §1) |
-| `event_type` | **`build_started` \| `build_done` \| `build_failed`** (บังคับด้วย DB CHECK) |
-| `payload` (jsonb) | `build_done` → `{cost_usd, session_id}` · `build_failed` → `{error}` |
+| `event_type` | **`build_started` \| `build_done` \| `build_failed` \| `build_cancelled`** (บังคับด้วย DB CHECK) |
+| `payload` (jsonb) | `build_done` → `{cost_usd, session_id}` · `build_failed` → `{error}` · `build_cancelled` → `{reason}` |
+
+> **`build_cancelled`** (เพิ่ม migration 0009) = operator กด cancel — build ถูกฆ่าจริง (SIGKILL). แยกจาก `build_failed` เพื่อให้ dashboard โชว์ "cancelled" ไม่ใช่ error. **consumer ควร map เป็น "ไม่สำเร็จ/หยุดแล้ว"** (ไม่ใช่ error ต้อง retry). ฝั่ง HTTP callback (§3) ยัง map เป็น `failed` เพราะ vocab มีแค่ building/released/failed.
 | `created_at`, `notified_fbd`, `notified_ftcdv` | เวลา + flag การส่งต่อ consumer |
 
 > ใน `build_events`: **ไม่มี** สถานะ `released` (สำเร็จ = `build_done`), **ไม่มี** `409`. ถ้าอยากได้ HTTP callback แบบ `building`/`released`/`failed` + token → ดู §3
