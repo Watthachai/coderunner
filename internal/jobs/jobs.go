@@ -514,10 +514,11 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	if scaffolded, sErr := buildstep.ScaffoldRun(workDir, m.logger); sErr != nil {
 		log.Warn("scaffold run helpers failed", "err", sErr)
 	} else if scaffolded {
-		log.Info("scaffolded one-command run (docker-compose + QUICKSTART)")
+		port := buildstep.ScaffoldPort(workDir)
+		log.Info("scaffolded one-command run (docker-compose + QUICKSTART)", "port", port)
 		m.publish(job.ID, domain.BuildEventMsg{
 			Kind:      domain.WSAssistantText,
-			Text:      "✓ ready to run — `docker compose up` (Postgres + schema + seed included) → http://localhost:3000 · or see QUICKSTART.md",
+			Text:      fmt.Sprintf("✓ ready to run — `docker compose up` (Postgres + schema + seed included) → http://localhost:%d · or see QUICKSTART.md", port),
 			JobID:     job.ID.String(),
 			Timestamp: time.Now().UTC(),
 		})

@@ -1,6 +1,7 @@
 package buildstep
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,23 @@ func TestScaffoldRunPrisma(t *testing.T) {
 	dc, _ := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
 	if !strings.Contains(string(dc), "prisma db push") {
 		t.Errorf("docker-compose.yml not overwritten with the working runner")
+	}
+
+	// The host port default is per-project (4000–4999), NOT a hardcoded 3000, so
+	// demos don't collide on `docker compose up`. The template placeholder must be
+	// rendered (no {{PORT}} left) and the container side must stay 3000.
+	port := ScaffoldPort(dir)
+	if port < 4000 || port > 4999 {
+		t.Errorf("scaffold port %d out of range 4000-4999", port)
+	}
+	if strings.Contains(string(dc), "{{PORT}}") {
+		t.Errorf("compose still has an unrendered {{PORT}} placeholder")
+	}
+	if strings.Contains(string(dc), "${APP_PORT:-3000}") {
+		t.Errorf("compose still defaults the host port to 3000")
+	}
+	if !strings.Contains(string(dc), fmt.Sprintf("${APP_PORT:-%d}:3000", port)) {
+		t.Errorf("compose host-port mapping not set to per-project %d:3000", port)
 	}
 
 	qs, err := os.ReadFile(filepath.Join(dir, "QUICKSTART.md"))
