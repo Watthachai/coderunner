@@ -637,7 +637,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
-	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result))
+	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch))
 	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, pushRemote, pushBranch, "released", "")
 
 	// Snapshot the full live event stream + derived summary into the durable
@@ -1580,11 +1580,23 @@ func truncateOneLine(s string, max int) string {
 
 // donePayload builds the build_done event payload (cost + session) for the
 // central DB.
-func donePayload(r domain.RunResult) json.RawMessage {
+func donePayload(r domain.RunResult, imageRef, gitRemote, gitBranch string) json.RawMessage {
 	b, err := json.Marshal(struct {
 		CostUSD   float64 `json:"cost_usd"`
 		SessionID string  `json:"session_id,omitempty"`
-	}{CostUSD: r.CostUSD, SessionID: r.SessionID})
+		// ImageRef is the pullable docker image tag when the image pipeline is on
+		// (e.g. "registry/fitt/demos/crn-demo-<slug>-<id8>:v<n>"); otherwise the
+		// "branch:<name>" placeholder. Consumers pull the image from this.
+		ImageRef  string `json:"image_ref,omitempty"`
+		GitRemote string `json:"git_remote,omitempty"`
+		GitBranch string `json:"git_branch,omitempty"`
+	}{
+		CostUSD:   r.CostUSD,
+		SessionID: r.SessionID,
+		ImageRef:  imageRef,
+		GitRemote: gitRemote,
+		GitBranch: gitBranch,
+	})
 	if err != nil {
 		return nil
 	}
