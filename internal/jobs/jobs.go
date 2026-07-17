@@ -770,11 +770,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		return
 	}
 
-	name := spec.Name
-	if name == "" {
-		name = "p-" + job.ProjectID.String()[:8]
-	}
-	tag := buildstep.DemoImageTag(m.imageRegistry, name, job.BuildNo)
+	tag := buildstep.DemoImageTag(m.imageRegistry, spec.Name, job.ProjectID.String(), job.BuildNo)
 
 	if err := buildstep.BuildImage(ctx, workDir, tag, log); err != nil {
 		log.Error("docker build failed", "err", err, "tag", tag)

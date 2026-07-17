@@ -66,11 +66,21 @@ Dockerfile
 npm-debug.log
 `
 
-// DemoImageTag builds the image tag for a build: "<registry>/crn-demo-<slug>:v<n>"
-// (registry omitted when empty -> a local-only tag). name is sanitized to the
-// docker repo charset.
-func DemoImageTag(registry, name string, buildNo int) string {
+// DemoImageTag builds the image tag for a build:
+// "<registry>/crn-demo-<slug>-<id8>:v<n>" (registry omitted when empty -> a
+// local-only tag). The 8-char project-id suffix keeps two different projects
+// that happen to share a demo name from colliding on the same image repo (both
+// use per-project build numbers, so v1 would otherwise overwrite v1). name is
+// sanitized to the docker repo charset.
+func DemoImageTag(registry, name, projectID string, buildNo int) string {
+	id8 := projectID
+	if len(id8) > 8 {
+		id8 = id8[:8]
+	}
 	repo := "crn-demo-" + dockerSlug(name)
+	if id8 != "" {
+		repo += "-" + id8
+	}
 	if registry != "" {
 		repo = strings.TrimRight(registry, "/") + "/" + repo
 	}

@@ -8,21 +8,25 @@ import (
 )
 
 func TestDemoImageTag(t *testing.T) {
+	const pid = "cc0b6195-46b4-4c29-a167-c0dd321d10d9" // -> id8 "cc0b6195"
 	cases := []struct {
-		registry, name string
-		buildNo        int
-		want           string
+		registry, name, projectID string
+		buildNo                   int
+		want                      string
 	}{
-		{"", "Cafe Pre-order & Pick-up", 8, "crn-demo-cafe-pre-order-pick-up:v8"},
-		{"registry.gitlab.local/fitt", "Cafe Pre-order & Pick-up", 8, "registry.gitlab.local/fitt/crn-demo-cafe-pre-order-pick-up:v8"},
-		{"registry.gitlab.local/fitt/", "X", 1, "registry.gitlab.local/fitt/crn-demo-x:v1"}, // trailing slash trimmed
-		{"", "", 3, "crn-demo-demo:v3"},                                                    // empty name -> "demo"
-		{"", "!!!___###", 2, "crn-demo-demo:v2"},                                           // nothing usable -> "demo"
-		{"", "My_App.v2", 5, "crn-demo-my-app-v2:v5"},                                      // non-charset collapsed to "-"
+		{"", "Cafe Pre-order & Pick-up", pid, 8, "crn-demo-cafe-pre-order-pick-up-cc0b6195:v8"},
+		{"registry.gitlab.local/fitt", "Cafe Pre-order & Pick-up", pid, 8, "registry.gitlab.local/fitt/crn-demo-cafe-pre-order-pick-up-cc0b6195:v8"},
+		{"registry.gitlab.local/fitt/", "X", pid, 1, "registry.gitlab.local/fitt/crn-demo-x-cc0b6195:v1"}, // trailing slash trimmed
+		{"", "", pid, 3, "crn-demo-demo-cc0b6195:v3"},                                                     // empty name -> "demo"
+		{"", "My_App.v2", pid, 5, "crn-demo-my-app-v2-cc0b6195:v5"},                                       // non-charset collapsed to "-"
+		{"", "X", "", 1, "crn-demo-x:v1"},                                                                 // no project id -> no suffix
+		// Two different projects sharing a name do NOT collide (id8 differs):
+		{"reg", "Shop", "aaaaaaaa-1111", 1, "reg/crn-demo-shop-aaaaaaaa:v1"},
+		{"reg", "Shop", "bbbbbbbb-2222", 1, "reg/crn-demo-shop-bbbbbbbb:v1"},
 	}
 	for _, c := range cases {
-		if got := DemoImageTag(c.registry, c.name, c.buildNo); got != c.want {
-			t.Errorf("DemoImageTag(%q,%q,%d) = %q, want %q", c.registry, c.name, c.buildNo, got, c.want)
+		if got := DemoImageTag(c.registry, c.name, c.projectID, c.buildNo); got != c.want {
+			t.Errorf("DemoImageTag(%q,%q,%q,%d) = %q, want %q", c.registry, c.name, c.projectID, c.buildNo, got, c.want)
 		}
 	}
 }
