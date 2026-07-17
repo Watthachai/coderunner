@@ -52,11 +52,11 @@ Demo default port 3000 ชนกับ studio/dashboard/demo อื่น.
 **Subtasks:** config `CRN_BUILD_IMAGE`+`CRN_IMAGE_REGISTRY` · `buildstep/dockerbuild.go` (WriteDockerfile Next-standalone deterministic, BuildImage/PushImage, DemoImageTag/IsNextApp) · wire `buildAndPushImage` ใน runJob (set docker_tag=image) · tests · .env.example.
 **AC:** เปิด env → build Next demo → ได้ image `crn-demo-<slug>:v<n>` (push ถ้ามี registry); source ไม่อยู่ในภาพ.
 
-### C2 · เปิด GitLab Container Registry (INFRA-1) `Todo` `Infra`
+### C2 · เปิด GitLab Container Registry (INFRA-1) `Done`
 `gitlab.rb` `registry_external_url` + TLS → reconfigure. ทำบน VM `172.168.1.234`.
 **AC:** login registry + push image ตัวอย่างได้.
 
-### C3 · CRN box login + push (INFRA-2) `Todo`
+### C3 · CRN box login + push (INFRA-2) `Done (validated บน .168 · .171 prod pending)`
 deploy token (`write_registry`) · `docker login` · ตั้ง `CRN_IMAGE_REGISTRY`.
 **AC:** build → image โผล่ใน GitLab registry.
 
