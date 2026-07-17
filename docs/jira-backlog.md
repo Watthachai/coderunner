@@ -100,6 +100,10 @@ build → image → push → pull เครื่อง 2 → run.
 ### D4 · Deployment presets doc `Done` `c286c9c` `f53cf8d`
 env knobs + single-box/docker/DNS presets + no-hardcoded-IP. → [deployment-config.md](deployment-config.md)
 
+### D5 · image_ref + status ใน build_events (consumer) `Done` `122e069`
+build_done payload เพิ่ม `image_ref` (tag GitLab ที่ pull ได้) + git_remote/git_branch → consumer (FITTCORE) รู้ location ผ่าน DB ช่องเสถียร ไม่ต้องพึ่ง HTTP callback. status = `event_type` (started/done/failed/cancelled). + doc [fittcore-consumer-guide.md](fittcore-consumer-guide.md).
+**AC:** เพื่อน poll build_events → รู้ build เสร็จ/กำลังทำ + `docker pull image_ref` ได้.
+
 ---
 
 ## EPIC E — FBD local dev  ✅ Done
