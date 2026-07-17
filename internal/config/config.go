@@ -80,6 +80,16 @@ type Config struct {
 	FTCDVCallbackURL   string
 	FTCDVCallbackToken string
 
+	// BuildImage toggles the docker-image pipeline: after a successful build CRN
+	// runs `docker build` on the produced Next standalone app and (if
+	// ImageRegistry is set) `docker push`. Default false. Requires a Docker
+	// daemon on the CRN host and a prior `docker login` to the registry.
+	BuildImage bool
+	// ImageRegistry is the registry prefix pushed to, e.g.
+	// "registry.gitlab.local/fitt". Empty -> build the image locally only (no
+	// push). The full tag is "<registry>/crn-demo-<slug>:v<build_no>".
+	ImageRegistry string
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -134,6 +144,8 @@ func Load() (*Config, error) {
 		FeedbackIngestURL:  getEnv("CRN_FEEDBACK_INGEST_URL", "http://localhost:3010/feedback_requests"),
 		FTCDVCallbackURL:   os.Getenv("CRN_FTC_DV_CALLBACK_URL"),
 		FTCDVCallbackToken: os.Getenv("CRN_FTC_DV_CALLBACK_TOKEN"),
+		BuildImage:         getEnvBool("CRN_BUILD_IMAGE", false),
+		ImageRegistry:      strings.TrimRight(os.Getenv("CRN_IMAGE_REGISTRY"), "/"),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),

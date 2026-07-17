@@ -87,6 +87,10 @@ type manager struct {
 	// build_events fan-out. Empty URL -> callback disabled.
 	ftcdvCallbackURL   string
 	ftcdvCallbackToken string
+	// buildImage toggles the docker-image pipeline; imageRegistry is the push
+	// target prefix (empty -> build locally, no push).
+	buildImage    bool
+	imageRegistry string
 
 	mu      sync.Mutex
 	subs    map[uuid.UUID][]*subscriber          // jobID -> live listeners
@@ -123,6 +127,8 @@ func NewManager(
 	feedbackIngestURL string,
 	ftcdvCallbackURL string,
 	ftcdvCallbackToken string,
+	buildImage bool,
+	imageRegistry string,
 ) domain.JobManager {
 	if logger == nil {
 		logger = slog.Default()
@@ -141,6 +147,8 @@ func NewManager(
 		feedbackIngestURL:  feedbackIngestURL,
 		ftcdvCallbackURL:   ftcdvCallbackURL,
 		ftcdvCallbackToken: ftcdvCallbackToken,
+		buildImage:         buildImage,
+		imageRegistry:      imageRegistry,
 		subs:               make(map[uuid.UUID][]*subscriber),
 		cancels:            make(map[uuid.UUID]context.CancelFunc),
 	}
@@ -606,6 +614,11 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		m.publishPhase(job.ID, "push_skipped")
 	}
 
+	// Build + push the opaque production image (gated by CRN_BUILD_IMAGE). Runs
+	// before the done status so job.DockerTag holds the image tag when the
+	// "released" callback fires. Best-effort — never fails an otherwise-good build.
+	m.buildAndPushImage(ctx, workDir, spec, job, log)
+
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobDone, ""); err != nil {
 		log.Error("mark done failed", "err", err)
 		// Best-effort failure path so subscribers are not left hanging.
@@ -733,6 +746,71 @@ func (m *manager) takeCancel(jobID uuid.UUID) context.CancelFunc {
 	delete(m.cancels, jobID)
 	m.mu.Unlock()
 	return cancel
+}
+
+// buildAndPushImage runs the docker-image pipeline for a finished build: write
+// CRN's deterministic production Dockerfile, `docker build` the Next standalone
+// app into an opaque image (only compiled output — no source), and `docker push`
+// it to the registry when configured. Sets job.DockerTag to the image tag.
+// Gated by CRN_BUILD_IMAGE and best-effort: a docker/registry failure is
+// surfaced + logged but does NOT fail the build (git push already succeeded).
+func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, log *slog.Logger) {
+	if !m.buildImage {
+		return
+	}
+	m.publishPhase(job.ID, "docker")
+
+	isNext, err := buildstep.WriteDockerfile(workDir, log)
+	if err != nil {
+		log.Warn("write dockerfile failed; skipping image", "err", err)
+		return
+	}
+	if !isNext {
+		log.Info("docker image skipped (not a Next app)")
+		return
+	}
+
+	name := spec.Name
+	if name == "" {
+		name = "p-" + job.ProjectID.String()[:8]
+	}
+	tag := buildstep.DemoImageTag(m.imageRegistry, name, job.BuildNo)
+
+	if err := buildstep.BuildImage(ctx, workDir, tag, log); err != nil {
+		log.Error("docker build failed", "err", err, "tag", tag)
+		m.publish(job.ID, domain.BuildEventMsg{
+			Kind: domain.WSError, Text: "docker build failed: " + err.Error(),
+			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
+		})
+		return
+	}
+
+	if m.imageRegistry != "" {
+		if err := buildstep.PushImage(ctx, tag, log); err != nil {
+			// Image exists locally; record the tag anyway so it can be retried.
+			log.Error("docker push failed", "err", err, "tag", tag)
+			m.publish(job.ID, domain.BuildEventMsg{
+				Kind: domain.WSError, Text: "docker push failed (image built locally): " + err.Error(),
+				JobID: job.ID.String(), Timestamp: time.Now().UTC(),
+			})
+		}
+	}
+
+	if err := m.store.SetJobDockerTag(ctx, job.ID, tag); err != nil {
+		log.Warn("persist image tag failed", "err", err)
+	}
+	job.DockerTag = tag
+	dest := "local"
+	if m.imageRegistry != "" {
+		dest = m.imageRegistry
+	}
+	m.publish(job.ID, domain.BuildEventMsg{
+		Kind:      domain.WSAssistantText,
+		Text:      fmt.Sprintf("✓ image built → %s (%s)", tag, dest),
+		JobID:     job.ID.String(),
+		Timestamp: time.Now().UTC(),
+	})
+	log.Info("docker image ready", "tag", tag, "pushed", m.imageRegistry != "")
 }
 
 // ReconcileOrphans fails every job the store still has in 'building' and reports
