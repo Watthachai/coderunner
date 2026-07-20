@@ -94,10 +94,10 @@ func TestWriteImageBundle(t *testing.T) {
 	if !strings.Contains(string(df), ".next/standalone") {
 		t.Error("app Dockerfile should copy the standalone output")
 	}
-	// Migrate Dockerfile runs db push + seed, copies only prisma (no app source).
+	// Migrate Dockerfile runs migrate deploy + seed, copies only prisma (no app source).
 	mf, _ := os.ReadFile(filepath.Join(next, "Dockerfile.migrate"))
-	if !strings.Contains(string(mf), "prisma db push") || !strings.Contains(string(mf), "prisma db seed") {
-		t.Error("migrate Dockerfile should db push + seed")
+	if !strings.Contains(string(mf), "prisma migrate deploy") || !strings.Contains(string(mf), "prisma db seed") {
+		t.Error("migrate Dockerfile should migrate deploy + seed")
 	}
 	if strings.Contains(string(mf), "COPY . .") {
 		t.Error("migrate Dockerfile must NOT copy the whole app source")

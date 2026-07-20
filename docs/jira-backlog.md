@@ -64,7 +64,7 @@ deploy token (`write_registry`) · `docker login` · ตั้ง `CRN_IMAGE_REG
 Scaffold ออก `docker-compose.customer.yml` (`image:` + postgres + volume) + INSTALL.md.
 **AC:** ลูกค้า `docker compose up` → demo รัน, data local, ไม่มี source.
 
-### C5 · Migration init-container (CRN-7) `Done (db push v1 · migrate deploy = fast-follow)`
+### C5 · Migrate image — migrate-on-start (CRN-7) `Done`
 runner image ไม่มี prisma CLI → init-container รัน `migrate deploy` + seed ก่อน app.
 **AC:** compose up ครั้งแรก schema+seed สร้าง.
 
@@ -81,6 +81,10 @@ CI/webhook/pull ให้ FITTCORE รับ image ใหม่.
 
 ### C9 · E2E จริง (QA) `Todo`
 build → image → push → pull เครื่อง 2 → run.
+
+### C10 · Build images เป็น amd64 `Done`
+CRN build บน Mac arm64 แต่ลูกค้ารัน x86_64 → image arm64 รันไม่ได้. pin `--platform linux/amd64` ใน BuildImage (buildx/QEMU emulate).
+**AC:** image ที่ push เป็น amd64 → รันบนเครื่อง x86 ลูกค้าได้.
 
 ---
 

@@ -67,12 +67,15 @@ Dockerfile
 npm-debug.log
 `
 
-// migrateDockerfile packages ONLY the DB layer (prisma schema + seed) — no app
-// source. On the customer's machine it runs `prisma db push` (create schema)
-// then `prisma db seed` against their Postgres and exits. db push is idempotent
-// (no-op if unchanged) and the harness seed uses upsert, so re-running is safe.
-const migrateDockerfile = `# Auto-written by FITT Code Runner — DB schema+seed for this demo.
-# Runs once against the customer's Postgres, then exits. No app source ships.
+// migrateDockerfile packages ONLY the DB layer (prisma CLI + schema + an init
+// migration + seed) — no app source. On the customer's machine it runs
+// `prisma migrate deploy` (apply migrations) then `prisma db seed` and exits.
+// The harness uses db push (no migrations dir), so we bake an init migration
+// from the schema at build time. migrate deploy is idempotent (records applied
+// migrations); the harness seed uses upsert — re-running is safe.
+const migrateDockerfile = `# Auto-written by FITT Code Runner — DB migrate+seed for this demo.
+# Runs once against the customer's Postgres (migrate-on-start), then exits.
+# Contains only the DB layer (prisma) — no app source ships.
 FROM node:20-alpine
 RUN apk add --no-cache libc6-compat openssl
 WORKDIR /app
@@ -80,7 +83,15 @@ COPY package.json package-lock.json* ./
 RUN npm ci --ignore-scripts
 COPY prisma ./prisma
 RUN npx prisma generate
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npx prisma db seed"]
+# Bake an init migration from the schema so migrate deploy has something to apply
+# (harness produces db-push apps with no migrations dir). From-empty = first
+# deploy on a fresh DB.
+RUN if [ ! -d prisma/migrations ]; then \
+      mkdir -p prisma/migrations/0_init && \
+      npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/migrations/0_init/migration.sql && \
+      printf 'provider = "postgresql"\n' > prisma/migrations/migration_lock.toml ; \
+    fi
+CMD ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed"]
 `
 
 // customerCompose is the self-contained runner the customer gets: Postgres (data
@@ -270,10 +281,17 @@ func WriteImageBundle(dir, appImage, migrateImage, registry string, port int, lo
 	return true, nil
 }
 
-// BuildImage runs `docker build -f <dockerfile> -t <tag> <dir>`, streaming
-// combined output to the logger. Requires a Docker daemon on the host.
+// imagePlatform is the target platform for demo images. Customers run on amd64
+// (x86_64) machines while CRN often builds on arm64 Macs, so we pin it — Docker
+// Desktop's buildx emulates the cross-build via QEMU. Not runtime-configurable
+// yet; change here if an arm64 customer target ever appears.
+const imagePlatform = "linux/amd64"
+
+// BuildImage runs `docker build --platform linux/amd64 -f <dockerfile> -t <tag>
+// <dir>`, streaming combined output to the logger. Requires a Docker daemon +
+// buildx on the host.
 func BuildImage(ctx context.Context, dir, dockerfile, tag string, logger *slog.Logger) error {
-	return runDocker(ctx, logger, "build", "-f", dockerfile, "-t", tag, dir)
+	return runDocker(ctx, logger, "build", "--platform", imagePlatform, "-f", dockerfile, "-t", tag, dir)
 }
 
 // PushImage runs `docker push tag`. The host must already be `docker login`'d to
