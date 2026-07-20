@@ -95,7 +95,7 @@ func run() error {
 	// --- Job manager (queue + lifecycle + per-org advisory lock) ---
 	// jobs.NewManager composes store + runner + notifier and the build-step
 	// config (projects dir, git remote, run-Claude toggle).
-	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry)
+	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry, cfg.ArtifactDir)
 
 	// Reconcile ghost builds: any job still 'building' at boot was orphaned by a
 	// prior process (restart/crash mid-build). Fail them now so the dashboard

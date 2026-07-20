@@ -89,6 +89,11 @@ type Config struct {
 	// "registry.gitlab.local/fitt". Empty -> build the image locally only (no
 	// push). The full tag is "<registry>/crn-demo-<slug>:v<build_no>".
 	ImageRegistry string
+	// ArtifactDir, when set, is where each build's air-gap bundle is written:
+	// <ArtifactDir>/<repo>-v<n>/ with images.tar (docker save of app+migrate),
+	// docker-compose.customer.yml, and INSTALL.md — for customers who cannot pull
+	// from the registry. Empty -> no tarball (registry delivery only).
+	ArtifactDir string
 
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
@@ -146,6 +151,7 @@ func Load() (*Config, error) {
 		FTCDVCallbackToken: os.Getenv("CRN_FTC_DV_CALLBACK_TOKEN"),
 		BuildImage:         getEnvBool("CRN_BUILD_IMAGE", false),
 		ImageRegistry:      strings.TrimRight(os.Getenv("CRN_IMAGE_REGISTRY"), "/"),
+		ArtifactDir:        os.Getenv("CRN_ARTIFACT_DIR"),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),

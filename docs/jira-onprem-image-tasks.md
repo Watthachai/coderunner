@@ -110,7 +110,7 @@ build_done payload เพิ่ม `image_ref` (docker image tag ที่ pull 
 
 ## [CRN] Tarball fallback (air-gap)
 
-**Type:** Task · **Status:** Todo
+**Type:** Task · **Status:** Done (`CRN_ARTIFACT_DIR`)
 
 **Description:**
 ลูกค้าที่ต่อ GitLab registry เราไม่ได้ (air-gap) → CRN `docker save <app> <migrate> | gzip` เป็น tarball + ส่งไฟล์. ลูกค้า `docker load` แล้ว `docker compose up`. env `CRN_ARTIFACT_DIR`.

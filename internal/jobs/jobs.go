@@ -88,9 +88,11 @@ type manager struct {
 	ftcdvCallbackURL   string
 	ftcdvCallbackToken string
 	// buildImage toggles the docker-image pipeline; imageRegistry is the push
-	// target prefix (empty -> build locally, no push).
+	// target prefix (empty -> build locally, no push); artifactDir, when set, is
+	// where the air-gap bundle (docker save tarball + compose + INSTALL) is written.
 	buildImage    bool
 	imageRegistry string
+	artifactDir   string
 
 	mu      sync.Mutex
 	subs    map[uuid.UUID][]*subscriber          // jobID -> live listeners
@@ -129,6 +131,7 @@ func NewManager(
 	ftcdvCallbackToken string,
 	buildImage bool,
 	imageRegistry string,
+	artifactDir string,
 ) domain.JobManager {
 	if logger == nil {
 		logger = slog.Default()
@@ -149,6 +152,7 @@ func NewManager(
 		ftcdvCallbackToken: ftcdvCallbackToken,
 		buildImage:         buildImage,
 		imageRegistry:      imageRegistry,
+		artifactDir:        artifactDir,
 		subs:               make(map[uuid.UUID][]*subscriber),
 		cancels:            make(map[uuid.UUID]context.CancelFunc),
 	}
@@ -832,6 +836,9 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		}
 	}
 
+	// Air-gap bundle (docker save tarball + compose + INSTALL) when configured.
+	m.writeArtifactBundle(ctx, workDir, appTag, migrateTag, log)
+
 	if err := m.store.SetJobDockerTag(ctx, job.ID, appTag); err != nil {
 		log.Warn("persist image tag failed", "err", err)
 	}
@@ -847,6 +854,48 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		Timestamp: time.Now().UTC(),
 	})
 	log.Info("docker images ready", "app", appTag, "migrate", migrateTag, "pushed", m.imageRegistry != "")
+}
+
+// writeArtifactBundle writes the air-gap delivery bundle for this build when
+// CRN_ARTIFACT_DIR is set: <artifactDir>/<repo>-v<n>/ with images.tar (docker
+// save of app [+migrate]) plus the customer compose + INSTALL copied from the
+// workspace. Best-effort: a failure is logged, never fails the build. Lets a
+// customer who cannot reach the registry `docker load` + `docker compose up`.
+func (m *manager) writeArtifactBundle(ctx context.Context, workDir, appTag, migrateTag string, log *slog.Logger) {
+	if m.artifactDir == "" {
+		return
+	}
+	// Bundle dir name from the app tag: strip registry + turn ":v" into "-v".
+	repo := appTag
+	if i := strings.LastIndex(repo, "/"); i >= 0 {
+		repo = repo[i+1:]
+	}
+	repo = strings.ReplaceAll(repo, ":", "-")
+	bundleDir := filepath.Join(m.artifactDir, repo)
+	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
+		log.Warn("artifact bundle: mkdir failed", "err", err, "dir", bundleDir)
+		return
+	}
+
+	images := []string{appTag}
+	if migrateTag != "" {
+		images = append(images, migrateTag)
+	}
+	if err := buildstep.SaveImages(ctx, filepath.Join(bundleDir, "images.tar"), images, log); err != nil {
+		log.Error("artifact bundle: docker save failed", "err", err)
+		return
+	}
+	for _, f := range []string{"docker-compose.customer.yml", "INSTALL.md"} {
+		src, err := os.ReadFile(filepath.Join(workDir, f))
+		if err != nil {
+			log.Warn("artifact bundle: read failed", "file", f, "err", err)
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(bundleDir, f), src, 0o644); err != nil {
+			log.Warn("artifact bundle: copy failed", "file", f, "err", err)
+		}
+	}
+	log.Info("wrote air-gap bundle", "dir", bundleDir)
 }
 
 // ReconcileOrphans fails every job the store still has in 'building' and reports

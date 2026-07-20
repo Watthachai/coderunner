@@ -301,6 +301,12 @@ func PushImage(ctx context.Context, tag string, logger *slog.Logger) error {
 	return runDocker(ctx, logger, "push", tag)
 }
 
+// SaveImages writes a `docker save` tarball of images to outPath — an air-gap
+// bundle a customer can `docker load < images.tar`. Requires a Docker daemon.
+func SaveImages(ctx context.Context, outPath string, images []string, logger *slog.Logger) error {
+	return runDocker(ctx, logger, append([]string{"save", "-o", outPath}, images...)...)
+}
+
 // runDocker execs the host `docker` CLI, capturing combined output so a failure
 // surfaces the real error (not just a non-zero exit).
 func runDocker(ctx context.Context, logger *slog.Logger, args ...string) error {

@@ -68,7 +68,7 @@ Scaffold ออก `docker-compose.customer.yml` (`image:` + postgres + volume) 
 runner image ไม่มี prisma CLI → init-container รัน `migrate deploy` + seed ก่อน app.
 **AC:** compose up ครั้งแรก schema+seed สร้าง.
 
-### C6 · Tarball fallback air-gap (CRN-8) `Todo`
+### C6 · Tarball fallback air-gap (CRN-8) `Done`
 `docker save | gzip` + `CRN_ARTIFACT_DIR`.
 **AC:** โหลด tarball เครื่องอื่น `docker load` + run ได้.
 

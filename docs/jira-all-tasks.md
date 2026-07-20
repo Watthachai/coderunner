@@ -72,7 +72,7 @@
 - **Migrate image (migrate-on-start)** — Done `d05245a`
 - **Build amd64** — Done `d05245a`
 - **Customer compose + INSTALL** — Done `399957b`
-- **Incremental migration** — Todo · **Tarball air-gap** — Todo · **E2E amd64** — Todo
+- **Tarball air-gap** — Done · **Incremental migration** — Todo · **E2E amd64** — Todo
 
 ---
 
