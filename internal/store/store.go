@@ -1108,6 +1108,12 @@ func (s *pgStore) EnsureBuiltinSkill(ctx context.Context, sk *domain.Skill) erro
 	if err != nil {
 		return fmt.Errorf("store: ensure builtin skill: %w", err)
 	}
+	// The WHERE on DO UPDATE makes the upsert a no-op when the content is
+	// unchanged: RowsAffected is then 0, so an unchanged re-seed on every boot
+	// does NOT churn a new version. A fresh insert or a real content change
+	// affects one row -> we snapshot a version below so built-in skill updates
+	// (edit SKILL.md + deploy) are tracked with a version number + timestamp +
+	// a diffable body, just like operator edits.
 	const q = `
 		INSERT INTO skills (name, description, body, files, enabled, is_builtin)
 		VALUES ($1, $2, $3, $4, $5, true)
@@ -1116,9 +1122,18 @@ func (s *pgStore) EnsureBuiltinSkill(ctx context.Context, sk *domain.Skill) erro
 			body        = EXCLUDED.body,
 			files       = EXCLUDED.files,
 			is_builtin  = true,
-			updated_at  = now()`
-	if _, err := s.pool.Exec(ctx, q, sk.Name, sk.Description, sk.Body, files, sk.Enabled); err != nil {
+			updated_at  = now()
+		WHERE  skills.body        IS DISTINCT FROM EXCLUDED.body
+		   OR  skills.files       IS DISTINCT FROM EXCLUDED.files
+		   OR  skills.description IS DISTINCT FROM EXCLUDED.description`
+	tag, err := s.pool.Exec(ctx, q, sk.Name, sk.Description, sk.Body, files, sk.Enabled)
+	if err != nil {
 		return fmt.Errorf("store: ensure builtin skill: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		if err := s.RecordSkillVersion(ctx, sk.Name, "builtin re-seed"); err != nil {
+			return fmt.Errorf("store: ensure builtin skill: record version: %w", err)
+		}
 	}
 	return nil
 }
