@@ -229,7 +229,7 @@ export function BuildConsole({
     <div className="stream">
       <div className="stream-bar">
         <span className="stream-title">
-          <span className="stream-glyph">▮</span> CLAUDE STREAM
+          <span className="stream-glyph">▮</span> STREAM
         </span>
         {sid ? <span className="stream-sid">{sid}</span> : null}
         <span className={`stream-live stream-live--${phase}`}>

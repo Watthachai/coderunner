@@ -626,8 +626,15 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 
 	// Build + push the opaque production image (gated by CRN_BUILD_IMAGE). Runs
 	// before the done status so job.DockerTag holds the image tag when the
-	// "released" callback fires. Best-effort — never fails an otherwise-good build.
-	m.buildAndPushImage(ctx, workDir, spec, job, log)
+	// "released" callback fires. When image mode is ON, the image IS the
+	// deliverable: if it can't be built/pushed, FAIL the build rather than
+	// releasing with a "branch:main" tag that would make a consumer fall back to
+	// git-cloning the source repo. (When image mode is off, this is a no-op.)
+	if err := m.buildAndPushImage(ctx, workDir, spec, job, log); err != nil {
+		log.Error("image build failed; failing the build", "err", err)
+		m.finishFailed(ctx, job, err.Error(), result.CostUSD)
+		return
+	}
 
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobDone, ""); err != nil {
 		log.Error("mark done failed", "err", err)
@@ -788,51 +795,55 @@ func (m *manager) writeImageBundle(workDir string, spec payloadSpec, job *domain
 
 // buildAndPushImage builds + pushes the opaque APP image AND the DB MIGRATE image
 // (Dockerfiles were written by writeImageBundle before the git push). Sets
-// job.DockerTag to the app image tag. Gated by CRN_BUILD_IMAGE and best-effort:
-// a docker/registry failure is surfaced + logged but does NOT fail the build.
-func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, log *slog.Logger) {
+// job.DockerTag to the app image tag. Returns nil on success — or as a no-op when
+// image mode is off / the app is not Next. When image mode is ON, the APP image is
+// the deliverable: a build OR push failure returns an error so the caller FAILS
+// the build (never releases a "branch:main" tag that would make a consumer fall
+// back to git-cloning the source). The migrate image + air-gap bundle stay
+// best-effort — the app image is still valid without them.
+func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, log *slog.Logger) error {
 	if !m.buildImage {
-		return
+		return nil
 	}
 	if !buildstep.IsNextApp(workDir) {
 		log.Info("docker image skipped (not a Next app)")
-		return
+		return nil
 	}
 	m.publishPhase(job.ID, "docker")
 	appTag, migrateTag := m.imageTags(spec, job)
 
-	// App image (opaque). Failure = no deliverable → surface + stop.
+	// App image (opaque) — REQUIRED. Build failure fails the build.
 	if err := buildstep.BuildImage(ctx, workDir, "Dockerfile", appTag, log); err != nil {
-		log.Error("docker build (app) failed", "err", err, "tag", appTag)
 		m.publish(job.ID, domain.BuildEventMsg{
 			Kind: domain.WSError, Text: "docker build (app) failed: " + err.Error(),
 			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
 		})
-		return
+		return fmt.Errorf("docker build (app) failed: %w", err)
 	}
-	// Migrate image (schema+seed). Best-effort: without it the customer sets up the
-	// DB by hand, but the app image is still valid.
+	// App image must be PULLABLE for a registry consumer — push failure fails too.
+	if m.imageRegistry != "" {
+		if err := buildstep.PushImage(ctx, appTag, log); err != nil {
+			m.publish(job.ID, domain.BuildEventMsg{
+				Kind: domain.WSError, Text: "docker push (app) failed: " + err.Error(),
+				JobID: job.ID.String(), Timestamp: time.Now().UTC(),
+			})
+			return fmt.Errorf("docker push (app) failed: %w", err)
+		}
+	}
+
+	// Migrate image (schema+seed) — best-effort: without it the customer sets up
+	// the DB by hand, but the app image is still valid.
 	if err := buildstep.BuildImage(ctx, workDir, "Dockerfile.migrate", migrateTag, log); err != nil {
 		log.Warn("docker build (migrate) failed", "err", err, "tag", migrateTag)
 		m.publish(job.ID, domain.BuildEventMsg{
 			Kind: domain.WSError, Text: "docker build (migrate) failed (app image ok): " + err.Error(),
 			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
 		})
-		migrateTag = "" // don't push/announce a migrate image that failed to build
-	}
-
-	if m.imageRegistry != "" {
-		for _, tag := range []string{appTag, migrateTag} {
-			if tag == "" {
-				continue
-			}
-			if err := buildstep.PushImage(ctx, tag, log); err != nil {
-				log.Error("docker push failed", "err", err, "tag", tag)
-				m.publish(job.ID, domain.BuildEventMsg{
-					Kind: domain.WSError, Text: "docker push failed (built locally): " + err.Error(),
-					JobID: job.ID.String(), Timestamp: time.Now().UTC(),
-				})
-			}
+		migrateTag = ""
+	} else if m.imageRegistry != "" {
+		if err := buildstep.PushImage(ctx, migrateTag, log); err != nil {
+			log.Warn("docker push (migrate) failed", "err", err, "tag", migrateTag)
+			migrateTag = ""
 		}
 	}
 
@@ -854,6 +865,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		Timestamp: time.Now().UTC(),
 	})
 	log.Info("docker images ready", "app", appTag, "migrate", migrateTag, "pushed", m.imageRegistry != "")
+	return nil
 }
 
 // writeArtifactBundle writes the air-gap delivery bundle for this build when

@@ -107,7 +107,9 @@ UPDATE build_events SET notified_ftcdv = true WHERE id = $1;
 | `event_type` | **`build_started` \| `build_done` \| `build_failed` \| `build_cancelled`** (บังคับด้วย DB CHECK) |
 | `payload` (jsonb) | `build_done` → `{cost_usd, session_id, image_ref, git_remote, git_branch}` · `build_failed` → `{error}` · `build_cancelled` → `{reason}` |
 
-> **`image_ref` (ใน `build_done`)** = docker image tag ที่ pull ได้ เมื่อเปิด image pipeline (`CRN_BUILD_IMAGE`) เช่น `172.168.1.234:5050/fitt/demos/crn-demo-<slug>-<id8>:v<n>` — consumer `docker pull` จากตรงนี้ได้เลย. ถ้าไม่ได้เปิด image = ค่า `branch:<name>`. **status = `event_type`** (`build_started`=กำลัง build · `build_done`=เสร็จ · `build_failed` · `build_cancelled`) — ไม่ต้องรอ HTTP callback
+> **`image_ref` (ใน `build_done`)** = docker image tag ที่ pull ได้ เมื่อเปิด image pipeline (`CRN_BUILD_IMAGE`) เช่น `172.168.1.234:5050/fitt/demos/crn-demo-<slug>-<id8>:v<n>` — consumer `docker pull` จากตรงนี้ได้เลย. **status = `event_type`** (`build_started`=กำลัง build · `build_done`=เสร็จ · `build_failed` · `build_cancelled`) — ไม่ต้องรอ HTTP callback
+>
+> **การันตี image-only (เปิด `CRN_BUILD_IMAGE`)** — เมื่อเปิด image pipeline, `build_done` จะมี `image_ref` เป็น **image จริงที่ pull ได้เสมอ**. ถ้า build/push image ไม่สำเร็จ CRN จะ **fail build** (ยิง `build_failed`) ไม่ปล่อย `build_done` ที่ image ใช้ไม่ได้ → **consumer `docker pull image_ref` ได้เลย ไม่ต้อง clone git** (image ทึบ ไม่มี source). ค่า `branch:<name>` โผล่เฉพาะตอน **ปิด** image pipeline (git-mode legacy) เท่านั้น
 
 > **`build_cancelled`** (เพิ่ม migration 0009) = operator กด cancel — build ถูกฆ่าจริง (SIGKILL). แยกจาก `build_failed` เพื่อให้ dashboard โชว์ "cancelled" ไม่ใช่ error. **consumer ควร map เป็น "ไม่สำเร็จ/หยุดแล้ว"** (ไม่ใช่ error ต้อง retry). ฝั่ง HTTP callback (§3) ยัง map เป็น `failed` เพราะ vocab มีแค่ building/released/failed.
 | `created_at`, `notified_fbd`, `notified_ftcdv` | เวลา + flag การส่งต่อ consumer |
@@ -134,7 +136,8 @@ Content-Type: application/json
   "message": "…" }           // ใส่มาเฉพาะตอน failed
 ```
 - แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
-- **`git_remote`/`git_branch` ใส่มาเฉพาะตอน `released`** = repo/branch จริงที่ build push ไป (ถูกทั้งโหมด **shared** และ **owner**) → **FTC DV ควร clone จากค่านี้** ไม่ใช่ค่าใน `202` (โหมด owner ค่าใน 202 เป็น shared remote ซึ่งไม่ตรง)
+- **โหมด image (`CRN_BUILD_IMAGE` เปิด — แนะนำ):** ใช้ `image_ref` → `docker pull` แล้วรันได้เลย **ไม่ต้อง clone git**. `image_ref` บน `released` เป็น image จริงที่ pull ได้เสมอ (build ล้มถ้า image สร้าง/push ไม่ได้)
+- **`git_remote`/`git_branch` ใส่มาเฉพาะตอน `released`** (โหมด git legacy — เมื่อ **ปิด** image pipeline) = repo/branch จริงที่ build push ไป (ถูกทั้งโหมด **shared** และ **owner**) → FTC DV clone จากค่านี้ ไม่ใช่ค่าใน `202` (โหมด owner ค่าใน 202 เป็น shared remote ซึ่งไม่ตรง). **เมื่อเปิด image pipeline ไม่ต้องใช้เส้นนี้**
 - **best-effort**: ยิงไม่ผ่าน (หรือได้ non-2xx) = log แล้วปล่อย ไม่ล้ม build — `build_events` ยังเป็นแหล่งความจริงเสมอ
 - ไม่ set `CRN_FTC_DV_CALLBACK_URL` = ปิด callback (ใช้ `build_events` อย่างเดียว)
 
