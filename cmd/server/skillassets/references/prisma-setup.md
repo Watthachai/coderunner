@@ -113,20 +113,27 @@ The old in-memory array (e.g. `let tasks = [...]` in `data.ts`) is DELETED; its 
 
 ## 5. Seed — `prisma/seed.ts`
 
-Port the prototype's mock array into a seed so the app has data:
+Port the prototype's mock array into a seed so the app has data. **The seed MUST
+be idempotent** — it runs on EVERY deploy (the delivered migrate image runs
+`prisma db seed` on each `docker compose up`), so re-running must never duplicate
+rows or fail on a unique constraint. **Always `upsert` keyed by a stable id** —
+never bare `create` / `createMany` (those insert duplicates on re-run unless the
+seeded field happens to have a unique constraint):
 
 ```ts
 import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
+// Give every seeded row a stable, deterministic id so the upsert key is fixed.
+const tasks = [
+  { id: "t1", title: "Design the landing page" },
+  { id: "t2", title: "Wire up the API" },
+];
+
 async function main() {
-  await prisma.task.createMany({
-    data: [
-      { title: "Design the landing page" },
-      { title: "Wire up the API" },
-    ],
-    skipDuplicates: true,
-  });
+  for (const t of tasks) {
+    await prisma.task.upsert({ where: { id: t.id }, update: t, create: t });
+  }
 }
 
 main().finally(() => prisma.$disconnect());
@@ -138,7 +145,8 @@ Wire it in `package.json`:
 "prisma": { "seed": "tsx prisma/seed.ts" }
 ```
 
-Add `tsx` as a dev dep (`npm i -D tsx`). Seeding runs at the operator's discretion with `npx prisma db seed` (needs a live DB) — it is NOT part of `next build`.
+Add `tsx` as a dev dep (`npm i -D tsx`). `prisma db seed` needs a live DB — it is
+NOT part of `next build`; it runs at deploy time (the migrate image) and on demand.
 
 ## 6. DATABASE_URL + .env
 
@@ -181,6 +189,8 @@ Result: `npm install` -> `prisma generate` (no DB) -> `next build` (no DB) all p
 - [ ] `lib/prisma.ts` singleton; all server code imports it.
 - [ ] Mock reads/writes replaced by Prisma in server components / actions / route handlers.
 - [ ] `prisma/seed.ts` carries the old mock data; `prisma.seed` script + `tsx` dev dep.
+- [ ] Seed is **idempotent** — `upsert` keyed by a stable id (re-runs on every deploy; no bare `create`/`createMany`).
+- [ ] `package-lock.json` committed (CRN's image build uses `npm ci`).
 - [ ] `postinstall: prisma generate`; DB-reading pages are `force-dynamic`.
 - [ ] `.env.example` has `DATABASE_URL`; `.env` gitignored.
 - [ ] `npm install` and `npx next build` pass with NO database running.

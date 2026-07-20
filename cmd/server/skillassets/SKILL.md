@@ -31,11 +31,11 @@ Use the ready-made `assets/Dockerfile` and `assets/.dockerignore` as your starti
    - Install `prisma` + `@prisma/client`; create `prisma/schema.prisma` (`provider = "postgresql"`, `url = env("DATABASE_URL")`).
    - Derive the data model from the prototype's data (`src/data.ts` / `src/types.ts`) + BRD/PRD.
    - Add `lib/prisma.ts` (client singleton). Replace the prototype's in-memory/mock data with Prisma-backed reads/writes via server components / route handlers / server actions.
-   - Add `prisma/seed.ts` from the mock data. Put `DATABASE_URL` in `.env.example`.
+   - Add `prisma/seed.ts` from the mock data — **idempotent: `upsert` keyed by a stable id, never bare `create`/`createMany`** (it re-runs on every deploy). Wire `package.json` `"prisma": { "seed": "tsx prisma/seed.ts" }` and add `tsx`. Put `DATABASE_URL` in `.env.example`.
 
-5. **Docker.** Set `output: "standalone"` in `next.config.ts`. Add the multi-stage `Dockerfile` and `.dockerignore` from this skill's `assets/` (node:20-alpine, deps -> build -> runner, non-root, `EXPOSE 3000`).
+5. **Docker.** Set `output: "standalone"` in `next.config.ts` — this is REQUIRED (CRN ships only `.next/standalone`). You do NOT need to hand-craft the Dockerfile/compose: **CRN writes its own deterministic production `Dockerfile`, `docker-compose.customer.yml`, and DB migrate image at build time** and overwrites any it finds. Your job is only to make `output: "standalone"` + a committed lockfile + the idempotent seed correct. (`assets/Dockerfile` is a reference of the shape CRN produces.)
 
-6. **Make it build.** Run `npm install`, then `npx prisma generate`, then `npx next build`, and make the build PASS. The build MUST NOT require a live database — keep every Prisma-reading page/route `export const dynamic = "force-dynamic"` and run `prisma generate` (no connection). Fix ONLY what blocks the build. Never stub or fake data to force a green build.
+6. **Make it build.** Run `npm install` (this generates `package-lock.json` — **commit it**; CRN's image build uses `npm ci`, which requires the lockfile), then `npx prisma generate`, then `npx next build`, and make the build PASS. The build MUST NOT require a live database — keep every Prisma-reading page/route `export const dynamic = "force-dynamic"` and run `prisma generate` (no connection). Fix ONLY what blocks the build. Never stub or fake data to force a green build.
 
 7. **Write `BUILD_NOTES.md`** at the root: the product in 1-2 lines; the stack (Next.js App Router + Prisma + Postgres + Docker); the exact commands (install / `prisma generate` / dev / build / `docker build`); the DB schema summary; and a bullet list of everything you changed.
 
