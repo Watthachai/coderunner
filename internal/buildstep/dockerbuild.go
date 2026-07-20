@@ -67,12 +67,20 @@ Dockerfile
 npm-debug.log
 `
 
-// migrateDockerfile packages ONLY the DB layer (prisma CLI + schema + an init
-// migration + seed) — no app source. On the customer's machine it runs
-// `prisma migrate deploy` (apply migrations) then `prisma db seed` and exits.
-// The harness uses db push (no migrations dir), so we bake an init migration
-// from the schema at build time. migrate deploy is idempotent (records applied
-// migrations); the harness seed uses upsert — re-running is safe.
+// migrateDockerfile packages ONLY the DB layer (prisma CLI + schema + seed) —
+// no app source. On the customer's machine it runs `prisma db push` (sync schema)
+// then `prisma db seed` and exits.
+//
+// Why db push, not migrate deploy: the harness regenerates a single squashed
+// schema every build (no committed migration history). migrate deploy would need
+// a baked `0_init` migration whose content changes across versions but keeps the
+// same name — so upgrading the demo to a new image version checksum-FAILS ("migration
+// modified after applied") even for purely additive schema changes, and the demo
+// won't start. db push has no migration history/checksum: it diffs the LIVE DB
+// against the schema each run, applying additive deltas cleanly. It is NOT given
+// --accept-data-loss, so a destructive change (dropped column/table) errors loudly
+// for the operator to handle rather than silently dropping customer data. The seed
+// uses upsert keyed by a stable id, so re-running on every start is safe.
 const migrateDockerfile = `# Auto-written by FITT Code Runner — DB migrate+seed for this demo.
 # Runs once against the customer's Postgres (migrate-on-start), then exits.
 # Contains only the DB layer (prisma) — no app source ships.
@@ -83,15 +91,9 @@ COPY package.json package-lock.json* ./
 RUN npm ci --ignore-scripts
 COPY prisma ./prisma
 RUN npx prisma generate
-# Bake an init migration from the schema so migrate deploy has something to apply
-# (harness produces db-push apps with no migrations dir). From-empty = first
-# deploy on a fresh DB.
-RUN if [ ! -d prisma/migrations ]; then \
-      mkdir -p prisma/migrations/0_init && \
-      npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/migrations/0_init/migration.sql && \
-      printf 'provider = "postgresql"\n' > prisma/migrations/migration_lock.toml ; \
-    fi
-CMD ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed"]
+# db push syncs the schema to the live DB (no migration history/checksum) so version
+# upgrades apply additive deltas cleanly; --skip-generate reuses the client baked above.
+CMD ["sh", "-c", "npx prisma db push --skip-generate && npx prisma db seed"]
 `
 
 // customerCompose is the self-contained runner the customer gets: Postgres (data

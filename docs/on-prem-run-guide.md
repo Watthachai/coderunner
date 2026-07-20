@@ -14,7 +14,7 @@
 | `INSTALL.md` | ขั้นตอนติดตั้ง |
 
 - **build เป็น `linux/amd64`** → รันบนเครื่อง x86_64 (Linux/customer) ได้ (แม้ CRN จะ build บน Mac arm64)
-- **migrate-on-start:** service `migrate` รัน `prisma migrate deploy` + `prisma db seed` ครั้งเดียวก่อน app start
+- **migrate-on-start:** service `migrate` รัน `prisma db push` + `prisma db seed` ครั้งเดียวก่อน app start
 
 ---
 
@@ -32,7 +32,7 @@ docker compose -f docker-compose.customer.yml up -d
 ```
 ลำดับที่เกิด:
 1. `db` — Postgres start (data ใน volume `dbdata`)
-2. `migrate` — `migrate deploy` (สร้าง schema) + `seed` → exit
+2. `migrate` — `db push` (sync schema) + `seed` → exit
 3. `app` — start หลัง migrate สำเร็จ (`service_completed_successfully`)
 
 **3. เปิด:** `http://localhost:<port>` (port อยู่ใน compose, ต่อ project)
@@ -42,7 +42,9 @@ docker compose -f docker-compose.customer.yml up -d
 ## อัปเดตเป็นเวอร์ชันใหม่ (v2)
 เปลี่ยน tag `:v<n>` ใน `docker-compose.customer.yml` แล้ว `up -d` ใหม่ — **data ใน `dbdata` อยู่ครบ**
 
-> ⚠️ **caveat:** CRN regenerate schema ใหม่ทุก build (ไม่ใช่ incremental) → ถ้า **schema เปลี่ยน + ลูกค้ามี data แล้ว**, `migrate deploy` ของ v2 (init migration คนละ checksum) อาจ **fail checksum mismatch**. เคสนี้ต้อง migration แบบ incremental จริง (delta tracking) = งาน future. **First deploy (DB เปล่า) ทำงานปกติ**
+> **การอัปเดต schema (v2):** migrate image ใช้ `prisma db push` (diff live DB กับ schema ทุกครั้ง, ไม่มี migration checksum) → v2 ที่ **เพิ่ม** table/column จะ apply delta ให้เอง data เดิมอยู่ครบ
+>
+> ⚠️ **caveat (destructive):** ถ้า v2 **ลบ/เปลี่ยน type** column ที่มี data, `db push` จะ **error หยุด** (ไม่ได้ส่ง `--accept-data-loss`) เพื่อกันข้อมูลหาย ไม่ใช่ drop เงียบ ๆ → เคสนี้ operator ต้องจัดการ DB เอง (backup + migrate มือ). additive ทำงานอัตโนมัติ
 
 ---
 

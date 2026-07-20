@@ -53,7 +53,7 @@ Scaffold ออก `docker-compose.customer.yml` (`image:` ที่ push แล
 
 ### CRN-7 · Migration ใน production image
 **Type:** Story · **Team:** Dev
-runner image ไม่มี prisma CLI+schema → เพิ่ม **migrate init-container** (image ที่มี prisma+schema) รัน `prisma migrate deploy` + seed ก่อน app start ใน customer compose.
+runner image ไม่มี prisma CLI+schema → เพิ่ม **migrate init-container** (image ที่มี prisma+schema) รัน `prisma db push` + seed ก่อน app start ใน customer compose.
 **AC:** compose up ครั้งแรก schema+seed ถูกสร้าง, app ต่อ DB ได้.
 
 ### CRN-8 · Tarball fallback (air-gap)
