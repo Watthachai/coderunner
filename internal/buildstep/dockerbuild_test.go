@@ -54,30 +54,64 @@ func TestIsNextApp(t *testing.T) {
 	}
 }
 
-func TestWriteDockerfile(t *testing.T) {
+func TestMigrateImageTag(t *testing.T) {
+	const pid = "cc0b6195-46b4-4c29-a167-c0dd321d10d9"
+	got := MigrateImageTag("reg/fitt/demos", "Shop", pid, 3)
+	want := "reg/fitt/demos/crn-demo-shop-cc0b6195-migrate:v3"
+	if got != want {
+		t.Errorf("MigrateImageTag = %q, want %q", got, want)
+	}
+}
+
+func TestWriteImageBundle(t *testing.T) {
+	const appImg = "reg/fitt/demos/crn-demo-shop-cc0b6195:v3"
+	const migImg = "reg/fitt/demos/crn-demo-shop-cc0b6195-migrate:v3"
+
 	// Non-next app: skipped, nothing written.
 	static := t.TempDir()
 	writePkg(t, static, `{"dependencies":{"vite":"^5"}}`)
-	if wrote, err := WriteDockerfile(static, nil); err != nil || wrote {
+	if wrote, err := WriteImageBundle(static, appImg, migImg, "reg", 4123, nil); err != nil || wrote {
 		t.Fatalf("non-next: wrote=%v err=%v, want false/nil", wrote, err)
 	}
 	if _, err := os.Stat(filepath.Join(static, "Dockerfile")); err == nil {
-		t.Error("Dockerfile written for a non-next app")
+		t.Error("bundle written for a non-next app")
 	}
 
-	// Next app: Dockerfile + .dockerignore written; standalone runner, no source copy.
+	// Next app: full bundle written.
 	next := t.TempDir()
 	writePkg(t, next, `{"dependencies":{"next":"16"}}`)
-	wrote, err := WriteDockerfile(next, nil)
+	wrote, err := WriteImageBundle(next, appImg, migImg, "reg", 4123, nil)
 	if err != nil || !wrote {
 		t.Fatalf("next: wrote=%v err=%v, want true/nil", wrote, err)
 	}
+	for _, f := range []string{"Dockerfile", ".dockerignore", "Dockerfile.migrate", "docker-compose.customer.yml", "INSTALL.md"} {
+		if _, err := os.Stat(filepath.Join(next, f)); err != nil {
+			t.Errorf("%s not written: %v", f, err)
+		}
+	}
+	// App Dockerfile ships only the standalone output (no source).
 	df, _ := os.ReadFile(filepath.Join(next, "Dockerfile"))
 	if !strings.Contains(string(df), ".next/standalone") {
-		t.Error("Dockerfile should copy the standalone output")
+		t.Error("app Dockerfile should copy the standalone output")
 	}
-	if _, err := os.Stat(filepath.Join(next, ".dockerignore")); err != nil {
-		t.Errorf(".dockerignore not written: %v", err)
+	// Migrate Dockerfile runs db push + seed, copies only prisma (no app source).
+	mf, _ := os.ReadFile(filepath.Join(next, "Dockerfile.migrate"))
+	if !strings.Contains(string(mf), "prisma db push") || !strings.Contains(string(mf), "prisma db seed") {
+		t.Error("migrate Dockerfile should db push + seed")
+	}
+	if strings.Contains(string(mf), "COPY . .") {
+		t.Error("migrate Dockerfile must NOT copy the whole app source")
+	}
+	// Customer compose references both images + the rendered port, no leftover placeholders.
+	cc, _ := os.ReadFile(filepath.Join(next, "docker-compose.customer.yml"))
+	s := string(cc)
+	for _, want := range []string{appImg, migImg, ":-4123}:3000", "service_completed_successfully"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("customer compose missing %q", want)
+		}
+	}
+	if strings.Contains(s, "{{") {
+		t.Error("customer compose has an unrendered placeholder")
 	}
 }
 

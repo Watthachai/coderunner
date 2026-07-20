@@ -44,7 +44,7 @@ Demo default port 3000 ชนกับ studio/dashboard/demo อื่น.
 
 ---
 
-## EPIC C — On-prem demo image delivery  🟡 Partial
+## EPIC C — On-prem demo image delivery  🟢 Core done (C1–C5) · C6–C9 optional
 
 > ผลิต demo เป็น image opaque (ไม่มี source) → GitLab registry → ลูกค้ารันวงแลนตัวเอง. ราย task ละเอียด: [on-prem-demo-image-tasks.md](on-prem-demo-image-tasks.md)
 
@@ -60,11 +60,11 @@ Demo default port 3000 ชนกับ studio/dashboard/demo อื่น.
 deploy token (`write_registry`) · `docker login` · ตั้ง `CRN_IMAGE_REGISTRY`.
 **AC:** build → image โผล่ใน GitLab registry.
 
-### C4 · Customer compose + INSTALL.md (CRN-6) `Todo`
+### C4 · Customer compose + INSTALL.md (CRN-6) `Done`
 Scaffold ออก `docker-compose.customer.yml` (`image:` + postgres + volume) + INSTALL.md.
 **AC:** ลูกค้า `docker compose up` → demo รัน, data local, ไม่มี source.
 
-### C5 · Migration init-container (CRN-7) `Todo`
+### C5 · Migration init-container (CRN-7) `Done (db push v1 · migrate deploy = fast-follow)`
 runner image ไม่มี prisma CLI → init-container รัน `migrate deploy` + seed ก่อน app.
 **AC:** compose up ครั้งแรก schema+seed สร้าง.
 

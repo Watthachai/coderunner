@@ -568,6 +568,12 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		})
 	}
 
+	// Write the on-prem delivery bundle (opaque app + migrate Dockerfiles, customer
+	// docker-compose, INSTALL) BEFORE the git push so it is committed alongside the
+	// build. Uses the deterministic image tags the push-time image build produces.
+	// Gated by CRN_BUILD_IMAGE; no-op for non-Next apps.
+	m.writeImageBundle(workDir, spec, job, log)
+
 	// --- success: git commit + force-push the build branch ---
 	// pushRemote/pushBranch were resolved above per git model: the owner model
 	// pushes the project's own repo "main"; the shared model pushes a
@@ -748,65 +754,99 @@ func (m *manager) takeCancel(jobID uuid.UUID) context.CancelFunc {
 	return cancel
 }
 
-// buildAndPushImage runs the docker-image pipeline for a finished build: write
-// CRN's deterministic production Dockerfile, `docker build` the Next standalone
-// app into an opaque image (only compiled output — no source), and `docker push`
-// it to the registry when configured. Sets job.DockerTag to the image tag.
-// Gated by CRN_BUILD_IMAGE and best-effort: a docker/registry failure is
-// surfaced + logged but does NOT fail the build (git push already succeeded).
+// imageTags returns the deterministic (app, migrate) image tags for this build.
+func (m *manager) imageTags(spec payloadSpec, job *domain.Job) (appTag, migrateTag string) {
+	pid := job.ProjectID.String()
+	appTag = buildstep.DemoImageTag(m.imageRegistry, spec.Name, pid, job.BuildNo)
+	migrateTag = buildstep.MigrateImageTag(m.imageRegistry, spec.Name, pid, job.BuildNo)
+	return appTag, migrateTag
+}
+
+// writeImageBundle writes the on-prem delivery bundle (app + migrate Dockerfiles,
+// customer docker-compose, INSTALL) into workDir so the git push commits it. Uses
+// the deterministic image tags buildAndPushImage will produce. Gated by
+// CRN_BUILD_IMAGE; no-op for non-Next apps.
+func (m *manager) writeImageBundle(workDir string, spec payloadSpec, job *domain.Job, log *slog.Logger) {
+	if !m.buildImage {
+		return
+	}
+	appTag, migrateTag := m.imageTags(spec, job)
+	port := buildstep.ScaffoldPort(workDir)
+	wrote, err := buildstep.WriteImageBundle(workDir, appTag, migrateTag, m.imageRegistry, port, log)
+	if err != nil {
+		log.Warn("write image bundle failed", "err", err)
+		return
+	}
+	if wrote {
+		log.Info("wrote on-prem image bundle", "app", appTag, "migrate", migrateTag, "port", port)
+	}
+}
+
+// buildAndPushImage builds + pushes the opaque APP image AND the DB MIGRATE image
+// (Dockerfiles were written by writeImageBundle before the git push). Sets
+// job.DockerTag to the app image tag. Gated by CRN_BUILD_IMAGE and best-effort:
+// a docker/registry failure is surfaced + logged but does NOT fail the build.
 func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, log *slog.Logger) {
 	if !m.buildImage {
 		return
 	}
-	m.publishPhase(job.ID, "docker")
-
-	isNext, err := buildstep.WriteDockerfile(workDir, log)
-	if err != nil {
-		log.Warn("write dockerfile failed; skipping image", "err", err)
-		return
-	}
-	if !isNext {
+	if !buildstep.IsNextApp(workDir) {
 		log.Info("docker image skipped (not a Next app)")
 		return
 	}
+	m.publishPhase(job.ID, "docker")
+	appTag, migrateTag := m.imageTags(spec, job)
 
-	tag := buildstep.DemoImageTag(m.imageRegistry, spec.Name, job.ProjectID.String(), job.BuildNo)
-
-	if err := buildstep.BuildImage(ctx, workDir, tag, log); err != nil {
-		log.Error("docker build failed", "err", err, "tag", tag)
+	// App image (opaque). Failure = no deliverable → surface + stop.
+	if err := buildstep.BuildImage(ctx, workDir, "Dockerfile", appTag, log); err != nil {
+		log.Error("docker build (app) failed", "err", err, "tag", appTag)
 		m.publish(job.ID, domain.BuildEventMsg{
-			Kind: domain.WSError, Text: "docker build failed: " + err.Error(),
+			Kind: domain.WSError, Text: "docker build (app) failed: " + err.Error(),
 			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
 		})
 		return
 	}
+	// Migrate image (schema+seed). Best-effort: without it the customer sets up the
+	// DB by hand, but the app image is still valid.
+	if err := buildstep.BuildImage(ctx, workDir, "Dockerfile.migrate", migrateTag, log); err != nil {
+		log.Warn("docker build (migrate) failed", "err", err, "tag", migrateTag)
+		m.publish(job.ID, domain.BuildEventMsg{
+			Kind: domain.WSError, Text: "docker build (migrate) failed (app image ok): " + err.Error(),
+			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
+		})
+		migrateTag = "" // don't push/announce a migrate image that failed to build
+	}
 
 	if m.imageRegistry != "" {
-		if err := buildstep.PushImage(ctx, tag, log); err != nil {
-			// Image exists locally; record the tag anyway so it can be retried.
-			log.Error("docker push failed", "err", err, "tag", tag)
-			m.publish(job.ID, domain.BuildEventMsg{
-				Kind: domain.WSError, Text: "docker push failed (image built locally): " + err.Error(),
-				JobID: job.ID.String(), Timestamp: time.Now().UTC(),
-			})
+		for _, tag := range []string{appTag, migrateTag} {
+			if tag == "" {
+				continue
+			}
+			if err := buildstep.PushImage(ctx, tag, log); err != nil {
+				log.Error("docker push failed", "err", err, "tag", tag)
+				m.publish(job.ID, domain.BuildEventMsg{
+					Kind: domain.WSError, Text: "docker push failed (built locally): " + err.Error(),
+					JobID: job.ID.String(), Timestamp: time.Now().UTC(),
+				})
+			}
 		}
 	}
 
-	if err := m.store.SetJobDockerTag(ctx, job.ID, tag); err != nil {
+	if err := m.store.SetJobDockerTag(ctx, job.ID, appTag); err != nil {
 		log.Warn("persist image tag failed", "err", err)
 	}
-	job.DockerTag = tag
+	job.DockerTag = appTag
 	dest := "local"
 	if m.imageRegistry != "" {
 		dest = m.imageRegistry
 	}
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSAssistantText,
-		Text:      fmt.Sprintf("✓ image built → %s (%s)", tag, dest),
+		Text:      fmt.Sprintf("✓ images built → %s (+migrate) → %s", appTag, dest),
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
-	log.Info("docker image ready", "tag", tag, "pushed", m.imageRegistry != "")
+	log.Info("docker images ready", "app", appTag, "migrate", migrateTag, "pushed", m.imageRegistry != "")
 }
 
 // ReconcileOrphans fails every job the store still has in 'building' and reports
