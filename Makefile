@@ -16,10 +16,15 @@ help: ## Show this help.
 build: ## Compile the Go backend to ./bin/crn-server.
 	go build -o bin/crn-server ./cmd/server
 
-run: ## Run the Go backend (auto-loads .env if present).
+run: ## Run the Go backend from source (auto-loads .env). Fast for dev; `go run` does NOT stamp the git revision (/healthz shows revision=unknown). Use `run-bin`/`restart` for a stamped build.
 	@if [ -f .env ]; then set -a; . ./.env; set +a; else \
 		echo "warning: no .env found — run: cp .env.example .env"; fi; \
 	go run ./cmd/server
+
+run-bin: build ## Run the compiled binary (auto-loads .env). `go build` stamps the git revision so boot log + /healthz report the real commit.
+	@if [ -f .env ]; then set -a; . ./.env; set +a; else \
+		echo "warning: no .env found — run: cp .env.example .env"; fi; \
+	./bin/crn-server
 
 stop: ## Stop the running backend (kills whatever listens on :$(PORT)).
 	@pid=$$(lsof -nP -tiTCP:$(PORT) -sTCP:LISTEN 2>/dev/null); \
@@ -28,9 +33,9 @@ stop: ## Stop the running backend (kills whatever listens on :$(PORT)).
 		[ -n "$$pid" ] && kill -9 $$pid 2>/dev/null; echo "stopped :$(PORT)"; \
 	else echo "nothing listening on :$(PORT)"; fi
 
-restart: ## Stop any running backend, then run a fresh one (picks up .env + rebuild).
+restart: ## Stop any running backend, then rebuild + run a fresh binary (stamps git revision; picks up .env).
 	@$(MAKE) stop
-	@$(MAKE) run
+	@$(MAKE) run-bin
 
 vet: ## go vet the whole module.
 	go vet ./...
