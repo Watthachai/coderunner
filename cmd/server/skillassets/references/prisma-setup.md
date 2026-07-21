@@ -115,8 +115,8 @@ The old in-memory array (e.g. `let tasks = [...]` in `data.ts`) is DELETED; its 
 
 Port the prototype's mock array into a seed so the app has data. **The seed MUST
 be idempotent** — the delivered app image self-migrates on start and runs
-`prisma db seed` on EVERY start (when `DEMO_SEED=1`), so re-running must never
-duplicate rows or fail on a unique constraint. **Always `upsert` keyed by a stable id** —
+`prisma db seed` on EVERY start (seed runs by default; `DEMO_SEED=0` disables it),
+so re-running must never duplicate rows or fail on a unique constraint. **Always `upsert` keyed by a stable id** —
 never bare `create` / `createMany` (those insert duplicates on re-run unless the
 seeded field happens to have a unique constraint):
 
@@ -146,42 +146,53 @@ Wire it in `package.json`:
 ```
 
 Add `tsx` as a dev dep (`npm i -D tsx`). `prisma db seed` needs a live DB — it is
-NOT part of `next build`; the delivered app image runs it on start (when
-`DEMO_SEED=1`), and you can run it on demand locally.
+NOT part of `next build`; the delivered app image runs it on start (by default;
+`DEMO_SEED=0` disables), and you can run it on demand locally.
 
-### 5a. Auth apps — seed a dev login user from env (CRITICAL)
+### 5a. Auth — standardized env email+password login (CRITICAL)
 
-If the prototype has authentication (a `User` model + a login screen), the seed
-**MUST also upsert a dev login user** — otherwise the deployed UAT has an empty
-`User` table and **nobody can sign in** (the exact failure this guards against).
-Read the credentials from env with fallbacks, hash the password with the SAME
-mechanism the app verifies it against (bcrypt/argon/etc. — reuse the app's hasher),
-and **upsert keyed by email** so it is idempotent on every start:
+Every demo with a login uses ONE standardized mechanism, **regardless of what the
+prototype did** (Google/SSO, an email allowlist, OAuth, a random mock): an email +
+password form validated ONLY against `DEV_EMAIL` / `DEV_PASSWORD` from env. This
+gives the operator one known credential to sign into every UAT — no provider to
+configure, no allowlist to satisfy. Replace the prototype's login mechanism; keep
+its look.
+
+**The login server action checks env, not a hashed DB password** — simplest and
+deterministic for a demo:
 
 ```ts
-import bcrypt from "bcryptjs"; // or whatever the app already uses to verify passwords
+"use server";
+const DEV_EMAIL = process.env.DEV_EMAIL ?? "dev@fitt.local";
+const DEV_PASSWORD = process.env.DEV_PASSWORD ?? "changeme";
 
-const devEmail = process.env.DEV_EMAIL ?? "dev@fitt.local";
-const devPassword = process.env.DEV_PASSWORD ?? "changeme";
-
-await prisma.user.upsert({
-  where: { email: devEmail },
-  update: {}, // don't clobber an operator's changed password on re-seed
-  create: {
-    email: devEmail,
-    password: await bcrypt.hash(devPassword, 10),
-    // ...map the app's real required User fields (name, role, etc.)
-  },
-});
+export async function loginAction(email: string, password: string) {
+  if (email.trim().toLowerCase() !== DEV_EMAIL.toLowerCase() || password !== DEV_PASSWORD) {
+    return { error: "Invalid email or password" };
+  }
+  // If the app has a User model, make sure the Admin account exists, then attach the
+  // session to it so role-based UI works. (No User model → just set a session cookie.)
+  const user = await prisma.user.upsert({
+    where: { email: DEV_EMAIL },
+    update: {},
+    create: { email: DEV_EMAIL, name: "Dev Admin", role: "Admin" /* + app's required fields */ },
+  });
+  await setSessionUserId(user.id);
+  return { user };
+}
 ```
 
-- Read `DEV_EMAIL` / `DEV_PASSWORD` from env; the fallbacks make the demo loginable
-  out of the box, and the operator overrides them at run time (CRN advertises both,
-  with these defaults, in the build's `env` contract).
-- Adjust the fields to the app's ACTUAL `User` model (required columns, role enum).
-- If auth is JWT-based, this seeded user is what the login endpoint issues a token
-  for — no token is baked into the image; it is minted at login.
-- Apps with no auth: skip this entirely.
+- **The login accepts ONLY the env credential.** Do NOT keep the prototype's SSO
+  button, allowlist, `Math.random()` mock, or a password-hash scheme.
+- The seed (§5) **also** upserts this same dev Admin user, so the account is present
+  even before anyone logs in and other pages that list/reference users work.
+- Adjust `create` to the app's ACTUAL `User` model (required columns, role enum). If
+  the model has a `password` column, you may store `DEV_PASSWORD` (plain is fine for a
+  demo) — but the login check above is against env, not that column.
+- JWT-based apps: mint the token here on a successful env check — never bake a token
+  into the image.
+- CRN advertises `DEV_EMAIL` / `DEV_PASSWORD` (with these defaults) in the build's
+  `env` contract, and the delivered image seeds by default. Apps with no login: skip.
 
 ## 6. DATABASE_URL + .env
 

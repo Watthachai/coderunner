@@ -33,7 +33,8 @@ docker run -d -P \
   <registry>/crn-demo-<slug>-<id8>:v<n>
 ```
 - `-P` publish port → หา URL ด้วย `docker port <container> 3000`
-- อยาก seed data ตัวอย่าง: เพิ่ม `-e DEMO_SEED=1`
+- seed (demo data + dev login user) รัน **default**; ปิดด้วย `-e DEMO_SEED=0`
+- **login**: demo ที่มี auth ใช้ email+password = `DEV_EMAIL`/`DEV_PASSWORD` (default `dev@fitt.local`/`changeme`) — set เองได้
 
 **หรือ compose:**
 ```bash
@@ -43,7 +44,7 @@ DATABASE_URL="postgresql://user:pass@ftc-demo-db:5432/demo_<slug>_<id8>" \
 
 ลำดับที่เกิดตอน start:
 1. `prisma db push` → สร้าง/sync schema ใน DB ที่ส่งให้ (DB เปล่า → สร้าง table; DB มี data → additive apply)
-2. (ถ้า `DEMO_SEED=1`) `prisma db seed`
+2. `prisma db seed` (default; `DEMO_SEED=0` ปิด) — สร้าง demo data + dev login user
 3. `node server.js` → demo ขึ้น
 
 ---
