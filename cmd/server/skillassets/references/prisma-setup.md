@@ -158,12 +158,25 @@ DATABASE_URL="postgresql://USER:PASSWORD@localhost:5432/APP?schema=public"
 
 For local dev the operator runs Postgres (docker or native). In the container, `DATABASE_URL` is injected at runtime (compose/orchestrator), NOT baked into the image.
 
-## 7. Migrations vs db push
+## 7. Schema application: this pipeline uses `db push` (no migration history)
 
-- **`prisma migrate dev --name init`**: creates a versioned SQL migration in `prisma/migrations/` — the right choice for a real app; commit the migrations.
-- **`prisma db push`**: syncs the schema to the DB with no migration history — fine for the earliest prototype iteration.
-- Both require a reachable database, so run them locally/against a real DB — never inside `next build`.
-- Production applies migrations at deploy time: `npx prisma migrate deploy` (run it as a release step or container entrypoint, before `node server.js`).
+CRN ships a **DB migrate image** that runs `prisma db push` + `prisma db seed`
+against the customer's Postgres on start — it does **not** use `prisma migrate`.
+The harness regenerates `schema.prisma` from the prototype on every build, so there
+is no migration history to maintain; `db push` diffs the live DB against the schema
+directly. Match that model:
+
+- **Do NOT create or commit a `prisma/migrations/` directory** and do NOT run
+  `prisma migrate dev` / `migrate deploy`. They add a checksummed history that this
+  regenerate-each-build pipeline can't keep consistent (a re-squashed init migration
+  fails the checksum on the next version). One way only: `schema.prisma` is the
+  single source of truth.
+- Additive schema changes across versions apply cleanly; a **destructive** change
+  (dropped/retyped column with data) makes `db push` error rather than lose data —
+  that's intended, the operator handles it.
+- `db push` / `db seed` need a reachable DB, so they NEVER run inside `next build` —
+  they run at deploy time (the migrate image). The only DB command you may run to
+  sanity-check the schema locally is `npx prisma db push` against a dev database.
 
 ## 8. Make `next build` pass WITHOUT a live DB (critical)
 
