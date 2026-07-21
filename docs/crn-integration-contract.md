@@ -138,13 +138,15 @@ Content-Type: application/json
     "PORT": "3000",           // port ที่ app listen ใน container (fixed)
     "APP_PORT": "4123",       // host port แนะนำ → map ไป container 3000 (ต่อ-project)
     "DEV_EMAIL": "dev@fitt.local",   // THE login credential (ถ้า app มี auth) — override ได้
-    "DEV_PASSWORD": "changeme"       // operator override; ไม่ใช่ secret จริง
+    "DEV_PASSWORD": "changeme",      // operator override; ไม่ใช่ secret จริง
+    "FITT_FEEDBACK_URL": "http://FEEDBACK_HOST:PORT/api/ingest/feedback"  // ปลายทาง feedback widget (ถ้ามี)
   },
   "message": "…" }           // ใส่มาเฉพาะตอน failed
 ```
 - แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
 - **`env` (เฉพาะ `released`)** = **example** runtime env ที่ image ต้องใช้ — operator inject ค่าจริงตอนรัน (ไม่มี bake ในภาพ). `DATABASE_URL` บังคับ — app image **self-migrate** (`prisma db push`) ยิงไป DB ภายนอกนี้ตอน start; app listen container port `3000`, host เปิด `APP_PORT` (ต่อ-project). ตรงกับ `docker-compose.customer.yml` ที่ CRN เขียน
 - **`DEV_EMAIL`/`DEV_PASSWORD`** = **THE login credential** ของทุก demo ที่มี auth. skill บังคับ login ทุกแอปให้เป็น email+password เช็คกับ 2 ตัวนี้ (env) เท่านั้น — ไม่ว่า prototype ทำ SSO/allowlist/mock มายังไง. seed รัน default → user นี้ถูกสร้างให้ตอน start → operator login UAT ได้ทันที (app ที่ไม่มี login เมิน 2 ตัวนี้)
+- **`FITT_FEEDBACK_URL`** = ปลายทางที่ in-demo feedback widget POST ไป. widget อ่านจาก **runtime env** (`data-ingest` server-render จาก `process.env.FITT_FEEDBACK_URL`) → operator ชี้ receiver ของตัวเองได้ต่อ deployment ไม่ต้อง rebuild. ใส่ full URL รวม path เอง (เช่น `.../api/ingest/feedback`). เกี่ยวเฉพาะตอน widget ถูกฝัง (build ตั้ง `CRN_FEEDBACK_INGEST_URL`)
 - **โหมด image (`CRN_BUILD_IMAGE` เปิด — แนะนำ):** ใช้ `image_ref` → `docker pull` แล้วรันได้เลย **ไม่ต้อง clone git**. `image_ref` บน `released` เป็น image จริงที่ pull ได้เสมอ (build ล้มถ้า image สร้าง/push ไม่ได้)
 - **`git_remote`/`git_branch` ใส่มาเฉพาะตอน `released`** (โหมด git legacy — เมื่อ **ปิด** image pipeline) = repo/branch จริงที่ build push ไป (ถูกทั้งโหมด **shared** และ **owner**) → FTC DV clone จากค่านี้ ไม่ใช่ค่าใน `202` (โหมด owner ค่าใน 202 เป็น shared remote ซึ่งไม่ตรง). **เมื่อเปิด image pipeline ไม่ต้องใช้เส้นนี้**
 - **best-effort**: ยิงไม่ผ่าน (หรือได้ non-2xx) = log แล้วปล่อย ไม่ล้ม build — `build_events` ยังเป็นแหล่งความจริงเสมอ

@@ -132,6 +132,11 @@ type DemoEnvExample struct {
 	// secret — change for anything beyond a demo. Apps without login ignore them.
 	DevEmail    string `json:"DEV_EMAIL"`
 	DevPassword string `json:"DEV_PASSWORD"`
+	// FeedbackURL is where the in-demo feedback widget POSTs. Read from RUNTIME env
+	// (the widget's data-ingest is server-rendered from process.env.FITT_FEEDBACK_URL),
+	// so the operator points it at their receiver per deployment without a rebuild.
+	// Only relevant when the widget was injected (CRN_FEEDBACK_INGEST_URL set at build).
+	FeedbackURL string `json:"FITT_FEEDBACK_URL"`
 }
 
 // NewDemoEnvExample builds the env contract for a demo whose per-project host port
@@ -143,6 +148,7 @@ func NewDemoEnvExample(port int) DemoEnvExample {
 		AppPort:     strconv.Itoa(port),
 		DevEmail:    "dev@fitt.local",
 		DevPassword: "changeme",
+		FeedbackURL: "http://FEEDBACK_HOST:PORT/api/ingest/feedback",
 	}
 }
 

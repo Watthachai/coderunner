@@ -143,8 +143,15 @@ func injectIntoNextLayout(dir, projectID, ingestURL string, logger *slog.Logger)
 	// A plain classic <script src> (not next/script) so document.currentScript and
 	// its data-* config resolve during synchronous execution. Values are safe
 	// (uuid + url) so no JSX-entity escaping is needed.
+	//
+	// data-ingest is a JSX EXPRESSION reading the demo's RUNTIME env
+	// (FITT_FEEDBACK_URL) — a server component evaluates it per request, so the
+	// operator sets the receiver URL at run time (like DATABASE_URL) instead of it
+	// being baked at build. The build-time ingestURL stays as the fallback (local
+	// dev / single-box). Consumers deploying to a real box set FITT_FEEDBACK_URL to
+	// their receiver, e.g. http://<host>:<port>/api/ingest/feedback.
 	script := `<script src="/fitt-feedback.js" data-fitt-feedback="true" data-project="` +
-		projectID + `" data-ingest="` + ingestURL + `" />`
+		projectID + `" data-ingest={process.env.FITT_FEEDBACK_URL ?? "` + ingestURL + `"} />`
 	out := src[:i] + "        " + script + "\n      " + src[i:]
 	if err := os.WriteFile(layoutPath, []byte(out), 0o644); err != nil {
 		logger.Warn("write feedback-injected layout failed", "path", layoutPath, "err", err)

@@ -85,7 +85,8 @@ func TestInjectFeedbackWidgetNextLayout(t *testing.T) {
 	for _, want := range []string{
 		`src="/fitt-feedback.js"`,
 		`data-project="proj-xyz"`,
-		`data-ingest="http://localhost:3010/feedback_requests"`,
+		// data-ingest is a JSX expression reading RUNTIME env (build-time url is the fallback).
+		`data-ingest={process.env.FITT_FEEDBACK_URL ?? "http://localhost:3010/feedback_requests"}`,
 		"</body>",
 	} {
 		if !strings.Contains(s, want) {
