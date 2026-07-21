@@ -149,6 +149,40 @@ Add `tsx` as a dev dep (`npm i -D tsx`). `prisma db seed` needs a live DB — it
 NOT part of `next build`; the delivered app image runs it on start (when
 `DEMO_SEED=1`), and you can run it on demand locally.
 
+### 5a. Auth apps — seed a dev login user from env (CRITICAL)
+
+If the prototype has authentication (a `User` model + a login screen), the seed
+**MUST also upsert a dev login user** — otherwise the deployed UAT has an empty
+`User` table and **nobody can sign in** (the exact failure this guards against).
+Read the credentials from env with fallbacks, hash the password with the SAME
+mechanism the app verifies it against (bcrypt/argon/etc. — reuse the app's hasher),
+and **upsert keyed by email** so it is idempotent on every start:
+
+```ts
+import bcrypt from "bcryptjs"; // or whatever the app already uses to verify passwords
+
+const devEmail = process.env.DEV_EMAIL ?? "dev@fitt.local";
+const devPassword = process.env.DEV_PASSWORD ?? "changeme";
+
+await prisma.user.upsert({
+  where: { email: devEmail },
+  update: {}, // don't clobber an operator's changed password on re-seed
+  create: {
+    email: devEmail,
+    password: await bcrypt.hash(devPassword, 10),
+    // ...map the app's real required User fields (name, role, etc.)
+  },
+});
+```
+
+- Read `DEV_EMAIL` / `DEV_PASSWORD` from env; the fallbacks make the demo loginable
+  out of the box, and the operator overrides them at run time (CRN advertises both,
+  with these defaults, in the build's `env` contract).
+- Adjust the fields to the app's ACTUAL `User` model (required columns, role enum).
+- If auth is JWT-based, this seeded user is what the login endpoint issues a token
+  for — no token is baked into the image; it is minted at login.
+- Apps with no auth: skip this entirely.
+
 ## 6. DATABASE_URL + .env
 
 `.env.example` (committed) documents the contract; real `.env` is gitignored:

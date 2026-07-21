@@ -155,7 +155,7 @@ func TestFTCCallback(t *testing.T) {
 	if gotCT != "application/json" {
 		t.Errorf("content-type = %q", gotCT)
 	}
-	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`, `"git_remote":"acme/repo"`, `"git_branch":"main"`, `"env"`, `"DATABASE_URL"`, `"APP_PORT":"4123"`} {
+	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`, `"git_remote":"acme/repo"`, `"git_branch":"main"`, `"env"`, `"DATABASE_URL"`, `"APP_PORT":"4123"`, `"DEV_EMAIL"`} {
 		if !strings.Contains(gotBody, want) {
 			t.Errorf("body missing %q\n%s", want, gotBody)
 		}

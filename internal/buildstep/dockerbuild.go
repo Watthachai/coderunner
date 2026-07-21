@@ -116,13 +116,19 @@ services:
 // run time (compose/orchestrator); NONE of these are baked into the image. Mirrors
 // what customerCompose injects, so keep the two in step.
 type DemoEnvExample struct {
-	// DatabaseURL is REQUIRED — both the app and the migrate image read it.
+	// DatabaseURL is REQUIRED — the app self-migrates + reads it.
 	DatabaseURL string `json:"DATABASE_URL"`
 	// Port is the port the app listens on INSIDE the container (fixed).
 	Port string `json:"PORT"`
 	// AppPort is the suggested HOST port to publish → container 3000 (per-project,
 	// avoids collisions); override freely.
 	AppPort string `json:"APP_PORT"`
+	// DevEmail/DevPassword are the fallback dev-login credentials. When the app has
+	// authentication and DEMO_SEED=1, the seed upserts a login user from these so the
+	// UAT is signable-in out of the box. The operator OVERRIDES them (ignored by apps
+	// without auth). Never a real secret — change for anything beyond a demo.
+	DevEmail    string `json:"DEV_EMAIL"`
+	DevPassword string `json:"DEV_PASSWORD"`
 }
 
 // NewDemoEnvExample builds the env contract for a demo whose per-project host port
@@ -132,6 +138,8 @@ func NewDemoEnvExample(port int) DemoEnvExample {
 		DatabaseURL: "postgresql://USER:PASSWORD@HOST:5432/DB?schema=public",
 		Port:        "3000",
 		AppPort:     strconv.Itoa(port),
+		DevEmail:    "dev@fitt.local",
+		DevPassword: "changeme",
 	}
 }
 
