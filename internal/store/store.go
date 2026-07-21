@@ -192,6 +192,29 @@ func (s *pgStore) SetProjectRepo(ctx context.Context, projectID uuid.UUID, repoU
 	return nil
 }
 
+// GetProjectBuildCache returns the last successful fresh build's source hash + image
+// tag for a project. Missing project or unset columns yield ("", "", nil).
+func (s *pgStore) GetProjectBuildCache(ctx context.Context, projectID uuid.UUID) (string, string, error) {
+	const q = `SELECT last_source_hash, last_image_ref FROM projects WHERE id = $1`
+	var hash, imageRef string
+	if err := s.pool.QueryRow(ctx, q, projectID).Scan(&hash, &imageRef); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", nil
+		}
+		return "", "", mapErr(err, "store: get project build cache")
+	}
+	return hash, imageRef, nil
+}
+
+// SetProjectBuildCache records a build's source hash + produced image tag for reuse.
+func (s *pgStore) SetProjectBuildCache(ctx context.Context, projectID uuid.UUID, sourceHash, imageRef string) error {
+	const q = `UPDATE projects SET last_source_hash = $2, last_image_ref = $3 WHERE id = $1`
+	if _, err := s.pool.Exec(ctx, q, projectID, sourceHash, imageRef); err != nil {
+		return mapErr(err, "store: set project build cache")
+	}
+	return nil
+}
+
 // --- Jobs -------------------------------------------------------------------
 
 // CreateJob inserts a job and reads back DB-generated columns.

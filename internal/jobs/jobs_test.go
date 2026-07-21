@@ -162,6 +162,29 @@ func TestFTCCallback(t *testing.T) {
 	}
 }
 
+func TestSourceHash(t *testing.T) {
+	a := []buildstep.FileEntry{{Path: "a.ts", Content: "x"}, {Path: "b.ts", Content: "y"}}
+	// Order-independent: same files in any order → same hash.
+	b := []buildstep.FileEntry{{Path: "b.ts", Content: "y"}, {Path: "a.ts", Content: "x"}}
+	if sourceHash(a) != sourceHash(b) {
+		t.Error("hash must be order-independent")
+	}
+	// Content-sensitive.
+	c := []buildstep.FileEntry{{Path: "a.ts", Content: "x"}, {Path: "b.ts", Content: "Y"}}
+	if sourceHash(a) == sourceHash(c) {
+		t.Error("hash must change when content changes")
+	}
+	// Length-prefix prevents a concatenation collision between {"ab","c"} and {"a","bc"}.
+	if sourceHash([]buildstep.FileEntry{{Path: "ab", Content: "c"}}) ==
+		sourceHash([]buildstep.FileEntry{{Path: "a", Content: "bc"}}) {
+		t.Error("length-prefix must prevent concatenation collision")
+	}
+	// No files (e.g. an edit build) → "" (reuse disabled).
+	if sourceHash(nil) != "" {
+		t.Error("empty files must hash to empty string")
+	}
+}
+
 func TestFTCCallbackDisabledWhenNoURL(t *testing.T) {
 	m := &manager{logger: slog.Default()} // no URL configured
 	// Must be a silent no-op (no panic, no network).

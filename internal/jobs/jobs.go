@@ -24,7 +24,9 @@ package jobs
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -407,6 +410,23 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		pushBranch = "crn/" + slug + "-" + id8
 	}
 
+	// --- source-hash dedup ----------------------------------------------------
+	// A fresh build re-runs the (expensive) AI conversion from scratch. When the
+	// EXACT same source is resubmitted (a retry, or a rebuild with an unchanged
+	// prototype) there is nothing to convert: reuse the last successful build's
+	// image instead of burning another agent run. Edit builds carry a Change, not a
+	// source zip, so srcHash is "" for them and reuse is skipped.
+	srcHash := sourceHash(spec.Files)
+	if spec.Mode != "edit" && srcHash != "" {
+		cachedHash, cachedImage, err := m.store.GetProjectBuildCache(ctx, job.ProjectID)
+		if err != nil {
+			log.Warn("build cache lookup failed (converting normally)", "err", err)
+		} else if cachedHash == srcHash && cachedImage != "" {
+			m.finishReused(ctx, job, cachedImage, pushRemote, pushBranch, log)
+			return
+		}
+	}
+
 	// resumeSession is the Claude session to --resume for this run; the Claude
 	// prompt is the requirement handed to Claude. Both are set per-mode below.
 	var resumeSession, claudePrompt string
@@ -658,6 +678,13 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, envEx))
 	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, pushRemote, pushBranch, "released", "", envEx)
 
+	// Cache this source → image so an identical resubmission reuses it (skips the AI
+	// conversion). srcHash is "" for edit builds, which clears the cache so a later
+	// fresh build re-converts the diverged source.
+	if err := m.store.SetProjectBuildCache(ctx, job.ProjectID, srcHash, job.DockerTag); err != nil {
+		log.Warn("persist build cache failed", "err", err)
+	}
+
 	// Snapshot the full live event stream + derived summary into the durable
 	// trace store BEFORE closeSubscribers discards the in-memory buffer. This is
 	// what makes the build inspectable retroactively (state trace).
@@ -679,6 +706,42 @@ func (m *manager) publishPhase(jobID uuid.UUID, phase string) {
 		JobID:     jobID.String(),
 		Timestamp: time.Now().UTC(),
 	})
+}
+
+// finishReused completes a build WITHOUT converting: the source is identical to a
+// prior successful build, so we re-emit that build's image (no agent run, no git,
+// no docker). Same terminal events as a normal done (build_done + FTC callback)
+// with the reused image_ref and zero cost.
+func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef, pushRemote, pushBranch string, log *slog.Logger) {
+	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobDone, ""); err != nil {
+		log.Error("mark done (reused) failed", "err", err)
+		m.finishFailed(ctx, job, "persist done status failed: "+err.Error(), 0)
+		return
+	}
+	job.Status = domain.JobDone
+	job.DockerTag = imageRef
+	if err := m.store.SetJobDockerTag(ctx, job.ID, imageRef); err != nil {
+		log.Warn("persist reused image tag failed", "err", err)
+	}
+	log.Info("build reused — source unchanged, skipped conversion", "image", imageRef)
+
+	m.publish(job.ID, domain.BuildEventMsg{
+		Kind:      domain.WSAssistantText,
+		Text:      "✓ source unchanged — reused image " + imageRef + " (skipped conversion)",
+		JobID:     job.ID.String(),
+		Timestamp: time.Now().UTC(),
+	})
+	m.publish(job.ID, domain.BuildEventMsg{
+		Kind:      domain.WSResult,
+		Phase:     string(domain.JobDone),
+		File:      imageRef,
+		JobID:     job.ID.String(),
+		Timestamp: time.Now().UTC(),
+	})
+	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(filepath.Join(m.projectsDir, job.ProjectID.String())))
+	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, pushRemote, pushBranch, envEx))
+	go m.ftcCallback(job.ID, job.BuildNo, imageRef, pushRemote, pushBranch, "released", "", envEx)
+	m.closeSubscribers(job.ID)
 }
 
 // finishFailed records the failure, notifies the central DB, pushes a terminal
@@ -770,6 +833,27 @@ func (m *manager) takeCancel(jobID uuid.UUID) context.CancelFunc {
 // self-migrates on start, so there is no separate migrate image.
 func (m *manager) imageTag(spec payloadSpec, job *domain.Job) string {
 	return buildstep.DemoImageTag(m.imageRegistry, spec.Name, job.ProjectID.String(), job.BuildNo)
+}
+
+// sourceHash is a deterministic content hash of a build's materialized source
+// files (a downloaded prototype zip arrives as one file entry, so this covers both
+// the file-array and zip inputs). Used to detect an identical resubmission and skip
+// the AI conversion. Returns "" when there are no files (e.g. an edit build), which
+// disables reuse for that build.
+func sourceHash(files []buildstep.FileEntry) string {
+	if len(files) == 0 {
+		return ""
+	}
+	sorted := make([]buildstep.FileEntry, len(files))
+	copy(sorted, files)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+	h := sha256.New()
+	for _, f := range sorted {
+		// Length-prefix path + content so no two distinct file sets can collide by
+		// concatenation (e.g. {"ab","c"} vs {"a","bc"}).
+		fmt.Fprintf(h, "%d:%s%d:%s", len(f.Path), f.Path, len(f.Content), f.Content)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // writeImageBundle writes the on-prem delivery bundle (self-migrating app Dockerfile,

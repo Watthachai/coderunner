@@ -70,6 +70,14 @@ type Store interface {
 	// QueueDepth counts jobs in JobQueued for a project.
 	QueueDepth(ctx context.Context, projectID uuid.UUID) (int, error)
 
+	// GetProjectBuildCache returns the source hash + image tag of the project's last
+	// successful fresh build (both "" when none). A fresh build whose source hash
+	// matches can skip the AI conversion and reuse the image.
+	GetProjectBuildCache(ctx context.Context, projectID uuid.UUID) (sourceHash, imageRef string, err error)
+	// SetProjectBuildCache records the source hash + produced image tag after a build
+	// (empty sourceHash for edit builds, which diverge the source).
+	SetProjectBuildCache(ctx context.Context, projectID uuid.UUID, sourceHash, imageRef string) error
+
 	// --- Edit requests ---
 	CreateEditRequest(ctx context.Context, r *EditRequest) error
 	GetEditRequest(ctx context.Context, id uuid.UUID) (*EditRequest, error)
