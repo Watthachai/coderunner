@@ -2,19 +2,22 @@
 // It mirrors exactly what CRN does to a job — materialize the files, run Claude
 // Code, commit, push — and fills left-to-right as the build advances.
 
-const PHASES = ["materialize", "claude", "git", "push"] as const;
+const PHASES = ["repo", "materialize", "claude", "git", "push", "docker"] as const;
 
 /**
  * Map a live phase string (from build_phase events) to its track index.
- * The runner emits "materialize", "claude_skipped"/"claude", "git",
- * "push"/"push_skipped"; prefix matching keeps this resilient.
+ * The runner emits "repo" (owner mode), "materialize"/"pull",
+ * "claude_skipped"/"claude", "git", "push"/"push_skipped", and "docker" (image
+ * mode). Prefix matching keeps this resilient; unknown phases return -1.
  */
 export function phaseRank(phase: string): number {
   const p = phase.toLowerCase();
-  if (p.startsWith("materialize")) return 0;
-  if (p.startsWith("claude")) return 1;
-  if (p.startsWith("git")) return 2;
-  if (p.startsWith("push")) return 3;
+  if (p.startsWith("repo")) return 0;
+  if (p.startsWith("materialize") || p.startsWith("pull")) return 1;
+  if (p.startsWith("claude")) return 2;
+  if (p.startsWith("git")) return 3;
+  if (p.startsWith("push")) return 4;
+  if (p.startsWith("docker")) return 5;
   return -1;
 }
 
@@ -44,10 +47,12 @@ export function PhaseTrack({
 // Short flight-plan captions for the pipeline stages — what CRN is actually
 // doing at each node, in the operator's vocabulary.
 const PHASE_CAPTION: Record<(typeof PHASES)[number], string> = {
+  repo: "github repo",
   materialize: "write files",
   claude: "agent build",
   git: "commit",
   push: "publish",
+  docker: "build image",
 };
 
 /**

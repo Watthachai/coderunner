@@ -197,15 +197,19 @@ export function BuildConsole({
     };
   }, []);
 
-  // Write deltas. Events arrive append-only with monotonically increasing _id,
-  // so anything past lastIdRef is new. A reset (clear/reconnect) rewinds _id to
-  // 0; detect that and clear the terminal so we don't miss the fresh head.
+  // Write deltas. `events` is the CUMULATIVE append-only feed (monotonic _id), so
+  // anything past lastIdRef is new — we write only that tail. A reset (new build
+  // target / reconnect) rewinds _id, which shows up as the feed's HIGHEST id being
+  // lower than what we last wrote. Detect THAT (not events[0], whose id is the
+  // constant head of a cumulative array and would trip every render — clearing +
+  // rewriting the whole log each poll, which read as the console jumping to top).
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
 
-    if (events.length > 0 && events[0]._id <= lastIdRef.current) {
-      // Feed was reset (new build target). Start the surface over.
+    const maxId = events.length > 0 ? events[events.length - 1]._id : -1;
+    if (maxId >= 0 && maxId < lastIdRef.current) {
+      // Feed rewound → new build target. Start the surface over.
       term.clear();
       lastIdRef.current = -1;
     }
