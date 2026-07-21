@@ -310,14 +310,29 @@ func SaveImages(ctx context.Context, outPath string, images []string, logger *sl
 }
 
 // runDocker execs the host `docker` CLI, capturing combined output so a failure
-// surfaces the real error (not just a non-zero exit).
+// surfaces the real error (not just a non-zero exit). The returned error wraps a
+// tail of docker's own output, so it propagates to build_events/the FTC DV callback
+// — the operator sees the real reason (e.g. `npm ci` lockfile mismatch) instead of
+// a bare "exit status 1". The full output is also logged at Error level.
 func runDocker(ctx context.Context, logger *slog.Logger, args ...string) error {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		logger.Error("docker command failed", "args", strings.Join(args, " "), "output", strings.TrimSpace(string(out)))
-		return fmt.Errorf("docker %s: %w", strings.Join(args, " "), err)
+		trimmed := strings.TrimSpace(string(out))
+		logger.Error("docker command failed", "args", strings.Join(args, " "), "output", trimmed)
+		return fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, tailLines(trimmed, 25))
 	}
 	logger.Info("docker command ok", "args", strings.Join(args, " "))
 	return nil
+}
+
+// tailLines returns the last n lines of s (prefixed with an ellipsis when truncated)
+// so a wrapped error carries the meaningful end of a build log without dumping the
+// whole thing into build_events.
+func tailLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return "…\n" + strings.Join(lines[len(lines)-n:], "\n")
 }
