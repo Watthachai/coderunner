@@ -48,6 +48,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"github.com/Watthachai/fitt-coderunner/internal/buildinfo"
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 	"github.com/Watthachai/fitt-coderunner/internal/feedback"
@@ -292,7 +293,9 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, http.StatusServiceUnavailable, "store unavailable")
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
+	// Carry the build stamp so an operator can `curl /healthz` from another box and
+	// confirm which commit this server is running (verify a deploy landed).
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"status": "ok", "build": buildinfo.Read()})
 }
 
 // handleDashboard returns the operator-console read model: vitals, in-flight

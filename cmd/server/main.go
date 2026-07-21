@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/Watthachai/fitt-coderunner/internal/api"
+	"github.com/Watthachai/fitt-coderunner/internal/buildinfo"
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/config"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
@@ -42,9 +43,11 @@ func run() error {
 	if modelLabel == "" {
 		modelLabel = "(cli default)"
 	}
+	build := buildinfo.Read()
 	logger.Info("starting CRN", "env", cfg.Environment, "addr", cfg.ListenAddr,
 		"run_claude", cfg.RunClaude, "claude_model", modelLabel,
-		"git_remote", cfg.GitRemote, "github_owner", cfg.GithubOwner)
+		"git_remote", cfg.GitRemote, "github_owner", cfg.GithubOwner,
+		"revision", build.Revision, "built", build.Time, "modified", build.Modified)
 
 	// Ensure the per-project working-dir root exists so file materialization and
 	// git pushes can write into it.

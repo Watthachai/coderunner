@@ -86,6 +86,19 @@ FITTCORE_GATEWAY_URL=http://gateway.company.local:8080
 
 ---
 
+## เช็คว่า deploy ลงจริง (build version)
+
+CRN ฝัง git revision + build time ไว้ใน binary (จาก `go build` อัตโนมัติ) — ใช้ยืนยันว่าเครื่องนั้นรัน commit ไหน หลัง `git pull` + restart:
+
+- **ตอน boot** log บรรทัด `starting CRN` มี field `revision` / `built` / `modified`
+- **จากเครื่องอื่น** `curl http://<crn-host>:8080/healthz` →
+  ```json
+  { "status": "ok", "build": { "revision": "4f1477e", "time": "2026-07-21T…Z", "modified": false } }
+  ```
+  เทียบ `revision` กับ `git rev-parse --short=7 HEAD` (หรือ commit ที่ตั้งใจ deploy). `modified: true` = build จาก working tree ที่ยังไม่ commit
+
+---
+
 ## Read-only DB user สำหรับ consumer (FITTCORE / ทีมอื่น)
 
 อย่าส่ง superuser `crn` ให้ consumer. สร้าง role อ่านอย่างเดียว (mark ได้เฉพาะ `notified_ftcdv`):
