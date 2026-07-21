@@ -393,16 +393,20 @@ export default function SkillsPage() {
     [selectedVer, versions],
   );
 
-  // Diff the selected historical version (old) against the current editor body
-  // (new) — this shows what the working copy would change relative to that
-  // revision. File add/remove is compared the same direction.
+  // Diff the selected version against the one just before it — "what this version
+  // changed". versions is newest-first, so the previous (older) revision is at the
+  // next index. The oldest version diffs against empty (its whole body is "added"),
+  // and the latest version shows its own changes rather than an empty diff-vs-editor.
   const diff = useMemo(() => {
-    if (activeVersion === null || draft === null) return null;
+    if (activeVersion === null) return null;
+    const idx = versions.findIndex((v) => v.version === activeVersion.version);
+    const prev = idx >= 0 && idx + 1 < versions.length ? versions[idx + 1] : null;
     return {
-      lines: lineDiff(activeVersion.body, draft.body),
-      files: fileChanges(activeVersion.files, draft.files),
+      prevVersion: prev?.version ?? null,
+      lines: lineDiff(prev?.body ?? "", activeVersion.body),
+      files: fileChanges(prev?.files ?? {}, activeVersion.files),
     };
-  }, [activeVersion, draft]);
+  }, [activeVersion, versions]);
 
   return (
     <main className="console">
@@ -722,7 +726,9 @@ export default function SkillsPage() {
                     {activeVersion !== null && diff !== null ? (
                       <div className="ver-diff">
                         <p className="diff-caption">
-                          diff · v{activeVersion.version} → current editor body
+                          {diff.prevVersion === null
+                            ? `diff · initial → v${activeVersion.version}`
+                            : `diff · v${diff.prevVersion} → v${activeVersion.version}`}
                         </p>
                         <pre className="diff mono scroll-thin">
                           {diff.lines.map((ln, i) => (
