@@ -160,8 +160,36 @@ CRN_FTC_DV_CALLBACK_TOKEN=<token>
 
 ---
 
+## §4 · สั่ง edit build (feedback → แก้ demo เดิม)
+
+เมื่อ FTC DV ตัดสินใจเอา feedback ไปแก้ → **POST edit request มา CRN** → CRN รัน edit build (clone repo เดิม + ให้ Claude แก้ตาม `change` + push branch เดิม → build image ใหม่) → callback เหมือน build ปกติ
+
+**Endpoint** (trusted-network `/internal/*` เหมือน ingest — ไม่มี auth):
+```
+POST /internal/projects/{project_id}/edit
+Content-Type: application/json
+
+{ "change": "<free-text: จะแก้อะไร>" }
+```
+
+- **`change` เป็น string เดียว** (free-text = คำสั่งแก้ที่ Claude ทำตาม) — required. compose จาก feedback เอง เช่น
+  `"[bug/high] ปุ่มบันทึก (button.save) กดแล้วไม่ทำงาน — แก้ให้ทำงาน"`. หลาย feedback → รวมเป็น 1 `change` (edit build เดียว) หรือ POST หลายครั้ง
+- **ไม่ต้องแนบ artifacts** (brd/prd/prompts/zip) — CRN clone repo ที่แปลงไว้แล้วของ project นั้น (ต้องเคย build สำเร็จมาก่อน) แล้ว resume Claude session เดิม apply แค่ `change`
+- CRN สร้าง payload `{mode:"edit", change, name}` ให้เองภายใน — **FTC DV ไม่ต้องส่ง `mode`**
+
+**Response `202`:**
+```json
+{ "job_id": "<uuid>", "build_no": 8, "git_branch": "crn/<slug>-<id8>", "status": "queued" }
+```
+
+**Callback — ✅ เหมือน build ปกติ:** edit build วิ่งผ่าน runJob เดียวกัน → ยิง `build_events` (`build_started`/`build_done`) + HTTP callback (§3) `building` → `released` พร้อม **`image_ref` ใหม่** (`:v<build_no>`) + `git_remote`/`git_branch`/`env`. poll ด้วย `job_id` ที่ได้จาก `202`
+
+> **ทางเลือก (tenant API, API-key auth):** `POST /api/v1/projects/{id}/edit-request` body `{requester, diff_request, priority}` — `diff_request` เป็น raw JSON ที่ต้องมี `{"mode":"edit","change":"…"}` เอง. ใช้เมื่อผ่าน per-org API key แทน trusted network. response `202 {edit_request_id, job_id, build_no, status}`. **แนะนำใช้ `/internal/.../edit` ถ้าเพื่อนต่อผ่าน `INGEST_CRN_URL` อยู่แล้ว** (ง่ายกว่า, body แค่ `change`)
+
+---
+
 ## อ้างอิงโค้ด
-- `internal/api/api.go` — `handleIngest`, route `POST /internal/projects`, decoder `DisallowUnknownFields`
+- `internal/api/api.go` — `handleIngest` (`POST /internal/projects`) · `handleEditProject` (`POST /internal/projects/{id}/edit`, §4) · `handleEditRequest` (`POST /api/v1/projects/{id}/edit-request`)
 - `internal/store/store.go` — `Notify` → `INSERT build_events` + `pg_notify`
 - `migrations/0001_init.sql` — ตาราง `build_events` + `CHECK (event_type IN (...))`
 - `internal/config/config.go` — env ทั้งหมด (ทุกตัวขึ้นต้น `CRN_*`)
