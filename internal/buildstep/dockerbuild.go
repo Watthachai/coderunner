@@ -24,8 +24,10 @@ import (
 // public, so source files never land in the image. Kept in sync with the
 // fitt-build skill's assets/Dockerfile.
 const productionDockerfile = `# Auto-written by FITT Code Runner — production image for this demo.
-# Multi-stage build for a Next.js (App Router) app using output: "standalone".
-# The runner copies ONLY the compiled standalone output — no source ships.
+# Multi-stage: build the Next.js standalone app, then a lean runner that also
+# self-migrates the schema on start (prisma db push) against an EXTERNAL Postgres
+# (DATABASE_URL injected at run time). Only the compiled standalone output + the
+# DB layer (schema/seed/prisma CLI) ship — no app source (.tsx).
 FROM node:20-alpine AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -41,20 +43,45 @@ RUN npx prisma generate 2>/dev/null || true
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
+# dbtools: prisma CLI + tsx (for seed) installed in isolation so migrate-on-start
+# works WITHOUT shipping the full dev node_modules. Versions follow the app's
+# package.json ranges. --ignore-scripts so a postinstall (prisma generate) doesn't
+# run here (no schema present).
+FROM node:20-alpine AS dbtools
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --no-save --ignore-scripts --no-audit --no-fund prisma tsx
+
 FROM node:20-alpine AS runner
 WORKDIR /app
+# openssl + libc6-compat: prisma's schema engine needs them at run time (db push).
+RUN apk add --no-cache libc6-compat openssl
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
+# DB tooling first so the app's traced node_modules (standalone, copied next) wins
+# for any shared dependency; prisma + tsx (absent from standalone) remain.
+COPY --from=dbtools --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# DB layer for migrate-on-start (no app source): schema + seed + the seed config in
+# package.json. The skill guarantees a prisma/ dir on every build.
+COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
+COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
+# Entrypoint: sync schema to the external DB then serve. db push runs WITHOUT the
+# destructive-drop flag, so an additive change applies (data kept) while a destructive
+# one FAILS LOUDLY (container won't start) instead of silently dropping data. Seed
+# only when DEMO_SEED=1 (idempotent upsert). No-op migrate when the app has no Prisma.
+RUN printf '#!/bin/sh\nset -e\nif [ -f prisma/schema.prisma ]; then\n  echo "[crn] migrate-on-start: prisma db push"\n  npx prisma db push --skip-generate\n  if [ "${DEMO_SEED:-0}" = "1" ]; then echo "[crn] seeding demo data"; npx prisma db seed || echo "[crn] seed failed (continuing)"; fi\nfi\nexec node server.js\n' > /app/docker-entrypoint.sh \
+  && chmod +x /app/docker-entrypoint.sh \
+  && chown nextjs:nodejs /app/docker-entrypoint.sh
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-CMD ["node", "server.js"]
+CMD ["/app/docker-entrypoint.sh"]
 `
 
 const dockerIgnore = `node_modules
@@ -67,77 +94,21 @@ Dockerfile
 npm-debug.log
 `
 
-// migrateDockerfile packages ONLY the DB layer (prisma CLI + schema + seed) —
-// no app source. On the customer's machine it runs `prisma db push` (sync schema)
-// then `prisma db seed` and exits.
-//
-// Why db push, not migrate deploy: the harness regenerates a single squashed
-// schema every build (no committed migration history). migrate deploy would need
-// a baked `0_init` migration whose content changes across versions but keeps the
-// same name — so upgrading the demo to a new image version checksum-FAILS ("migration
-// modified after applied") even for purely additive schema changes, and the demo
-// won't start. db push has no migration history/checksum: it diffs the LIVE DB
-// against the schema each run, applying additive deltas cleanly. It is NOT given
-// --accept-data-loss, so a destructive change (dropped column/table) errors loudly
-// for the operator to handle rather than silently dropping customer data. The seed
-// uses upsert keyed by a stable id, so re-running on every start is safe.
-const migrateDockerfile = `# Auto-written by FITT Code Runner — DB migrate+seed for this demo.
-# Runs once against the customer's Postgres (migrate-on-start), then exits.
-# Contains only the DB layer (prisma) — no app source ships.
-FROM node:20-alpine
-RUN apk add --no-cache libc6-compat openssl
-WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --ignore-scripts
-COPY prisma ./prisma
-RUN npx prisma generate
-# db push syncs the schema to the live DB (no migration history/checksum) so version
-# upgrades apply additive deltas cleanly; --skip-generate reuses the client baked above.
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npx prisma db seed"]
-`
-
-// customerCompose is the self-contained runner the customer gets: Postgres (data
-// in a named volume) + a one-shot migrate service (schema+seed) + the opaque app
-// image. app waits for migrate to finish. Placeholders are rendered per build.
-const customerCompose = `# Auto-generated by FITT Code Runner — run this demo on your own machine/LAN.
-#   docker compose -f docker-compose.customer.yml up -d
-# No source ships (app is a compiled image); your data stays in the dbdata volume.
+// customerCompose runs the delivered demo against an EXTERNAL Postgres the operator
+// supplies via DATABASE_URL — no bundled database, no separate migrate service. The
+// app image self-migrates (prisma db push) on start. Placeholders rendered per build.
+const customerCompose = `# Auto-generated by FITT Code Runner — run this demo against your OWN Postgres.
+#   DATABASE_URL=postgresql://user:pass@host:5432/db docker compose -f docker-compose.customer.yml up -d
+# No source ships (app is a compiled image). The app self-migrates its schema on start
+# (prisma db push); set DEMO_SEED=1 to also load example data.
 services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: app
-      POSTGRES_DB: app
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app -d app"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    volumes:
-      - dbdata:/var/lib/postgresql/data
-
-  migrate:
-    image: {{MIGRATE_IMAGE}}
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: "postgresql://app:app@db:5432/app?schema=public"
-    restart: "no"
-
   app:
     image: {{APP_IMAGE}}
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
     environment:
-      DATABASE_URL: "postgresql://app:app@db:5432/app?schema=public"
+      DATABASE_URL: "${DATABASE_URL:?set DATABASE_URL to your Postgres, e.g. postgresql://user:pass@host:5432/db}"
+      # DEMO_SEED: "1"   # uncomment to load example seed data on start
     ports:
       - "${APP_PORT:-{{PORT}}}:3000"
-
-volumes:
-  dbdata:
 `
 
 // DemoEnvExample is the runtime env contract for the delivered demo image — an
@@ -166,43 +137,43 @@ func NewDemoEnvExample(port int) DemoEnvExample {
 
 const installMD = `# INSTALL — รัน demo นี้บนเครื่องคุณ
 
-Bundle นี้รัน demo ทั้งหมดในเครื่อง/วงแลนของคุณเอง: **ไม่มี source code** (app เป็น image ที่ compile แล้ว), **data อยู่ใน Postgres volume ในเครื่องคุณ**.
+App เป็น image ที่ compile แล้ว (**ไม่มี source code**) และ **self-migrate**: ตอน start มัน
+รัน ` + "`prisma db push`" + ` สร้าง/sync schema ใส่ **Postgres ของคุณเอง** (ต่อผ่าน ` + "`DATABASE_URL`" + `) แล้วค่อยเปิด demo.
 
 ## ต้องมี
-- Docker + Docker Compose
+- Docker (+ Compose ถ้าใช้ compose)
+- **Postgres ของคุณเอง** + database ว่าง 1 อัน + connection string (` + "`DATABASE_URL`" + `)
 - เข้าถึง image registry ได้ (หรือมีไฟล์ image tarball)
 
-## รัน
+## รัน (docker run)
 ` + "```bash" + `
 # ถ้า registry ต้อง login (deploy token):
 docker login {{REGISTRY}} -u <user> -p <token>
 
-# start ทั้งหมด (Postgres + schema/seed + app):
-docker compose -f docker-compose.customer.yml up -d
+docker run -d -p {{PORT}}:3000 \
+  -e DATABASE_URL="postgresql://user:pass@host:5432/db" \
+  {{APP_IMAGE}}
 ` + "```" + `
 เปิด http://localhost:{{PORT}}
 
-## เกิดอะไรขึ้น
-1. ` + "`db`" + ` — Postgres start (data เก็บใน volume ` + "`dbdata`" + `)
-2. ` + "`migrate`" + ` — สร้าง schema + seed data แล้ว exit (รันครั้งเดียว)
-3. ` + "`app`" + ` — demo, start หลัง migrate เสร็จ
+## รัน (compose)
+` + "```bash" + `
+DATABASE_URL="postgresql://user:pass@host:5432/db" \
+  docker compose -f docker-compose.customer.yml up -d
+` + "```" + `
+
+## เกิดอะไรขึ้นตอน start
+1. app รัน ` + "`prisma db push`" + ` → สร้าง/sync schema ใน DB ของคุณ (additive = data เดิมอยู่ครบ)
+2. (ถ้า ` + "`DEMO_SEED=1`" + `) โหลด seed data ตัวอย่าง
+3. เปิด demo ที่ port
 
 ## อัปเดตเป็นเวอร์ชันใหม่
-เปลี่ยน tag ` + "`:v<n>`" + ` ใน ` + "`docker-compose.customer.yml`" + ` แล้ว ` + "`up -d`" + ` ใหม่ — data ใน ` + "`dbdata`" + ` อยู่ครบ
+เปลี่ยน tag ` + "`:v<n>`" + ` (docker run/compose) แล้วรันใหม่ ชี้ ` + "`DATABASE_URL`" + ` เดิม — additive change data อยู่ครบ
 
-## ⚠️ ห้าม
-- ` + "`docker compose down -v`" + ` — ` + "`-v`" + ` ลบ volume = **ล้าง data ทิ้ง**
+## ⚠️ ข้อควรรู้
+- schema เปลี่ยนแบบ **destructive** (ลบ/rename column ที่มี data) → ` + "`db push`" + ` จะ **fail ไม่ start** (กัน data หาย) ไม่ drop เงียบ — ต้อง migrate มือ
+- **backup DB ก่อนอัปเวอร์ชัน** ที่มี schema เปลี่ยนใหญ่
 `
-
-// MigrateImageTag is the companion migrate image's tag: the app tag with a
-// "-migrate" suffix on the repo (e.g. ".../crn-demo-<slug>-<id8>-migrate:v<n>").
-func MigrateImageTag(registry, name, projectID string, buildNo int) string {
-	t := DemoImageTag(registry, name, projectID, buildNo)
-	if i := strings.LastIndex(t, ":v"); i >= 0 {
-		return t[:i] + "-migrate" + t[i:]
-	}
-	return t + "-migrate"
-}
 
 // DemoImageTag builds the image tag for a build:
 // "<registry>/crn-demo-<slug>-<id8>:v<n>" (registry omitted when empty -> a
@@ -272,15 +243,15 @@ func IsNextApp(dir string) bool {
 
 // WriteImageBundle writes CRN's deterministic on-prem delivery bundle into dir,
 // overwriting any model-produced versions:
-//   - Dockerfile             (opaque app image — standalone, no source)
+//   - Dockerfile             (opaque, self-migrating app image — standalone, no source)
 //   - .dockerignore
-//   - Dockerfile.migrate     (DB schema+seed image — no app source)
-//   - docker-compose.customer.yml (Postgres + migrate + app; customer runs this)
+//   - docker-compose.customer.yml (app only; points at the operator's external Postgres)
 //   - INSTALL.md
-// appImage/migrateImage are the (deterministic) tags the pipeline will build+push;
-// registry + port are rendered into the compose/INSTALL. Returns false (no error)
-// when dir is not a Next app — nothing to bundle.
-func WriteImageBundle(dir, appImage, migrateImage, registry string, port int, logger *slog.Logger) (bool, error) {
+// appImage is the (deterministic) tag the pipeline will build+push; registry + port
+// are rendered into the compose/INSTALL. The app image self-migrates on start, so
+// there is no separate migrate image. Returns false (no error) when dir is not a
+// Next app — nothing to bundle.
+func WriteImageBundle(dir, appImage, registry string, port int, logger *slog.Logger) (bool, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -289,14 +260,12 @@ func WriteImageBundle(dir, appImage, migrateImage, registry string, port int, lo
 	}
 	rep := strings.NewReplacer(
 		"{{APP_IMAGE}}", appImage,
-		"{{MIGRATE_IMAGE}}", migrateImage,
 		"{{REGISTRY}}", registry,
 		"{{PORT}}", strconv.Itoa(port),
 	)
 	for _, f := range []struct{ name, body string }{
 		{"Dockerfile", productionDockerfile},
 		{".dockerignore", dockerIgnore},
-		{"Dockerfile.migrate", migrateDockerfile},
 		{"docker-compose.customer.yml", rep.Replace(customerCompose)},
 		{"INSTALL.md", rep.Replace(installMD)},
 	} {

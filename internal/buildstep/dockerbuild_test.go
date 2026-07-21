@@ -54,65 +54,68 @@ func TestIsNextApp(t *testing.T) {
 	}
 }
 
-func TestMigrateImageTag(t *testing.T) {
-	const pid = "cc0b6195-46b4-4c29-a167-c0dd321d10d9"
-	got := MigrateImageTag("reg/fitt/demos", "Shop", pid, 3)
-	want := "reg/fitt/demos/crn-demo-shop-cc0b6195-migrate:v3"
-	if got != want {
-		t.Errorf("MigrateImageTag = %q, want %q", got, want)
-	}
-}
-
 func TestWriteImageBundle(t *testing.T) {
 	const appImg = "reg/fitt/demos/crn-demo-shop-cc0b6195:v3"
-	const migImg = "reg/fitt/demos/crn-demo-shop-cc0b6195-migrate:v3"
 
 	// Non-next app: skipped, nothing written.
 	static := t.TempDir()
 	writePkg(t, static, `{"dependencies":{"vite":"^5"}}`)
-	if wrote, err := WriteImageBundle(static, appImg, migImg, "reg", 4123, nil); err != nil || wrote {
+	if wrote, err := WriteImageBundle(static, appImg, "reg", 4123, nil); err != nil || wrote {
 		t.Fatalf("non-next: wrote=%v err=%v, want false/nil", wrote, err)
 	}
 	if _, err := os.Stat(filepath.Join(static, "Dockerfile")); err == nil {
 		t.Error("bundle written for a non-next app")
 	}
 
-	// Next app: full bundle written.
+	// Next app: full bundle written (no separate migrate image — app self-migrates).
 	next := t.TempDir()
 	writePkg(t, next, `{"dependencies":{"next":"16"}}`)
-	wrote, err := WriteImageBundle(next, appImg, migImg, "reg", 4123, nil)
+	wrote, err := WriteImageBundle(next, appImg, "reg", 4123, nil)
 	if err != nil || !wrote {
 		t.Fatalf("next: wrote=%v err=%v, want true/nil", wrote, err)
 	}
-	for _, f := range []string{"Dockerfile", ".dockerignore", "Dockerfile.migrate", "docker-compose.customer.yml", "INSTALL.md"} {
+	for _, f := range []string{"Dockerfile", ".dockerignore", "docker-compose.customer.yml", "INSTALL.md"} {
 		if _, err := os.Stat(filepath.Join(next, f)); err != nil {
 			t.Errorf("%s not written: %v", f, err)
 		}
 	}
-	// App Dockerfile ships only the standalone output (no source).
-	df, _ := os.ReadFile(filepath.Join(next, "Dockerfile"))
-	if !strings.Contains(string(df), ".next/standalone") {
-		t.Error("app Dockerfile should copy the standalone output")
+	// No separate migrate image is written anymore.
+	if _, err := os.Stat(filepath.Join(next, "Dockerfile.migrate")); err == nil {
+		t.Error("Dockerfile.migrate should NOT be written (app self-migrates)")
 	}
-	// Migrate Dockerfile runs db push + seed, copies only prisma (no app source).
-	mf, _ := os.ReadFile(filepath.Join(next, "Dockerfile.migrate"))
-	if !strings.Contains(string(mf), "prisma db push") || !strings.Contains(string(mf), "prisma db seed") {
-		t.Error("migrate Dockerfile should db push + seed")
+	// App Dockerfile ships only the standalone output (no source) and self-migrates
+	// on start via a data-safe db push (no --accept-data-loss).
+	df := readFile(t, filepath.Join(next, "Dockerfile"))
+	for _, want := range []string{".next/standalone", "prisma db push", "node server.js"} {
+		if !strings.Contains(df, want) {
+			t.Errorf("app Dockerfile missing %q", want)
+		}
 	}
-	if strings.Contains(string(mf), "COPY . .") {
-		t.Error("migrate Dockerfile must NOT copy the whole app source")
+	if strings.Contains(df, "--accept-data-loss") {
+		t.Error("app Dockerfile must NOT use --accept-data-loss (data-safe migrate)")
 	}
-	// Customer compose references both images + the rendered port, no leftover placeholders.
-	cc, _ := os.ReadFile(filepath.Join(next, "docker-compose.customer.yml"))
-	s := string(cc)
-	for _, want := range []string{appImg, migImg, ":-4123}:3000", "service_completed_successfully"} {
+	// Customer compose is app-only against an external DATABASE_URL — no bundled DB,
+	// no migrate service, rendered port, no leftover placeholders.
+	s := readFile(t, filepath.Join(next, "docker-compose.customer.yml"))
+	for _, want := range []string{appImg, "DATABASE_URL", ":-4123}:3000"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("customer compose missing %q", want)
 		}
 	}
-	if strings.Contains(s, "{{") {
-		t.Error("customer compose has an unrendered placeholder")
+	for _, unwanted := range []string{"postgres:16", "service_completed_successfully", "{{"} {
+		if strings.Contains(s, unwanted) {
+			t.Errorf("customer compose should not contain %q", unwanted)
+		}
 	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
 }
 
 func writePkg(t *testing.T, dir, body string) {

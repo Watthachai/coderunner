@@ -46,9 +46,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 # If the app uses Prisma at runtime, the generated client + engines are already
-# traced into ./node_modules by standalone output. Schema is applied separately by
-# CRN's DB migrate image (`npx prisma db push` + `prisma db seed`) before the app
-# starts — this app image never touches the DB.
+# traced into ./node_modules by standalone output. The image CRN actually produces is
+# SELF-MIGRATING: its entrypoint runs `prisma db push` (data-safe) against the external
+# DATABASE_URL, optionally `prisma db seed` when DEMO_SEED=1, then `node server.js`.
+# (This reference keeps the plain `node server.js` CMD for illustration.)
 
 USER nextjs
 EXPOSE 3000
