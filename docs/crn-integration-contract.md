@@ -105,7 +105,7 @@ UPDATE build_events SET notified_ftcdv = true WHERE id = $1;
 |---|---|
 | `job_id` | uuid ของงาน (ตรงกับ `job_id` ใน response §1) |
 | `event_type` | **`build_started` \| `build_done` \| `build_failed` \| `build_cancelled`** (บังคับด้วย DB CHECK) |
-| `payload` (jsonb) | `build_done` → `{cost_usd, session_id, image_ref, git_remote, git_branch}` · `build_failed` → `{error}` · `build_cancelled` → `{reason}` |
+| `payload` (jsonb) | `build_done` → `{cost_usd, session_id, image_ref, git_remote, git_branch, env}` · `build_failed` → `{error}` · `build_cancelled` → `{reason}` |
 
 > **`image_ref` (ใน `build_done`)** = docker image tag ที่ pull ได้ เมื่อเปิด image pipeline (`CRN_BUILD_IMAGE`) เช่น `172.168.1.234:5050/fitt/demos/crn-demo-<slug>-<id8>:v<n>` — consumer `docker pull` จากตรงนี้ได้เลย. **status = `event_type`** (`build_started`=กำลัง build · `build_done`=เสร็จ · `build_failed` · `build_cancelled`) — ไม่ต้องรอ HTTP callback
 >
@@ -132,10 +132,16 @@ Content-Type: application/json
   "build_no": 7,
   "git_remote": "https://github.com/owner/repo.git",  // เฉพาะ released
   "git_branch": "main",                                 // เฉพาะ released
-  "image_ref": "branch:…",   // ใส่มาถ้ามี docker_tag
+  "image_ref": "…:v4",       // ใส่มาถ้ามี docker_tag
+  "env": {                    // เฉพาะ released — example runtime env ของ image
+    "DATABASE_URL": "postgresql://USER:PASSWORD@HOST:5432/DB?schema=public",
+    "PORT": "3000",           // port ที่ app listen ใน container (fixed)
+    "APP_PORT": "4123"        // host port แนะนำ → map ไป container 3000 (ต่อ-project)
+  },
   "message": "…" }           // ใส่มาเฉพาะตอน failed
 ```
 - แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
+- **`env` (เฉพาะ `released`)** = **example** runtime env ที่ image ต้องใช้ — operator inject ค่าจริงตอนรัน (ไม่มี bake ในภาพ). `DATABASE_URL` บังคับ (app + migrate image อ่าน); app listen container port `3000`, host เปิด `APP_PORT` (ต่อ-project). ตรงกับ `docker-compose.customer.yml` ที่ CRN เขียน
 - **โหมด image (`CRN_BUILD_IMAGE` เปิด — แนะนำ):** ใช้ `image_ref` → `docker pull` แล้วรันได้เลย **ไม่ต้อง clone git**. `image_ref` บน `released` เป็น image จริงที่ pull ได้เสมอ (build ล้มถ้า image สร้าง/push ไม่ได้)
 - **`git_remote`/`git_branch` ใส่มาเฉพาะตอน `released`** (โหมด git legacy — เมื่อ **ปิด** image pipeline) = repo/branch จริงที่ build push ไป (ถูกทั้งโหมด **shared** และ **owner**) → FTC DV clone จากค่านี้ ไม่ใช่ค่าใน `202` (โหมด owner ค่าใน 202 เป็น shared remote ซึ่งไม่ตรง). **เมื่อเปิด image pipeline ไม่ต้องใช้เส้นนี้**
 - **best-effort**: ยิงไม่ผ่าน (หรือได้ non-2xx) = log แล้วปล่อย ไม่ล้ม build — `build_events` ยังเป็นแหล่งความจริงเสมอ

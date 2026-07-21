@@ -357,7 +357,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	job.Status = domain.JobBuilding
 	m.notify(ctx, job.ID, domain.EventBuildStarted, nil)
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "building", "")
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "building", "", nil)
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSBuildPhase,
 		Phase:     string(domain.JobBuilding),
@@ -654,8 +654,9 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
-	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, pushRemote, pushBranch, "released", "")
+	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
+	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, envEx))
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, pushRemote, pushBranch, "released", "", envEx)
 
 	// Snapshot the full live event stream + derived summary into the durable
 	// trace store BEFORE closeSubscribers discards the in-memory buffer. This is
@@ -697,7 +698,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", errMsg)
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", errMsg, nil)
 
 	// Persist the trace for the failed build too — the operator needs to see how
 	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
@@ -730,7 +731,7 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, costUSD 
 	// "cancelled" not "failed"); the FTC HTTP callback maps to "failed" since its
 	// vocabulary is only building/released/failed.
 	m.notify(ctx, job.ID, domain.EventBuildCancelled, cancelledPayload(msg))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", msg)
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", msg, nil)
 
 	m.saveTrace(ctx, job, traceMeta{cost: costUSD, errMsg: msg})
 	m.closeSubscribers(job.ID)
@@ -926,7 +927,7 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 	}
 	for _, o := range orphans {
 		m.notify(ctx, o.ID, domain.EventBuildFailed, failedPayload(msg))
-		go m.ftcCallback(o.ID, o.BuildNo, o.DockerTag, "", "", "failed", msg)
+		go m.ftcCallback(o.ID, o.BuildNo, o.DockerTag, "", "", "failed", msg, nil)
 	}
 	if len(orphans) > 0 {
 		m.logger.Warn("reconciled orphaned builds on startup", "count", len(orphans))
@@ -1097,7 +1098,7 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 // ("building" / "released" / "failed").
 // Takes job fields by value so callers can dispatch it in a goroutine (it is
 // best-effort telemetry — never block the build lifecycle on a slow FTC DV).
-func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, gitRemote, gitBranch, status, message string) {
+func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, gitRemote, gitBranch, status, message string, env any) {
 	if m.ftcdvCallbackURL == "" {
 		return
 	}
@@ -1111,6 +1112,11 @@ func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, gitRemote,
 	}
 	if imageRef != "" {
 		payload["image_ref"] = imageRef
+	}
+	// On "released", the example runtime env contract for the delivered image
+	// (DATABASE_URL + ports) so FTC DV knows what to inject to run it.
+	if env != nil {
+		payload["env"] = env
 	}
 	// On "released", carry the ACTUAL push target so FTC DV clones the right repo
 	// regardless of git model (owner: per-project repo + "main"; shared:
@@ -1681,7 +1687,7 @@ func truncateOneLine(s string, max int) string {
 
 // donePayload builds the build_done event payload (cost + session) for the
 // central DB.
-func donePayload(r domain.RunResult, imageRef, gitRemote, gitBranch string) json.RawMessage {
+func donePayload(r domain.RunResult, imageRef, gitRemote, gitBranch string, env any) json.RawMessage {
 	b, err := json.Marshal(struct {
 		CostUSD   float64 `json:"cost_usd"`
 		SessionID string  `json:"session_id,omitempty"`
@@ -1691,12 +1697,16 @@ func donePayload(r domain.RunResult, imageRef, gitRemote, gitBranch string) json
 		ImageRef  string `json:"image_ref,omitempty"`
 		GitRemote string `json:"git_remote,omitempty"`
 		GitBranch string `json:"git_branch,omitempty"`
+		// Env is the example runtime env contract for the delivered image (e.g.
+		// DATABASE_URL + ports) so a consumer knows what to inject at run time.
+		Env any `json:"env,omitempty"`
 	}{
 		CostUSD:   r.CostUSD,
 		SessionID: r.SessionID,
 		ImageRef:  imageRef,
 		GitRemote: gitRemote,
 		GitBranch: gitBranch,
+		Env:       env,
 	})
 	if err != nil {
 		return nil

@@ -140,6 +140,30 @@ volumes:
   dbdata:
 `
 
+// DemoEnvExample is the runtime env contract for the delivered demo image — an
+// example a consumer (FTC DV) can adapt. The operator supplies the real values at
+// run time (compose/orchestrator); NONE of these are baked into the image. Mirrors
+// what customerCompose injects, so keep the two in step.
+type DemoEnvExample struct {
+	// DatabaseURL is REQUIRED — both the app and the migrate image read it.
+	DatabaseURL string `json:"DATABASE_URL"`
+	// Port is the port the app listens on INSIDE the container (fixed).
+	Port string `json:"PORT"`
+	// AppPort is the suggested HOST port to publish → container 3000 (per-project,
+	// avoids collisions); override freely.
+	AppPort string `json:"APP_PORT"`
+}
+
+// NewDemoEnvExample builds the env contract for a demo whose per-project host port
+// is `port` (from ScaffoldPort).
+func NewDemoEnvExample(port int) DemoEnvExample {
+	return DemoEnvExample{
+		DatabaseURL: "postgresql://USER:PASSWORD@HOST:5432/DB?schema=public",
+		Port:        "3000",
+		AppPort:     strconv.Itoa(port),
+	}
+}
+
 const installMD = `# INSTALL — รัน demo นี้บนเครื่องคุณ
 
 Bundle นี้รัน demo ทั้งหมดในเครื่อง/วงแลนของคุณเอง: **ไม่มี source code** (app เป็น image ที่ compile แล้ว), **data อยู่ใน Postgres volume ในเครื่องคุณ**.
