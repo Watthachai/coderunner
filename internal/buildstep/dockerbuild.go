@@ -293,7 +293,11 @@ const imagePlatform = "linux/amd64"
 // <dir>`, streaming combined output to the logger. Requires a Docker daemon +
 // buildx on the host.
 func BuildImage(ctx context.Context, dir, dockerfile, tag string, logger *slog.Logger) error {
-	return runDocker(ctx, logger, "build", "--platform", imagePlatform, "-f", dockerfile, "-t", tag, dir)
+	// -f is resolved relative to the docker process's CWD, NOT the build context. CRN
+	// runs from its own repo root (which has a Go server Dockerfile), so a bare
+	// "Dockerfile" would match THAT instead of the workspace's — build the wrong
+	// image. Always pass the context-absolute path.
+	return runDocker(ctx, logger, "build", "--platform", imagePlatform, "-f", filepath.Join(dir, dockerfile), "-t", tag, dir)
 }
 
 // PushImage runs `docker push tag`. The host must already be `docker login`'d to
