@@ -61,6 +61,42 @@ runtime if the schema declared `created_at` (and vice-versa).
   `@map`: `createdAt DateTime @default(now()) @map("created_at")` — but consistency
   beats cleverness; prefer plain snake_case throughout.
 
+### Every REQUIRED field needs a type-appropriate `@default` (upgrade-safety — critical)
+
+The delivered image self-migrates with `prisma db push` on every start against a DB
+that may **already hold rows** from a previous version. Adding a new REQUIRED (non-null)
+column to a populated table FAILS unless the column has a `@default` — Postgres can't
+backfill the existing rows, so `db push` errors and the demo won't start. Give every
+required scalar/enum/list field a default so a later version can add columns and
+`db push` backfills the old rows cleanly (data kept, no reset, no crash):
+
+| type | default to use |
+|---|---|
+| `String` | `@default("")` |
+| `Int` / `BigInt` | `@default(0)` |
+| `Float` / `Decimal` | `@default(0)` |
+| `Boolean` | `@default(false)` |
+| `DateTime` | `@default(now())` |
+| `Enum` | a REAL declared variant, e.g. `@default(ACTIVE)` |
+| `String[]` / list | `@default([])` |
+| `Json` | `@default("{}")` (or make it optional) |
+| **relation / foreign-key** | ❌ no `@default` possible → make it **optional** (`foo T?`) |
+
+Rules:
+- **Pick the default BY TYPE — never slap `@default("")` on everything** (`""` is only
+  valid for `String`; on an `Int`/`Boolean`/`DateTime` it's a schema error).
+- Fields that genuinely can't have a sensible default (foreign keys, or a value that
+  must be unique/computed) → declare them **optional** (`?`) instead of required, so
+  `db push` can still add them to existing rows.
+- **Caveat (be honest in `BUILD_NOTES.md`):** a default only makes the *add-column*
+  case safe. On a security-ish column (e.g. `password_hash @default("")`) the backfilled
+  rows get an empty/garbage value — fine for a demo (the seed re-upserts real rows, and
+  login is the standardized env check), but note it.
+- This does NOT cover DESTRUCTIVE changes (dropping/renaming a column, narrowing a type,
+  adding `@unique` to a column with duplicates) — those are a data-migration problem, not
+  a backfill, and `db push` will still refuse them (data-safe). That's expected; the
+  operator handles those rarer cases.
+
 ## 3. Prisma client singleton — `lib/prisma.ts`
 
 Next.js dev hot-reload re-imports modules, which would open a new pool each time. Use the standard global singleton:
@@ -217,8 +253,11 @@ against the schema directly. Match that model:
   regenerate-each-build pipeline can't keep consistent (a re-squashed init migration
   fails the checksum on the next version). One way only: `schema.prisma` is the
   single source of truth.
-- Additive schema changes across versions apply cleanly and keep the data; a
-  **destructive** change (dropped/retyped column with data) makes `db push` error
+- Additive schema changes across versions apply cleanly and keep the data — **but
+  only if every required column has a `@default` (§2)**; without it, adding a required
+  column to a populated table makes `db push` fail on start. This is why the §2 default
+  rule is mandatory.
+- A **destructive** change (dropped/retyped column with data) makes `db push` error
   and the container refuse to start rather than lose data — that's intended and
   data-safe, the operator handles it.
 - `db push` / `db seed` need a reachable DB, so they NEVER run inside `next build` —
