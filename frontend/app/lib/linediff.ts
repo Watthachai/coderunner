@@ -3,11 +3,41 @@
 // lines. Kept dependency-free and readable — this is display-only, not a patch
 // format.
 
-export type DiffKind = "add" | "del" | "ctx";
+export type DiffKind = "add" | "del" | "ctx" | "gap";
 
 export interface DiffLine {
   kind: DiffKind;
   text: string;
+}
+
+/**
+ * collapse hides long runs of unchanged context so the diff reads like a git
+ * hunk view: it keeps `context` lines around every change and replaces the rest
+ * with a single "gap" marker line. Returns [] when there is nothing changed.
+ */
+export function collapse(lines: DiffLine[], context = 3): DiffLine[] {
+  const changed: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].kind !== "ctx") changed.push(i);
+  }
+  if (changed.length === 0) return [];
+  const keep = new Set<number>();
+  for (const idx of changed) {
+    const lo = Math.max(0, idx - context);
+    const hi = Math.min(lines.length - 1, idx + context);
+    for (let j = lo; j <= hi; j++) keep.add(j);
+  }
+  const out: DiffLine[] = [];
+  let last = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!keep.has(i)) continue;
+    if (last >= 0 && i - last > 1) {
+      out.push({ kind: "gap", text: `⋯ ${i - last - 1} unchanged` });
+    }
+    out.push(lines[i]);
+    last = i;
+  }
+  return out;
 }
 
 function splitLines(text: string): string[] {
@@ -76,12 +106,14 @@ export function lineDiff(oldText: string, newText: string): DiffLine[] {
 export interface FileChanges {
   added: string[];
   removed: string[];
+  modified: string[]; // same path, different content
 }
 
 /**
- * fileChanges compares two file maps by key: paths present only in `next` are
- * added, paths present only in `prev` are removed. Content changes are not
- * reported here (the diff view focuses on SKILL.md body).
+ * fileChanges compares two file maps: paths only in `next` are added, paths only
+ * in `prev` are removed, and paths in both with different content are modified
+ * (the caller can line-diff those). This is what surfaces a change to a reference
+ * file (e.g. prisma-setup.md) even when SKILL.md itself is unchanged.
  */
 export function fileChanges(
   prev: Record<string, string>,
@@ -89,13 +121,19 @@ export function fileChanges(
 ): FileChanges {
   const added: string[] = [];
   const removed: string[] = [];
+  const modified: string[] = [];
   for (const path of Object.keys(next)) {
-    if (!Object.prototype.hasOwnProperty.call(prev, path)) added.push(path);
+    if (!Object.prototype.hasOwnProperty.call(prev, path)) {
+      added.push(path);
+    } else if (prev[path] !== next[path]) {
+      modified.push(path);
+    }
   }
   for (const path of Object.keys(prev)) {
     if (!Object.prototype.hasOwnProperty.call(next, path)) removed.push(path);
   }
   added.sort();
   removed.sort();
-  return { added, removed };
+  modified.sort();
+  return { added, removed, modified };
 }

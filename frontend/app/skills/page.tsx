@@ -16,7 +16,40 @@ import {
 } from "../lib/config";
 import { useSkills } from "../lib/useSkills";
 import type { Skill, SkillVersion } from "../lib/types";
-import { fileChanges, lineDiff } from "../lib/linediff";
+import { collapse, fileChanges, lineDiff } from "../lib/linediff";
+import type { DiffLine } from "../lib/linediff";
+
+// Renders one collapsed diff as a <pre> of +/-/context/gap lines.
+function DiffPre({ lines }: { lines: DiffLine[] }) {
+  return (
+    <pre className="diff mono scroll-thin">
+      {lines.map((ln, i) => (
+        <span
+          key={i}
+          className={
+            ln.kind === "add"
+              ? "diff-add"
+              : ln.kind === "del"
+                ? "diff-del"
+                : ln.kind === "gap"
+                  ? "diff-gap"
+                  : "diff-ctx"
+          }
+        >
+          {ln.kind === "add"
+            ? "+ "
+            : ln.kind === "del"
+              ? "- "
+              : ln.kind === "gap"
+                ? ""
+                : "  "}
+          {ln.text}
+          {"\n"}
+        </span>
+      ))}
+    </pre>
+  );
+}
 
 type Status =
   | { kind: "idle" }
@@ -401,11 +434,24 @@ export default function SkillsPage() {
     if (activeVersion === null) return null;
     const idx = versions.findIndex((v) => v.version === activeVersion.version);
     const prev = idx >= 0 && idx + 1 < versions.length ? versions[idx + 1] : null;
-    return {
-      prevVersion: prev?.version ?? null,
-      lines: lineDiff(prev?.body ?? "", activeVersion.body),
-      files: fileChanges(prev?.files ?? {}, activeVersion.files),
-    };
+    const prevFiles = prev?.files ?? {};
+    const files = fileChanges(prevFiles, activeVersion.files);
+    // Collapsed body diff (git-hunk style) + a collapsed content diff for every
+    // reference file whose content changed (SKILL.md unchanged but prisma-setup.md
+    // edited still shows here).
+    const bodyLines = collapse(lineDiff(prev?.body ?? "", activeVersion.body));
+    const fileDiffs = files.modified.map((path) => ({
+      path,
+      lines: collapse(
+        lineDiff(prevFiles[path] ?? "", activeVersion.files[path] ?? ""),
+      ),
+    }));
+    const empty =
+      bodyLines.length === 0 &&
+      fileDiffs.length === 0 &&
+      files.added.length === 0 &&
+      files.removed.length === 0;
+    return { prevVersion: prev?.version ?? null, bodyLines, files, fileDiffs, empty };
   }, [activeVersion, versions]);
 
   return (
@@ -730,45 +776,46 @@ export default function SkillsPage() {
                             ? `diff · initial → v${activeVersion.version}`
                             : `diff · v${diff.prevVersion} → v${activeVersion.version}`}
                         </p>
-                        <pre className="diff mono scroll-thin">
-                          {diff.lines.map((ln, i) => (
-                            <span
-                              key={i}
-                              className={
-                                ln.kind === "add"
-                                  ? "diff-add"
-                                  : ln.kind === "del"
-                                    ? "diff-del"
-                                    : "diff-ctx"
-                              }
-                            >
-                              {ln.kind === "add"
-                                ? "+ "
-                                : ln.kind === "del"
-                                  ? "- "
-                                  : "  "}
-                              {ln.text}
-                              {"\n"}
-                            </span>
-                          ))}
-                        </pre>
 
-                        {diff.files.added.length > 0 ||
-                        diff.files.removed.length > 0 ? (
-                          <ul className="diff-files">
-                            {diff.files.added.map((p) => (
-                              <li key={`a-${p}`} className="diff-add">
-                                + {p}
-                              </li>
-                            ))}
-                            {diff.files.removed.map((p) => (
-                              <li key={`r-${p}`} className="diff-del">
-                                - {p}
-                              </li>
-                            ))}
-                          </ul>
+                        {diff.empty ? (
+                          <p className="files-empty">
+                            ไม่มีการเปลี่ยนแปลง
+                            {diff.prevVersion !== null
+                              ? ` (เนื้อหาเหมือน v${diff.prevVersion})`
+                              : ""}
+                          </p>
                         ) : (
-                          <p className="files-empty">No file changes.</p>
+                          <>
+                            {diff.bodyLines.length > 0 ? (
+                              <>
+                                <p className="diff-file-label">SKILL.md</p>
+                                <DiffPre lines={diff.bodyLines} />
+                              </>
+                            ) : null}
+
+                            {diff.fileDiffs.map((fd) => (
+                              <div key={fd.path} className="diff-file">
+                                <p className="diff-file-label">📄 {fd.path}</p>
+                                <DiffPre lines={fd.lines} />
+                              </div>
+                            ))}
+
+                            {diff.files.added.length > 0 ||
+                            diff.files.removed.length > 0 ? (
+                              <ul className="diff-files">
+                                {diff.files.added.map((p) => (
+                                  <li key={`a-${p}`} className="diff-add">
+                                    + {p} (new file)
+                                  </li>
+                                ))}
+                                {diff.files.removed.map((p) => (
+                                  <li key={`r-${p}`} className="diff-del">
+                                    - {p} (removed)
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                          </>
                         )}
                       </div>
                     ) : null}

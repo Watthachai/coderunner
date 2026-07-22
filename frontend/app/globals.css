@@ -1708,6 +1708,13 @@ body {
   align-items: start;
 }
 
+/* Let the 1fr editor column shrink below its content's intrinsic width — otherwise
+   a long unwrapped line in the body/diff <pre> forces the whole page wider than the
+   viewport. With min-width:0 the <pre>'s own overflow:auto scrolls it internally. */
+.skills-layout > * {
+  min-width: 0;
+}
+
 @media (max-width: 880px) {
   .skills-layout {
     grid-template-columns: 1fr;
@@ -2442,6 +2449,25 @@ body {
 
 .diff-ctx {
   color: var(--fg-dim);
+}
+
+.diff-gap {
+  color: var(--fg-dim);
+  opacity: 0.5;
+  font-style: italic;
+}
+
+/* Label above each per-file diff (SKILL.md / a reference file). */
+.diff-file-label {
+  margin: 0.5rem 0 0.15rem;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.diff-file {
+  min-width: 0;
 }
 
 .diff-files {
