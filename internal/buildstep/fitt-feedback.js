@@ -226,6 +226,19 @@
     ".send:disabled{opacity:.6;cursor:default}" +
     ".status{font-size:12px;text-align:center;margin-top:8px;color:#777;min-height:16px}" +
     ".status.ok{color:" + GREEN + "}.status.err{color:#ff4b4b}" +
+    // 🐞 error surface — a second FAB that only appears when errors are detected.
+    ".efab{position:fixed;right:84px;bottom:20px;z-index:2147483647;width:56px;height:56px;border-radius:50%;" +
+    "background:#ff4b4b;color:#fff;border:none;box-shadow:0 4px 0 #c93b3b,0 8px 24px rgba(0,0,0,.25);" +
+    "font-size:24px;cursor:pointer;transition:transform .1s}" +
+    ".efab:active{transform:translateY(4px);box-shadow:0 0 0 #c93b3b,0 4px 16px rgba(0,0,0,.25)}" +
+    ".efab[hidden]{display:none}" +
+    ".ebadge{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 4px;border-radius:10px;" +
+    "background:#fff;color:#ff4b4b;font-size:12px;font-weight:800;line-height:18px;border:2px solid #ff4b4b}" +
+    ".elist{list-style:none;margin:0 0 10px;padding:0;display:flex;flex-direction:column;gap:6px}" +
+    ".eitem{border:1px solid #ffdada;border-radius:8px;padding:8px;background:#fff6f6;text-align:left}" +
+    ".emsg{font-size:12px;color:#c92a2a;font-weight:700;word-break:break-word}" +
+    ".esrc{font-size:10px;color:#999;margin-top:3px;word-break:break-all}" +
+    ".esend{background:#ff4b4b;box-shadow:0 4px 0 #c93b3b}.esend:active{box-shadow:0 0 0 #c93b3b}" +
     "</style>" +
     "<button class='fab' title='Send feedback'>💬</button>" +
     "<div class='panel' hidden>" +
@@ -245,6 +258,13 @@
     "<textarea placeholder='อยากให้เปลี่ยนเป็นแบบไหน?'></textarea>" +
     "<button class='send'>ส่ง feedback</button>" +
     "<div class='status'></div>" +
+    "</div>" +
+    "<button class='efab' hidden title='ตรวจพบ error — ส่งไปแก้'>🐞<span class='ebadge'>0</span></button>" +
+    "<div class='panel epanel' hidden>" +
+    "<h3>🐞 ตรวจพบ error ในระบบ</h3>" +
+    "<ul class='elist'></ul>" +
+    "<button class='send esend'>🛠 ส่งไปแก้</button>" +
+    "<div class='status estatus'></div>" +
     "</div>";
 
   var fab = root.querySelector(".fab");
@@ -256,7 +276,119 @@
   var sendBtn = root.querySelector(".send");
   var statusEl = root.querySelector(".status");
 
+  // --- 🐞 error capture (auto-detect) -----------------------------------------
+  // A second FAB that only appears once an error is caught. Same confirm-to-send
+  // model: it opens a panel listing the (deduped) errors; the operator reviews and
+  // clicks "ส่งไปแก้" to POST them as category:"error" feedback (→ edit build).
+  var efab = root.querySelector(".efab");
+  var ebadge = root.querySelector(".ebadge");
+  var epanel = root.querySelector(".epanel");
+  var elistEl = root.querySelector(".elist");
+  var esendBtn = root.querySelector(".esend");
+  var estatusEl = root.querySelector(".estatus");
+  var errors = [];
+
+  function esc(s) {
+    return String(s).replace(/[&<>]/g, function (c) { return c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"; });
+  }
+
+  function captureError(source, message, stack, request) {
+    message = String(message || "").trim();
+    if (!message || message === "Script error.") return; // cross-origin noise
+    var first = (stack || "").split("\n")[0] || "";
+    var key = source + "|" + message + "|" + first;
+    for (var i = 0; i < errors.length; i++) {
+      if (errors[i].key === key) { errors[i].count++; renderErrors(); return; } // dedup
+    }
+    if (errors.length >= 50) return; // cap runaway loops
+    errors.push({
+      key: key, source: source, message: message.slice(0, 500),
+      stack: String(stack || "").slice(0, 4000), request: request || null, count: 1,
+    });
+    renderErrors();
+  }
+
+  function renderErrors() {
+    esendBtn.disabled = false;
+    var n = errors.length;
+    efab.hidden = n === 0;
+    ebadge.textContent = String(n);
+    if (n === 0) epanel.hidden = true;
+    elistEl.innerHTML = errors.map(function (er) {
+      var req = er.request ? " · " + er.request.status + " " + esc(er.request.url) : "";
+      return "<li class='eitem'><div class='emsg'>" + esc(er.message) +
+        (er.count > 1 ? " ×" + er.count : "") + "</div><div class='esrc'>" + esc(er.source) + req + "</div></li>";
+    }).join("");
+    esendBtn.textContent = "🛠 ส่งไปแก้ (" + n + ")";
+  }
+
+  efab.addEventListener("click", function () {
+    panel.hidden = true; // don't overlap the feedback panel
+    epanel.hidden = !epanel.hidden;
+  });
+
+  function esetStatus(msg, kind) {
+    estatusEl.textContent = msg;
+    estatusEl.className = "status estatus" + (kind ? " " + kind : "");
+  }
+
+  esendBtn.addEventListener("click", function () {
+    if (!errors.length) return;
+    esendBtn.disabled = true;
+    esetStatus("กำลังส่ง…", "");
+    var batch = errors.slice();
+    Promise.all(batch.map(function (er) {
+      return fetch(INGEST, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: PROJECT, category: "error", priority: "high",
+          note: er.message, page_url: location.href, reporter: "",
+          payload: {
+            error: { message: er.message, stack: er.stack, source: er.source, request: er.request, count: er.count },
+            viewport: { w: window.innerWidth, h: window.innerHeight }, user_agent: navigator.userAgent,
+          },
+        }),
+      }).then(function (res) { if (!res.ok) throw new Error("HTTP " + res.status); });
+    })).then(function () {
+      esetStatus("ส่งไปแก้แล้ว ✓", "ok");
+      errors = []; renderErrors();
+      setTimeout(function () { epanel.hidden = true; esetStatus("", ""); }, 1500);
+    }).catch(function (e) {
+      esetStatus("ส่งไม่สำเร็จ — " + e.message, "err");
+      esendBtn.disabled = false;
+    });
+  });
+
+  // Global hooks + a bridge the app's React error boundary can call:
+  //   window.__fittReportError(message, stack)  → shows up as a 🐞 error.
+  window.addEventListener("error", function (e) {
+    captureError("onerror", (e && e.message) || (e && e.error && e.error.message) || "Uncaught error",
+      (e && e.error && e.error.stack) || (e && e.filename ? e.filename + ":" + e.lineno + ":" + e.colno : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e && e.reason;
+    captureError("unhandledrejection", (r && r.message) || String(r || "Unhandled rejection"), (r && r.stack) || "");
+  });
+  window.__fittReportError = function (message, stack, source) { captureError(source || "boundary", message, stack); };
+  if (window.fetch) {
+    var _fetch = window.fetch;
+    window.fetch = function (input, init) {
+      var url = typeof input === "string" ? input : (input && input.url) || "";
+      var method = (init && init.method) || (input && input.method) || "GET";
+      return _fetch.apply(this, arguments).then(function (res) {
+        // 5xx = server error (a real bug). Skip our own ingest POSTs to avoid loops.
+        if (res && res.status >= 500 && url.indexOf(INGEST) === -1) {
+          captureError("fetch", "HTTP " + res.status + " — " + method + " " + url, "",
+            { url: url, method: method, status: res.status });
+        }
+        return res;
+      });
+    };
+  }
+
   fab.addEventListener("click", function () {
+    epanel.hidden = true; // don't overlap the error panel
     panel.hidden = !panel.hidden;
     if (panel.hidden) {
       stopPointing();

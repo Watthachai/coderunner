@@ -30,7 +30,7 @@ Content-Type: application/json
 ```jsonc
 {
   "project_id": "6cb637df-e8ed-4d78-aa4a-f4962a47b01c", // uuid (data-project) = demo ไหน
-  "category":   "feature",           // enum: "bug" | "feature" | "style"  (default "feature")
+  "category":   "feature",           // enum: "bug" | "feature" | "style" | "error"  (default "feature")
   "priority":   "med",               // enum: "low" | "med" | "high"       (default "med")
   "note":       "ปุ่มบันทึกควรเป็นสีเขียว", // ข้อความหลักที่ user พิมพ์ (textarea)
   "page_url":   "http://localhost:4432/dashboard", // location.href หน้าที่กดส่ง
@@ -57,7 +57,7 @@ Content-Type: application/json
 | field | type | หมายเหตุ |
 |---|---|---|
 | `project_id` | uuid string | demo ไหน — map กับ CRN project |
-| `category` | enum | `bug` \| `feature` \| `style` |
+| `category` | enum | `bug` \| `feature` \| `style` \| **`error`** (auto-detected system error) |
 | `priority` | enum | `low` \| `med` \| `high` |
 | `note` | string | คำอธิบายรวม |
 | `page_url` | string (URL) | หน้าที่ user อยู่ตอนส่ง |
@@ -71,6 +71,40 @@ Content-Type: application/json
 | `payload.full_shot` | string | "" เสมอ |
 | `payload.viewport` | `{w,h}` | ขนาด viewport |
 | `payload.user_agent` | string | UA ของ browser |
+
+---
+
+## 2a. 🐞 Error category — auto-detected system errors
+
+demo มี **2 ปุ่ม**: 💬 feedback (manual, โผล่ตลอด) และ **🐞 error** ที่ **โผล่เฉพาะตอน widget จับ error ได้** (พร้อม badge นับ). ทั้งคู่ **ยืนยันก่อนส่ง** + ยิง endpoint เดียวกัน. widget จับ error เอง 4 ทาง:
+
+- `window.onerror` (uncaught JS) · `unhandledrejection` (promise) · **fetch ที่ตอบ 5xx** · **React error boundary** (app เรียก `window.__fittReportError(msg, stack)`)
+
+error ที่ส่งมา = payload เดิม แต่ **`category:"error"`** + **`payload.error`** (dedup แล้ว, นับ `count`):
+
+```jsonc
+{
+  "project_id": "6cb637df-…",
+  "category":   "error",             // ← ปุ่ม 🐞
+  "priority":   "high",              // error default high
+  "note":       "TypeError: cannot read 'name' of undefined",  // = error.message
+  "page_url":   "http://localhost:4432/dashboard",
+  "reporter":   "",
+  "payload": {
+    "error": {                       // ← object ใหม่เฉพาะ category:"error"
+      "message": "TypeError: cannot read 'name' of undefined",
+      "stack":   "at Dashboard (Dashboard.tsx:42) …",   // ว่างได้ (บาง source ไม่มี)
+      "source":  "onerror",          // "onerror" | "unhandledrejection" | "fetch" | "boundary"
+      "request": { "url": "/api/courses", "method": "GET", "status": 500 }, // เฉพาะ source="fetch" (ไม่งั้น null)
+      "count":   3                   // เจอ error เดียวกันกี่ครั้ง (dedup)
+    },
+    "viewport":   { "w": 1280, "h": 800 },
+    "user_agent": "Mozilla/5.0 …"
+  }
+}
+```
+
+> ส่ง **1 POST ต่อ 1 error** (unique) — receiver รับเหมือน feedback ปกติ แค่ branch ที่ `category==="error"` เพื่อโชว์แยก/priority สูง. เอาไปทำ edit build (`change` = fix จาก `message` + `stack`) ได้ตรงมาก
 
 ---
 
