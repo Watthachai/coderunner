@@ -14,7 +14,7 @@ package.json          # deps: react, react-dom, vite, @vitejs/plugin-react; scri
 vite.config.js        # defineConfig({ plugins: [react()] })
 tsconfig.json         # bundler moduleResolution, jsx: react-jsx, non-strict
 src/main.tsx          # createRoot(document.getElementById("root")).render(<App/>)
-src/App.tsx           # the root view (often the whole app is one screen)
+src/App.tsx           # the root view — either the whole app, or a shell that switches between many screens
 src/index.css         # global CSS
 src/*.tsx             # feature components
 src/data.ts | src/types.ts   # in-memory mock data + TS types (may or may not exist)
@@ -23,6 +23,8 @@ public/*              # static assets (may be absent)
 ```
 
 Some exports use plain CSS, some use Tailwind via the CDN `<script>` in index.html. Detect which and KEEP it.
+
+**Exports are not all small.** The layout above is the *minimum* shape. A real export can be 50-100+ files with a nested tree (`src/components/**`, `src/screens/**` or `src/pages/**`, `src/hooks/**`, `src/lib/**`, `src/context/**`) and a dozen-plus screens. Nothing in this guide licenses shrinking that: **port the whole tree**, file for file. Do the `PORT_CHECKLIST.md` inventory (SKILL.md step 3) before you write any Next.js code, or you will lose screens without noticing.
 
 ## 2. Target structure (App Router)
 
@@ -42,7 +44,7 @@ tsconfig.json
 package.json
 ```
 
-Keep the same component boundaries and file names where practical — this is a port, not a rewrite.
+Keep the same component boundaries and file names where practical — this is a port, not a rewrite. **Mirror nested directories as-is** (`src/components/dashboard/StatCard.tsx` → `components/dashboard/StatCard.tsx`): every file under `src/` that is not Vite bootstrap has exactly one counterpart here, so coverage is checkable by eye. Do not flatten the tree and do not fold several small components into one file.
 
 ## 3. Entry points: index.html -> layout.tsx + page.tsx
 
@@ -111,7 +113,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 ## 7. Routing
 
-- **Single-screen prototype (the common case):** one `app/page.tsx` is enough. Keep it a client app if it is purely interactive.
+Check the file/screen count from `PORT_CHECKLIST.md` before picking a shape. **"One `app/page.tsx` is enough" applies ONLY to a genuinely single-screen prototype** — never take that shortcut because the export merely *renders* as one page.
+
+- **Genuinely single-screen prototype:** one `app/page.tsx` is enough. Keep it a client app if it is purely interactive.
+- **Large export with NO router** (screens switched by local state — `activeView`/`activeTab`/`step` + conditional render): **keep that mechanism**, it IS the prototype's behavior — but port **every** view as its own component file, same names as the source. This is the #1 place ports lose work: *one page ≠ one screen*. A state-switched app with 14 views still has 14 view components to port, and the shell (sidebar/nav/header) is one more.
 - **react-router present:** map each route to a folder: `/` -> `app/page.tsx`, `/about` -> `app/about/page.tsx`, `/items/:id` -> `app/items/[id]/page.tsx`. Replace `useNavigate()` with `useRouter()` (`next/navigation`) and `<Link to>` with `<Link href>` (`next/link`). Remove `<BrowserRouter>`/`<Routes>` — the filesystem is the router.
 
 ## 8. package.json + config
@@ -159,3 +164,5 @@ export default nextConfig;
 ## 10. Definition of done
 
 `npm install` succeeds and `npx next build` passes. The rendered UI is visually identical to the prototype, the same interactions work, and data now flows through Prisma (see prisma-setup.md) instead of in-memory mocks. `next build` must succeed WITHOUT a live database (see prisma-setup.md, section "Make next build pass WITHOUT a live DB").
+
+**Plus the coverage gate:** `PORT_CHECKLIST.md` is fully ticked — every screen, component, hook, and asset from the source tree has its counterpart. A green `next build` over an unticked checklist is a failed port (see SKILL.md step 9). Sanity-check by counting: source component files vs ported component files should match, minus only the Vite bootstrap files the conversion rules delete.
