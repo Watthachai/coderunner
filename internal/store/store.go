@@ -12,10 +12,11 @@
 //   - NewNotifier(ctx, dsn) (domain.Notifier, error): same pool style but
 //     pointed at the central DB; Notify inserts into build_events and issues a
 //     Postgres NOTIFY.
-//   - AcquireOrgLock: use pg_try_advisory_lock(hashOrg(orgID)) on a dedicated
-//     connection checked out from the pool; return domain.ErrOrgLocked when the
-//     try fails, and a release func that runs pg_advisory_unlock + returns the
-//     conn. This is how "max 1 build per org" is enforced (CRN-architecture §3).
+//   - AcquireProjectLock: use pg_try_advisory_lock(hashUUID(projectID)) on a
+//     dedicated connection checked out from the pool; return
+//     domain.ErrProjectLocked when the try fails, and a release func that runs
+//     pg_advisory_unlock + returns the conn. This is how "max 1 build per
+//     project" is enforced; different projects build concurrently.
 //
 // Keep concrete types unexported; callers only ever see the domain interfaces.
 package store
@@ -45,12 +46,12 @@ import (
 // carrying the new event id is the minimal viable contract.
 const notifyChannel = "build_events"
 
-// unlockTimeout bounds the best-effort advisory-unlock issued by an org lock's
-// release func so a stuck connection cannot block the caller indefinitely.
+// unlockTimeout bounds the best-effort advisory-unlock issued by a project
+// lock's release func so a stuck connection cannot block the caller indefinitely.
 const unlockTimeout = 5 * time.Second
 
 // pgStore is the pgx-backed implementation of domain.Store. It is safe for
-// concurrent use: *pgxpool.Pool is goroutine-safe, and AcquireOrgLock checks
+// concurrent use: *pgxpool.Pool is goroutine-safe, and AcquireProjectLock checks
 // out its own dedicated connection per call.
 type pgStore struct {
 	pool   *pgxpool.Pool
@@ -273,9 +274,10 @@ func (s *pgStore) JobByBuildNo(ctx context.Context, projectID uuid.UUID, buildNo
 // UpdateJobStatus moves a job to a new status. errMsg is stored only for
 // JobFailed; for terminal statuses finished_at is stamped, and started_at is
 // stamped on the first transition into building. The partial unique index
-// uq_jobs_one_building_per_org backstops the advisory lock here: a concurrent
-// transition into 'building' for the same org violates it and surfaces as a
-// constraint error.
+// uq_jobs_one_building_per_project backstops the advisory lock here: a
+// concurrent transition into 'building' for the same project violates it and
+// surfaces as a constraint error. Different projects transition freely — that
+// is what lets several builds run at once.
 func (s *pgStore) UpdateJobStatus(ctx context.Context, id uuid.UUID, status domain.JobStatus, errMsg string) error {
 	if !status.Valid() {
 		return fmt.Errorf("store: invalid job status %q", status)
@@ -339,31 +341,6 @@ func (s *pgStore) FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*dom
 	return jobs, nil
 }
 
-// OrgsWithQueuedJobs returns the distinct orgs that currently have a queued job.
-// Used on boot to resume queues that a restart stranded (no Enqueue/trigger will
-// fire for a job that was already queued).
-func (s *pgStore) OrgsWithQueuedJobs(ctx context.Context) ([]uuid.UUID, error) {
-	const q = `SELECT DISTINCT org_id FROM project_jobs WHERE status = 'queued'`
-	rows, err := s.pool.Query(ctx, q)
-	if err != nil {
-		return nil, mapErr(err, "store: orgs with queued jobs")
-	}
-	defer rows.Close()
-
-	var orgs []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, mapErr(err, "store: scan queued org")
-		}
-		orgs = append(orgs, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, mapErr(err, "store: iterate queued orgs")
-	}
-	return orgs, nil
-}
-
 // SetJobSession persists the Claude Code session id (for --resume).
 func (s *pgStore) SetJobSession(ctx context.Context, id uuid.UUID, sessionID string) error {
 	const q = `UPDATE project_jobs SET session_id = $2 WHERE id = $1`
@@ -389,19 +366,52 @@ func (s *pgStore) execOneJob(ctx context.Context, q string, id uuid.UUID, val, o
 	return nil
 }
 
-// NextQueuedJob returns the oldest queued job for an org, or (nil, nil) if none.
-func (s *pgStore) NextQueuedJob(ctx context.Context, orgID uuid.UUID) (*domain.Job, error) {
+// NextRunnableJob returns the oldest queued job that can start right now,
+// across every org, or (nil, nil) if none can. The NOT EXISTS clause is what
+// lets several projects build at once: a project with a build in flight is
+// skipped (its builds share one working dir) and the scan moves on to the next
+// project's oldest job. Ordering is global FIFO by queued_at, so no org can
+// starve another.
+func (s *pgStore) NextRunnableJob(ctx context.Context) (*domain.Job, error) {
+	const q = `
+		SELECT j.id, j.project_id, j.org_id, j.status, j.build_no,
+		       j.payload,
+		       COALESCE(j.session_id, ''), COALESCE(j.docker_tag, ''), COALESCE(j.error_msg, ''),
+		       j.queued_at, j.started_at, j.finished_at
+		FROM project_jobs j
+		WHERE j.status = 'queued'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM project_jobs b
+		      WHERE b.project_id = j.project_id AND b.status = 'building'
+		  )
+		ORDER BY j.queued_at ASC
+		LIMIT 1`
+	j := &domain.Job{}
+	err := scanJob(s.pool.QueryRow(ctx, q), j)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return j, nil
+}
+
+// NextQueuedJobForProject returns the project's oldest queued job, or
+// (nil, nil) when it has none. This is the status read model — unlike
+// NextRunnableJob it does not care whether the project is already building.
+func (s *pgStore) NextQueuedJobForProject(ctx context.Context, projectID uuid.UUID) (*domain.Job, error) {
 	const q = `
 		SELECT id, project_id, org_id, status, build_no,
 		       payload,
 		       COALESCE(session_id, ''), COALESCE(docker_tag, ''), COALESCE(error_msg, ''),
 		       queued_at, started_at, finished_at
 		FROM project_jobs
-		WHERE org_id = $1 AND status = 'queued'
+		WHERE project_id = $1 AND status = 'queued'
 		ORDER BY queued_at ASC
 		LIMIT 1`
 	j := &domain.Job{}
-	err := scanJob(s.pool.QueryRow(ctx, q, orgID), j)
+	err := scanJob(s.pool.QueryRow(ctx, q, projectID), j)
 	if errors.Is(err, domain.ErrNotFound) {
 		return nil, nil
 	}
@@ -1221,11 +1231,11 @@ func (s *pgStore) ListSkillVersions(ctx context.Context, name string) ([]*domain
 	return out, nil
 }
 
-// --- Per-org advisory lock --------------------------------------------------
+// --- Per-project advisory lock ----------------------------------------------
 
-// AcquireOrgLock takes a PostgreSQL session-level advisory lock keyed by orgID.
-// It returns domain.ErrOrgLocked if another session already holds it
-// (non-blocking pg_try_advisory_lock).
+// AcquireProjectLock takes a PostgreSQL session-level advisory lock keyed by
+// projectID. It returns domain.ErrProjectLocked if another session already
+// holds it (non-blocking pg_try_advisory_lock).
 //
 // The lock is taken on a single dedicated connection checked out from the pool;
 // that connection is HELD for the lifetime of the lock (session advisory locks
@@ -1238,15 +1248,15 @@ func (s *pgStore) ListSkillVersions(ctx context.Context, name string) ([]*domain
 // returned func. A transaction-level lock (pg_advisory_xact_lock) cannot do
 // this without holding a transaction open for the entire build, so the
 // session-level lock on a pinned connection is the correct primitive. The
-// DB-level partial unique index uq_jobs_one_building_per_org remains the
-// independent backstop against two jobs reaching 'building' for one org.
-func (s *pgStore) AcquireOrgLock(ctx context.Context, orgID uuid.UUID) (release func(), err error) {
+// DB-level partial unique index uq_jobs_one_building_per_project remains the
+// independent backstop against two jobs reaching 'building' for one project.
+func (s *pgStore) AcquireProjectLock(ctx context.Context, projectID uuid.UUID) (release func(), err error) {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("store: acquire conn for org lock: %w", err)
+		return nil, fmt.Errorf("store: acquire conn for project lock: %w", err)
 	}
 
-	key := hashOrg(orgID)
+	key := hashUUID(projectID)
 	var got bool
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&got); err != nil {
 		conn.Release()
@@ -1254,7 +1264,7 @@ func (s *pgStore) AcquireOrgLock(ctx context.Context, orgID uuid.UUID) (release 
 	}
 	if !got {
 		conn.Release()
-		return nil, fmt.Errorf("store: org %s: %w", orgID, domain.ErrOrgLocked)
+		return nil, fmt.Errorf("store: project %s: %w", projectID, domain.ErrProjectLocked)
 	}
 
 	var once sync.Once
@@ -1266,7 +1276,7 @@ func (s *pgStore) AcquireOrgLock(ctx context.Context, orgID uuid.UUID) (release 
 			unlockCtx, cancel := context.WithTimeout(context.Background(), unlockTimeout)
 			defer cancel()
 			if _, uerr := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, key); uerr != nil {
-				s.logger.Error("org lock unlock failed", "org_id", orgID, "err", uerr)
+				s.logger.Error("project lock unlock failed", "project_id", projectID, "err", uerr)
 			}
 			conn.Release()
 		})
@@ -1441,13 +1451,14 @@ func mapErr(err error, op string) error {
 	return fmt.Errorf("%s: %w", op, err)
 }
 
-// hashOrg derives a stable int64 advisory-lock key from an org UUID. Postgres
+// hashUUID derives a stable int64 advisory-lock key from a UUID. Postgres
 // advisory locks key on a bigint, so the 16-byte UUID is folded into 8 bytes by
-// XORing its two halves. Distinct orgs get distinct keys with overwhelming
+// XORing its two halves. Distinct ids get distinct keys with overwhelming
 // probability; a false collision only momentarily serializes two unrelated
-// orgs' builds, and the DB unique-index backstop still guarantees correctness.
-func hashOrg(orgID uuid.UUID) int64 {
-	hi := binary.BigEndian.Uint64(orgID[0:8])
-	lo := binary.BigEndian.Uint64(orgID[8:16])
+// projects' builds, and the DB unique-index backstop still guarantees
+// correctness.
+func hashUUID(id uuid.UUID) int64 {
+	hi := binary.BigEndian.Uint64(id[0:8])
+	lo := binary.BigEndian.Uint64(id[8:16])
 	return int64(hi ^ lo)
 }

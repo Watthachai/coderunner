@@ -40,8 +40,30 @@
 | | `CRN_FTC_DV_CALLBACK_URL` / `_TOKEN` | HTTP callback ไป FITTCORE |
 | | `CRN_FEEDBACK_INGEST_URL` | PostgREST feedback ingest (`:3010`) |
 | | `CRN_GIT_REMOTE` | git push target (ว่าง = skip push) |
+| | `CRN_MAX_CONCURRENT_BUILDS` | build พร้อมกันได้กี่ตัว (default `5`, ต่ำสุด `1`) |
 | | `CRN_MONGO_URL` | Mongo |
 | **Dashboard** | `NEXT_PUBLIC_CRN_API` | **ปล่อยว่าง** = derive จาก browser host เอง |
+
+---
+
+## Build พร้อมกันได้กี่ตัว (`CRN_MAX_CONCURRENT_BUILDS`)
+
+CRN รัน build **หลายโปรเจคพร้อมกัน** โดยมีกฎ 2 ชั้น
+
+| ชั้น | กฎ | บังคับด้วย |
+|---|---|---|
+| ความถูกต้อง | **1 build ต่อ 1 โปรเจค** — build ของโปรเจคเดียวกันใช้ workDir/repo/image tag ร่วมกัน ห้ามทับ | advisory lock ต่อ project + unique index `uq_jobs_one_building_per_project` |
+| ทรัพยากร | **รวมกันไม่เกิน N ตัว** ทั้งเซิร์ฟเวอร์ | `CRN_MAX_CONCURRENT_BUILDS` (default 5) |
+
+คนละโปรเจคไม่แชร์อะไรกันเลย → ขนานได้เต็มที่ ส่วนที่ต้องระวังคือ **step docker**: build เป็น `--platform linux/amd64` ถ้า host เป็น ARM (Mac) จะ emulate ผ่าน QEMU ซึ่งกินซีพียูหนัก
+
+ปรับจูน — แก้ `.env` แล้ว `make restart` พอ **ไม่ต้อง rebuild**
+
+- คิวยาว เครื่องยังว่าง → เพิ่มเลข
+- ช่วง docker ช้าผิดปกติ / เครื่องหน่วง / swap → ลดเป็น 3 หรือ 2
+- ตั้ง `1` = พฤติกรรมเดิม (ทีละตัว)
+
+> งานไม่เคยหาย: ถ้า slot เต็ม job ยัง `queued` อยู่ แล้ว build ที่เสร็จก่อนจะดึงคิวถัดไปเอง
 
 ---
 

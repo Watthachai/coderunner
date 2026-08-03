@@ -850,10 +850,10 @@ func (s *server) handleTrigger(w http.ResponseWriter, r *http.Request) {
 		OrgID:     body.OrgID,
 	}
 	if err := s.jm.HandleTrigger(r.Context(), t); err != nil {
-		// ErrOrgLocked is a benign "already building" — the trigger is just a
+		// ErrProjectLocked is a benign "already building" — the trigger is just a
 		// nudge; the in-flight build will chain the next queued job itself.
-		if errors.Is(err, domain.ErrOrgLocked) {
-			s.writeJSON(w, r, http.StatusAccepted, map[string]string{"status": "org busy, queued"})
+		if errors.Is(err, domain.ErrProjectLocked) {
+			s.writeJSON(w, r, http.StatusAccepted, map[string]string{"status": "project busy, queued"})
 			return
 		}
 		if errors.Is(err, domain.ErrNotFound) {

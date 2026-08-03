@@ -54,15 +54,21 @@ type Store interface {
 	// build at startup, so any lingering 'building' row is a ghost left by a
 	// restart/crash mid-build. Called once on boot.
 	FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*Job, error)
-	// OrgsWithQueuedJobs returns the distinct org ids that currently have at least
-	// one job in 'queued'. Used on boot to resume queues stranded by a restart.
-	OrgsWithQueuedJobs(ctx context.Context) ([]uuid.UUID, error)
 	// SetJobSession persists the Claude Code session id (for --resume).
 	SetJobSession(ctx context.Context, id uuid.UUID, sessionID string) error
 	// SetJobDockerTag persists the produced image tag.
 	SetJobDockerTag(ctx context.Context, id uuid.UUID, dockerTag string) error
-	// NextQueuedJob returns the oldest queued job for an org, or (nil, nil) if none.
-	NextQueuedJob(ctx context.Context, orgID uuid.UUID) (*Job, error)
+	// NextRunnableJob returns the oldest queued job that can start right now,
+	// across every org, or (nil, nil) if none can. A queued job is runnable only
+	// when its project has no build already in flight: two builds of one project
+	// would share a working dir, so the scan skips that project and moves on.
+	// Global FIFO order means no org starves another. This is the dispatcher's
+	// only queue read.
+	NextRunnableJob(ctx context.Context) (*Job, error)
+	// NextQueuedJobForProject returns the project's oldest queued job, or
+	// (nil, nil) when it has none. Status read model only — it ignores whether
+	// the project is already building.
+	NextQueuedJobForProject(ctx context.Context, projectID uuid.UUID) (*Job, error)
 	// LastSessionID returns the session_id of the project's most recent job that
 	// has a non-empty session_id ("" when none). Used by an edit build to --resume
 	// the project's prior Claude session.
@@ -89,12 +95,17 @@ type Store interface {
 	OrgByAPIKeyHash(ctx context.Context, hash string) (*Org, error)
 	CreateAPIKey(ctx context.Context, k *APIKey) error
 
-	// --- Per-org advisory lock (enforces "max 1 build per org") ---
-	// AcquireOrgLock takes a PostgreSQL transaction-less session advisory lock
-	// keyed by orgID. It returns ErrOrgLocked if another session holds it
-	// (non-blocking pg_try_advisory_lock). The returned release func MUST be
-	// called to unlock; it is safe to call multiple times.
-	AcquireOrgLock(ctx context.Context, orgID uuid.UUID) (release func(), err error)
+	// --- Per-project advisory lock (enforces "max 1 build per project") ---
+	// AcquireProjectLock takes a PostgreSQL transaction-less session advisory
+	// lock keyed by projectID. It returns ErrProjectLocked if another session
+	// holds it (non-blocking pg_try_advisory_lock). The returned release func
+	// MUST be called to unlock; it is safe to call multiple times.
+	//
+	// The lock is per PROJECT because that is what builds actually share: the
+	// working dir (projectsDir/<project_id>), the git repo, and the image tag.
+	// Different projects share nothing and build concurrently — how many at once
+	// is bounded by the job manager's slot count, not by this lock.
+	AcquireProjectLock(ctx context.Context, projectID uuid.UUID) (release func(), err error)
 
 	// --- Skills (Claude Agent Skills registry) ---
 	// ListSkills returns every skill, name-ordered (each skill's Files map is

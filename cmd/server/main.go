@@ -95,10 +95,11 @@ func run() error {
 	// TODO(claude): claude.NewRunner wires the binary path + projects dir.
 	runner := claude.NewRunner(cfg.ClaudeBinPath, cfg.ProjectsDir, cfg.ClaudeModel, logger)
 
-	// --- Job manager (queue + lifecycle + per-org advisory lock) ---
+	// --- Job manager (queue + lifecycle + per-project advisory lock) ---
 	// jobs.NewManager composes store + runner + notifier and the build-step
-	// config (projects dir, git remote, run-Claude toggle).
-	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry, cfg.ArtifactDir)
+	// config (projects dir, git remote, run-Claude toggle, build concurrency).
+	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry, cfg.ArtifactDir, cfg.MaxConcurrentBuilds)
+	logger.Info("build concurrency", "max_concurrent_builds", cfg.MaxConcurrentBuilds)
 
 	// Reconcile ghost builds: any job still 'building' at boot was orphaned by a
 	// prior process (restart/crash mid-build). Fail them now so the dashboard
@@ -108,9 +109,9 @@ func run() error {
 	jobManager.ReconcileOrphans(rootCtx)
 
 	// Resume any queue stranded by the restart: a job queued while a prior build
-	// held the org has no Enqueue/trigger to chain to it once that process is
-	// gone, so it would sit 'queued' forever. Kick the worker per org now (after
-	// the orphan reconcile freed the per-org "1 building" slot).
+	// held its project has no Enqueue/trigger to chain to it once that process is
+	// gone, so it would sit 'queued' forever. Kick the dispatcher per org now
+	// (after the orphan reconcile made those projects read as idle again).
 	jobManager.ResumeQueued(rootCtx)
 
 	// --- Feedback→GitHub watcher (owner model only) ---

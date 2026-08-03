@@ -1,12 +1,19 @@
-// Package jobs implements domain.JobManager: the build queue, the per-org
-// concurrency rule (1 building job per org), and the full build lifecycle
-// (CRN-architecture.md §2.4 "Build Lifecycle" and §3 state machine).
+// Package jobs implements domain.JobManager: the build queue, the concurrency
+// rules (1 building job per PROJECT, at most maxConcurrent across the whole
+// server), and the full build lifecycle (CRN-architecture.md §2.4 "Build
+// Lifecycle" and §3 state machine).
 //
 // OWNED BY: the 'jobs' implementer.
 //
-// Lifecycle of processing one job (run under the org lock, in its own goroutine):
-//  1. store.AcquireOrgLock(ctx, orgID) — if domain.ErrOrgLocked, leave it
-//     queued (another build owns the org); return without error.
+// Concurrency: builds of different projects run in parallel — they share
+// nothing (own working dir, own repo, own image tag). Two builds of the SAME
+// project would share a working dir, so a per-project advisory lock serializes
+// those. Total parallelism is capped by a slot semaphore (CRN_MAX_CONCURRENT_
+// BUILDS) because every build eventually runs a CPU-heavy docker build.
+//
+// Lifecycle of processing one job (run under the project lock, in its own goroutine):
+//  1. store.AcquireProjectLock(ctx, projectID) — if domain.ErrProjectLocked,
+//     leave it queued (another build owns the project); return without error.
 //  2. store.UpdateJobStatus(job, JobBuilding); notifier.Notify(build_started).
 //  3. runner.Run(ctx, RunSpec{...}, emit) where emit fans each ClaudeEvent out
 //     to (a) live WS subscribers via Subscribe (translated to BuildEventMsg)
@@ -14,8 +21,8 @@
 //  4. On success: TODO(crn) git commit + docker build/push + SetJobDockerTag,
 //     then UpdateJobStatus(JobDone) + notifier.Notify(build_done).
 //     On failure: UpdateJobStatus(JobFailed, err) + notifier.Notify(build_failed).
-//  5. Release the org lock, then pull the next queued job for the org
-//     (store.NextQueuedJob) and chain into it — never interrupt, only chain.
+//  5. Release the project lock and the slot, then dispatch whatever is runnable
+//     next (store.NextRunnableJob) — never interrupt, only chain.
 //
 // A simple in-memory map[jobID][]*subscriber guarded by a mutex backs the live
 // WebSocket fan-out (Subscribe).
@@ -97,6 +104,12 @@ type manager struct {
 	imageRegistry string
 	artifactDir   string
 
+	// slots bounds how many builds run at once, server-wide. Every build ends in
+	// a CPU-heavy docker build (cross-compiled to linux/amd64 under emulation on
+	// macOS hosts), so unbounded fan-out would thrash the box instead of going
+	// faster. Buffered to maxConcurrent; a send takes a slot, a receive frees it.
+	slots chan struct{}
+
 	mu      sync.Mutex
 	subs    map[uuid.UUID][]*subscriber          // jobID -> live listeners
 	hist    map[uuid.UUID][]domain.BuildEventMsg // jobID -> capped replay buffer
@@ -118,7 +131,9 @@ var _ domain.JobManager = (*manager)(nil)
 // gitRemote is the push target for the legacy shared-remote model (empty skips
 // the push); githubOwner (when non-empty) opts into the "one repo per project"
 // model with repoPrivate controlling repo visibility; runClaude toggles the
-// Claude Code step. Signature is kept in lockstep with cmd/server/main.go.
+// Claude Code step; maxConcurrent caps how many builds run at once server-wide
+// (values < 1 are clamped to 1). Signature is kept in lockstep with
+// cmd/server/main.go.
 func NewManager(
 	store domain.Store,
 	runner domain.ClaudeRunner,
@@ -135,9 +150,13 @@ func NewManager(
 	buildImage bool,
 	imageRegistry string,
 	artifactDir string,
+	maxConcurrent int,
 ) domain.JobManager {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
 	}
 	return &manager{
 		store:              store,
@@ -156,13 +175,15 @@ func NewManager(
 		buildImage:         buildImage,
 		imageRegistry:      imageRegistry,
 		artifactDir:        artifactDir,
+		slots:              make(chan struct{}, maxConcurrent),
 		subs:               make(map[uuid.UUID][]*subscriber),
 		cancels:            make(map[uuid.UUID]context.CancelFunc),
 	}
 }
 
-// Enqueue records a new job (status=queued) and, if the org is idle, kicks off
-// processing asynchronously. Returns the created job (with build_no).
+// Enqueue records a new job (status=queued) and kicks the dispatcher, which
+// starts it right away if a build slot is free and the project is idle.
+// Returns the created job (with build_no).
 func (m *manager) Enqueue(ctx context.Context, projectID, orgID uuid.UUID, payload []byte) (*domain.Job, error) {
 	buildNo, err := m.store.BumpBuildNo(ctx, projectID)
 	if err != nil {
@@ -188,20 +209,21 @@ func (m *manager) Enqueue(ctx context.Context, projectID, orgID uuid.UUID, paylo
 	// Kick off processing in the background. We do NOT inherit the request ctx
 	// (it is cancelled when the HTTP handler returns); a build outlives the
 	// enqueue call.
-	go m.processOrg(context.Background(), orgID)
+	go m.dispatch(context.Background())
 
 	return job, nil
 }
 
-// HandleTrigger is invoked when FTC DV signals a queued job exists. It attempts
-// to start the next queued job for the org, respecting the per-org lock. The
-// trigger is only a notification; authoritative state is re-read from the store.
+// HandleTrigger is invoked when FTC DV signals a queued job exists. It kicks
+// the dispatcher, which starts whatever is runnable within the slot cap and the
+// per-project lock. The trigger is only a notification — nothing in it is
+// trusted; authoritative state is re-read from the store.
 func (m *manager) HandleTrigger(ctx context.Context, t domain.TriggerRequest) error {
 	m.logger.Info("trigger received",
 		"job_id", t.JobID, "project_id", t.ProjectID, "org_id", t.OrgID)
 	// Process in the background so the trigger HTTP call returns immediately and
 	// the build is not bound to the request ctx.
-	go m.processOrg(context.Background(), t.OrgID)
+	go m.dispatch(context.Background())
 	return nil
 }
 
@@ -282,15 +304,15 @@ func (m *manager) Status(ctx context.Context, projectID uuid.UUID) (*domain.Proj
 		QueueDepth:   depth,
 	}
 
-	// Surface the next queued job's status/session/tag for this project when one
+	// Surface this project's next queued job's status/session/tag when one
 	// exists. TODO(crn): the store does not expose a "latest job for project"
 	// read, so an idle project (no queued job) reports an empty status. Add
-	// store.LatestJobByProject and prefer it here over NextQueuedJob.
-	next, err := m.store.NextQueuedJob(ctx, proj.OrgID)
+	// store.LatestJobByProject and prefer it here.
+	next, err := m.store.NextQueuedJobForProject(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("jobs: status: next queued: %w", err)
 	}
-	if next != nil && next.ProjectID == projectID {
+	if next != nil {
 		view.Status = next.Status
 		view.SessionID = next.SessionID
 		view.DockerTag = next.DockerTag
@@ -301,46 +323,90 @@ func (m *manager) Status(ctx context.Context, projectID uuid.UUID) (*domain.Proj
 
 // --- internal: org processing loop -----------------------------------------
 
-// processOrg drains the org's queue under the per-org advisory lock. It is safe
-// to call concurrently: only one goroutine can hold the lock, the rest observe
-// domain.ErrOrgLocked and return, leaving their jobs queued for the holder (or
-// a later trigger) to pick up.
-func (m *manager) processOrg(ctx context.Context, orgID uuid.UUID) {
-	release, err := m.store.AcquireOrgLock(ctx, orgID)
-	if err != nil {
-		if errors.Is(err, domain.ErrOrgLocked) {
-			// Another goroutine owns this org's build slot; it will chain to the
-			// jobs we leave queued. Nothing to do.
-			m.logger.Debug("org busy, leaving queued", "org_id", orgID)
-			return
-		}
-		m.logger.Error("acquire org lock failed", "org_id", orgID, "err", err)
-		return
-	}
-	defer release()
+// lockMissLimit caps how many consecutive project-lock misses the dispatch loop
+// tolerates before giving up. A miss means another goroutine claimed the same
+// head-of-queue job in the window between NextRunnableJob's read and that job
+// flipping to 'building'; retrying re-reads the queue, which now skips that
+// project. The cap exists only so a pathological case cannot spin.
+const lockMissLimit = 3
 
-	// Chain: process queued jobs one at a time until the queue drains. We never
-	// interrupt a running build; each iteration runs a job to a terminal state
-	// before pulling the next.
+// dispatch starts as many queued builds as it can right now, up to the slot
+// cap. It is safe to call from anywhere and as often as you like — Enqueue,
+// HandleTrigger, ResumeQueued, and every finishing build all call it.
+//
+// Two rules bound the fan-out:
+//   - a slot must be free (server-wide cap on concurrent builds), and
+//   - the job's project must not already be building (per-project advisory
+//     lock; NextRunnableJob pre-filters, the lock closes the race window).
+//
+// The queue is read in global FIFO order across every org, so a busy org cannot
+// starve a quiet one. Nothing is ever dropped: a job that cannot start now stays
+// queued, and whichever build frees a slot chains back here.
+func (m *manager) dispatch(ctx context.Context) {
+	misses := 0
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		job, err := m.store.NextQueuedJob(ctx, orgID)
+
+		// Take a build slot up front — no point reading the queue with nothing
+		// free to run it on.
+		select {
+		case m.slots <- struct{}{}:
+		default:
+			m.logger.Debug("all build slots busy, leaving queued")
+			return
+		}
+
+		job, err := m.store.NextRunnableJob(ctx)
 		if err != nil {
-			m.logger.Error("next queued job failed", "org_id", orgID, "err", err)
+			m.freeSlot()
+			m.logger.Error("next runnable job failed", "err", err)
 			return
 		}
 		if job == nil {
-			return // queue drained
+			m.freeSlot()
+			return // queue drained (or every queued project is already building)
 		}
-		m.runJob(ctx, job)
+
+		release, err := m.store.AcquireProjectLock(ctx, job.ProjectID)
+		if err != nil {
+			m.freeSlot()
+			if errors.Is(err, domain.ErrProjectLocked) {
+				misses++
+				if misses < lockMissLimit {
+					continue // re-read; the queue now skips that project
+				}
+				m.logger.Debug("project busy, leaving queued", "project_id", job.ProjectID)
+				return
+			}
+			m.logger.Error("acquire project lock failed",
+				"project_id", job.ProjectID, "err", err)
+			return
+		}
+		misses = 0
+
+		// Run it on its own goroutine so this loop can immediately dispatch the
+		// next project's job into another slot.
+		go func(j *domain.Job) {
+			defer func() {
+				release()
+				m.freeSlot()
+				// A slot just freed — the rest of the queue may now be runnable.
+				m.dispatch(ctx)
+			}()
+			m.runJob(ctx, j)
+		}(job)
 	}
 }
 
+// freeSlot returns a build slot taken by dispatch.
+func (m *manager) freeSlot() { <-m.slots }
+
 // runJob drives a single job from queued -> building -> done/failed, fanning
 // Claude events out to live subscribers and notifying the central DB at the
-// lifecycle boundaries. It assumes the org lock is held by the caller.
+// lifecycle boundaries. It assumes the caller holds the project lock and a
+// build slot, and releases both once this returns.
 func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	log := m.logger.With("job_id", job.ID, "project_id", job.ProjectID, "org_id", job.OrgID, "build_no", job.BuildNo)
 
@@ -997,23 +1063,16 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 	}
 }
 
-// ResumeQueued kicks the per-org worker for every org that still has queued jobs
-// at startup. Queued work is otherwise only drained when Enqueue/HandleTrigger
-// fires; a job queued before a restart (while a prior build held the org) has no
-// one to chain to it once that process is gone, so it would sit 'queued' forever.
-// Runs once at boot, after ReconcileOrphans has cleared orphaned 'building' jobs
-// (so the per-org "1 building" slot is free for the queued job to start).
+// ResumeQueued kicks the dispatcher at startup so work stranded by a restart
+// runs. Queued work is otherwise only drained when Enqueue/HandleTrigger fires;
+// a job queued before a restart (while a prior build held its project) has no
+// one to chain to it once that process is gone, so it would sit 'queued'
+// forever. Runs once at boot, after ReconcileOrphans has cleared orphaned
+// 'building' jobs (so their projects read as idle again).
 func (m *manager) ResumeQueued(ctx context.Context) {
-	orgs, err := m.store.OrgsWithQueuedJobs(ctx)
-	if err != nil {
-		m.logger.Error("resume queued: list orgs failed", "err", err)
-		return
-	}
-	for _, orgID := range orgs {
-		m.logger.Info("resuming queued builds for org", "org_id", orgID)
-		// Background ctx: a build outlives this startup call.
-		go m.processOrg(context.Background(), orgID)
-	}
+	m.logger.Info("resuming queued builds")
+	// Background ctx: a build outlives this startup call.
+	go m.dispatch(context.Background())
 }
 
 // resetWorkspace clears workDir for a fresh (non-edit) build WITHOUT removing it

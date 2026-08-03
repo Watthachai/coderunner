@@ -8,9 +8,11 @@ var (
 	// ErrNotFound is returned by Store reads when no row matches.
 	ErrNotFound = errors.New("domain: not found")
 
-	// ErrOrgLocked is returned by Store.AcquireOrgLock when another session
-	// already holds the org's advisory lock (a build is in progress).
-	ErrOrgLocked = errors.New("domain: org build lock held")
+	// ErrProjectLocked is returned by Store.AcquireProjectLock when another
+	// session already holds the project's advisory lock (that project has a
+	// build in progress). Concurrency is bounded per PROJECT, not per org:
+	// different projects build in parallel.
+	ErrProjectLocked = errors.New("domain: project build lock held")
 
 	// ErrInvalidTransition is returned when a JobStatus change is not allowed by
 	// the state machine.

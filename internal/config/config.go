@@ -95,6 +95,14 @@ type Config struct {
 	// from the registry. Empty -> no tarball (registry delivery only).
 	ArtifactDir string
 
+	// MaxConcurrentBuilds caps how many builds run at once, server-wide. Builds
+	// of different projects run in parallel (they share no working dir), so this
+	// is the resource brake, not a correctness rule: each build ends in a docker
+	// build cross-compiled to linux/amd64, which is CPU-heavy and emulated on an
+	// ARM host. Raise it to drain a queue faster; lower it if the box thrashes
+	// during the docker phase. Default 5, minimum 1.
+	MaxConcurrentBuilds int
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -174,6 +182,15 @@ func Load() (*Config, error) {
 	}
 	cfg.FeedbackIssuePollInterval = pollInterval
 
+	maxBuilds, err := getEnvInt("CRN_MAX_CONCURRENT_BUILDS", 5)
+	if err != nil {
+		return nil, err
+	}
+	if maxBuilds < 1 {
+		return nil, fmt.Errorf("config: CRN_MAX_CONCURRENT_BUILDS must be >= 1, got %d", maxBuilds)
+	}
+	cfg.MaxConcurrentBuilds = maxBuilds
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -218,8 +235,7 @@ func getEnvDuration(key string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// getEnvInt is provided for implementers who add numeric tunables (kept here so
-// the helper convention is consistent). Currently unused by Load.
+// getEnvInt parses a numeric tunable, falling back to def when unset.
 func getEnvInt(key string, def int) (int, error) {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -231,8 +247,6 @@ func getEnvInt(key string, def int) (int, error) {
 	}
 	return n, nil
 }
-
-var _ = getEnvInt // silence unused until an implementer needs it
 
 // getEnvBool parses a boolean tunable. "true" / "1" (case-insensitive) are true;
 // everything else — including an unset or unparseable value — yields def.
