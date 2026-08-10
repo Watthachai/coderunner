@@ -10,6 +10,7 @@ The working directory holds ONE FITT Builder export zip (a **Vite + React 18 sin
 Read the two guides in this skill before and during the work — they carry the details this summary omits:
 - `references/nextjs-conversion.md` — Vite+React SPA -> Next.js App Router (entry points, client/server, import.meta.env, assets, routing, pitfalls).
 - `references/prisma-setup.md` — Prisma + Postgres (schema, client singleton, seed, and making `next build` pass with NO live DB).
+- `references/test-cases.md` — the `TEST_CASES.md` the demo ships with (format, negative-case catalogue, the honest "not supported yet" section).
 
 Use the ready-made `assets/Dockerfile` and `assets/.dockerignore` as your starting templates.
 
@@ -22,7 +23,7 @@ Use the ready-made `assets/Dockerfile` and `assets/.dockerignore` as your starti
 3. **Inventory the source BEFORE converting — write `PORT_CHECKLIST.md`.** A large export (dozens of files, many screens) is where a port silently loses work: you cannot hold 100 files in your head, and `next build` passes just fine on a half-ported app. So FIRST walk the whole extracted tree (`src/**` + `index.html`) and write `PORT_CHECKLIST.md` at the root — one **unchecked** line per thing you must port:
    - every screen/view, every component file (nested dirs included), every route in the router, every hook/util/context module, every mock-data module (`data.ts`/`types.ts`), the global CSS, and the assets in `public/`.
    - record the **source file count** at the top (e.g. `source: 97 files, 14 screens`).
-   Then port item by item and tick `[x]` only when the Next.js counterpart exists AND compiles. This file is your work list *and* the completeness gate in step 9 — it is not optional bookkeeping.
+   Then port item by item and tick `[x]` only when the Next.js counterpart exists AND compiles. This file is your work list, the section list for `TEST_CASES.md`, *and* the completeness gate in step 10 — it is not optional bookkeeping.
 
 4. **Convert to Next.js (App Router, TypeScript) — install the LATEST Next.js** — preserve UI/UX exactly (see nextjs-conversion.md):
    - Scaffold an `app/` tree (NOT `pages/`). Port components/styles across — **mirror the prototype's own file layout** (`src/components/x/Y.tsx` → `components/x/Y.tsx`), same names, so the checklist maps 1:1.
@@ -49,17 +50,20 @@ Use the ready-made `assets/Dockerfile` and `assets/.dockerignore` as your starti
 
 8. **Write `BUILD_NOTES.md`** at the root: the product in 1-2 lines; the stack (Next.js App Router + Prisma + Postgres + Docker); the exact commands (install / `prisma generate` / dev / build / `docker build`); the DB schema summary; a bullet list of everything you changed; a **coverage line** (`ported N/N screens, M source files`); and a **"Not ported"** section listing anything from `PORT_CHECKLIST.md` you deliberately left out, with the reason (empty section = nothing dropped).
 
-9. **Honest outcome — a green build is NOT the finish line.** Finish only when BOTH hold:
-   - (a) `npx next build` passes, AND
-   - (b) **every line in `PORT_CHECKLIST.md` is ticked.**
+9. **Write `TEST_CASES.md`** at the root — the test script the customer's own testers run against this demo (see test-cases.md). In the briefs' language (normally Thai), one section per screen from `PORT_CHECKLIST.md`, numbered `TC-01`… across the whole file, with the six columns `ID | ฟังก์ชันที่ทดสอบ | ขั้นตอน / สิ่งที่กรอก | ผลลัพธ์ที่คาดหวัง | ผลการทดสอบจริง | สถานะ`. Every screen gets both the happy path and the **negative** cases that fit the fields you actually built (empty required field, letters in a number field, negative/zero price, over-long text, `<script>alert('x')</script>` in a text field, opening an inner page while logged out …). **Leave `ผลการทดสอบจริง` and `สถานะ` EMPTY** — you did not run the app; the tester fills them in. Close the file with **"สิ่งที่ demo นี้ยังไม่รองรับ (ทราบล่วงหน้า)"** listing the rules this port genuinely does not enforce — do NOT add features to make cases pass, and do NOT hide them.
+
+10. **Honest outcome — a green build is NOT the finish line.** Finish only when ALL hold:
+   - (a) `npx next build` passes,
+   - (b) **every line in `PORT_CHECKLIST.md` is ticked**, AND
+   - (c) `BUILD_NOTES.md` + `TEST_CASES.md` exist and describe what you really did.
 
    `next build` succeeds happily on an app missing half its screens, so re-read the checklist before you declare done and port whatever is still open. A green build over an unticked checklist is a **FAILED** build, not a finished one. If the build genuinely cannot pass, STOP and write the exact blocking error in `BUILD_NOTES.md` — never fake success.
 
 ## Hard rules
 - Faithful UI/UX — port the prototype, do not redesign or add features. **(One exception: the login — always standardize it to an env email+password check; see step 4.)**
-- **Port EVERYTHING — never consolidate, simplify, or skip.** Every prototype screen/component gets a counterpart, whatever the file count. `PORT_CHECKLIST.md` must exist, cover the whole source tree, and be fully ticked before you finish — see steps 3 and 9.
+- **Port EVERYTHING — never consolidate, simplify, or skip.** Every prototype screen/component gets a counterpart, whatever the file count. `PORT_CHECKLIST.md` must exist, cover the whole source tree, and be fully ticked before you finish — see steps 3 and 10.
 - **Auth is ALWAYS an env email+password login** (`DEV_EMAIL`/`DEV_PASSWORD`), never the prototype's SSO/allowlist/mock. The operator must be able to sign into every UAT with one known credential.
 - One clean path: App Router (no `pages/`), Prisma singleton, standalone Docker.
 - `next build` must succeed WITHOUT a database. Never fake a passing build.
 - **Always install `next@latest` (the current major — Next 16). Never install or pin Next 14/15** — current App Router APIs and `next.config.ts` require the latest.
-- Explain every change in `BUILD_NOTES.md`.
+- Explain every change in `BUILD_NOTES.md`, and ship a `TEST_CASES.md` whose result columns are blank — never write down results for tests you did not run.

@@ -93,7 +93,8 @@ Then install, create the schema, seed, and run:
 The app serves at http://localhost:3000. If port 3000 is busy, run
 ` + "`npm run dev -- -p <port>`" + ` or change the ports mapping in docker-compose.yml.
 
-See BUILD_NOTES.md for the full stack + database schema.
+See BUILD_NOTES.md for the full stack + database schema, and TEST_CASES.md for
+the test script to run against this demo (fill in the last two columns as you go).
 `
 
 // ScaffoldRun writes the one-command runner (docker-compose.yml + QUICKSTART.md)

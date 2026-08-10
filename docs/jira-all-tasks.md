@@ -315,6 +315,13 @@
 **AC:** export ใหญ่ได้ demo ครบทุกหน้า; build เขียวบน checklist ไม่ครบ = FAILED
 **Notes:** repo CRN · `SKILL.md`, `references/nextjs-conversion.md` · มีผลกับ build **รอบถัดไป** เท่านั้น
 
+## [CRN] ทุก demo ต้องมี `TEST_CASES.md` ติดมาด้วย
+**Type:** Task · **Status:** Done (`88cb2da`)
+**Desc:** ลูกค้า/ทีมเทสได้แต่ตัวแอป ไม่มีเอกสารว่าต้องลองอะไรบ้าง โดยเฉพาะ **negative case** (กรอกผิดแล้วระบบต้องปฏิเสธ) — เพิ่มขั้นตอนในตัว harness ให้เขียนเอกสารเทสภาษาไทยติดไปกับ repo ทุก build
+**Subtasks:** reference ใหม่ `references/test-cases.md` (ฟอร์แมต 6 คอลัมน์ · คลัง negative case แยกตามชนิดฟิลด์ · เคสประจำของ demo CRN · หัวข้อ "ยังไม่รองรับ") · SKILL.md step 9 ใหม่ + เกณฑ์จบข้อ (c) · ห้ามกรอกช่องผลจริง/สถานะ (ไม่ได้รันเอง = ห้ามเขียนผล) · ห้ามเพิ่มฟีเจอร์เพื่อให้เคสผ่าน ให้ประกาศเป็นข้อจำกัดแทน · QUICKSTART ชี้ไปที่ไฟล์
+**AC:** demo ที่ generate ใหม่มี `TEST_CASES.md` ครบทุกหน้าจอตาม `PORT_CHECKLIST.md` มีทั้ง positive/negative และช่องผลว่างให้กรอก
+**Notes:** repo CRN · `skillassets/SKILL.md`, `references/test-cases.md`, `scaffold.go` · มีผลกับ build **รอบถัดไป** · ต้อง `make restart` ให้ re-seed skill version ใหม่
+
 ---
 
 # EPIC N — Dashboard UX
