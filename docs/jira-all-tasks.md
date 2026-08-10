@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `91de383` (2026-08-11)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `1834127` (2026-08-11)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -316,7 +316,7 @@
 **Notes:** repo CRN · `SKILL.md`, `references/nextjs-conversion.md` · มีผลกับ build **รอบถัดไป** เท่านั้น
 
 ## [CRN] ทุก demo ต้องมี `TEST_CASES.md` ติดมาด้วย
-**Type:** Task · **Status:** Done (`88cb2da`)
+**Type:** Task · **Status:** Done (`1834127`)
 **Desc:** ลูกค้า/ทีมเทสได้แต่ตัวแอป ไม่มีเอกสารว่าต้องลองอะไรบ้าง โดยเฉพาะ **negative case** (กรอกผิดแล้วระบบต้องปฏิเสธ) — เพิ่มขั้นตอนในตัว harness ให้เขียนเอกสารเทสภาษาไทยติดไปกับ repo ทุก build
 **Subtasks:** reference ใหม่ `references/test-cases.md` (ฟอร์แมต 6 คอลัมน์ · คลัง negative case แยกตามชนิดฟิลด์ · เคสประจำของ demo CRN · หัวข้อ "ยังไม่รองรับ") · SKILL.md step 9 ใหม่ + เกณฑ์จบข้อ (c) · ห้ามกรอกช่องผลจริง/สถานะ (ไม่ได้รันเอง = ห้ามเขียนผล) · ห้ามเพิ่มฟีเจอร์เพื่อให้เคสผ่าน ให้ประกาศเป็นข้อจำกัดแทน · QUICKSTART ชี้ไปที่ไฟล์
 **AC:** demo ที่ generate ใหม่มี `TEST_CASES.md` ครบทุกหน้าจอตาม `PORT_CHECKLIST.md` มีทั้ง positive/negative และช่องผลว่างให้กรอก
