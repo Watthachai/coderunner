@@ -65,6 +65,8 @@ CRN รัน build **หลายโปรเจคพร้อมกัน** �
 
 > งานไม่เคยหาย: ถ้า slot เต็ม job ยัง `queued` อยู่ แล้ว build ที่เสร็จก่อนจะดึงคิวถัดไปเอง
 
+**deploy ครั้งแรกต้อง `make migrate` ก่อน `make restart`** (migration `0011` สลับ unique index จากราย org เป็นราย project) · เทสว่าใช้ได้จริง: [test-scripts/concurrent-builds.md](./test-scripts/concurrent-builds.md)
+
 ---
 
 ## Preset A — ลูกค้า 1 เครื่อง (แนะนำ · ปกติสุด)

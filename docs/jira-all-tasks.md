@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `42c50b9` (2026-07-30)** · EPIC A–F = รอบแรก · **EPIC G–N = รอบ on-prem/FITTCORE integration**
+> **ครอบคลุมถึง `91de383` (2026-08-11)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -328,11 +328,34 @@
 
 ---
 
+# EPIC O — Build throughput (รันหลายโปรเจคพร้อมกัน)
+
+## [EPIC] Build throughput
+**Type:** Epic · **Status:** Done
+คิว build เดิมเป็นทีละตัวต่อ org → ลูกค้าหลายเจ้ารอต่อคิวกันยาว. ย้ายกฎการ serialize ลงมาที่ระดับโปรเจค + ใส่เพดานทรัพยากร.
+
+## [CRN] รัน build คนละโปรเจคพร้อมกันได้
+**Type:** Task · **Status:** Done (`91de383`)
+**Desc:** ล็อกเดิมเป็น `pg_try_advisory_lock(hashOrg(orgID))` + unique index `uq_jobs_one_building_per_org` = 1 build ต่อ 1 org ทั้งก้อน ทำให้โปรเจคที่ไม่เกี่ยวกันต้องรอกัน. จริง ๆ build แชร์กันแค่ระดับ **โปรเจค** (workDir / repo / image tag) — ตรวจแล้วว่า build path ไม่มี global state (ไม่มี `os.Chdir`/`os.Setenv`/git global config, ทุก exec set `cmd.Dir`)
+**Subtasks:** migration `0011` drop index ราย org → สร้าง `uq_jobs_one_building_per_project` · `AcquireOrgLock`→`AcquireProjectLock` (`ErrProjectLocked`, `hashUUID`) · `NextQueuedJob(orgID)`+`OrgsWithQueuedJobs` → `NextRunnableJob()` FIFO ทั้งระบบ (`NOT EXISTS` ข้ามโปรเจคที่ build อยู่) + `NextQueuedJobForProject` สำหรับหน้า status · `processOrg`→`dispatch()` + slot semaphore + `lockMissLimit=3` กัน race อ่าน-แล้ว-ล็อก · env `CRN_MAX_CONCURRENT_BUILDS` (default 5, ต่ำสุด 1) · API ตอบ 202 `project busy, queued`
+**AC:** ยิง 3 โปรเจคพร้อมกัน → build พร้อมกันทั้ง 3 · ยิงโปรเจคเดิมซ้ำ → เรียงทีละตัว ไม่ทับ · slot เต็ม → job ยัง queued แล้วถูกหยิบต่อเอง
+**Notes:** repo CRN · `migrations/0011_concurrent_builds.sql`, `jobs.go`, `store.go`, `ports.go`, `config.go`, `main.go` · **ต้อง `make migrate` ก่อน `make restart`**
+
+## [CRN] Test script — build พร้อมกัน
+**Type:** Task · **Status:** Done (`docs/test-scripts/concurrent-builds.md`)
+**Desc:** เอกสารเทสให้ QA รันเองได้ แบ่ง 2 รอบ: รอบ A เทส dispatcher ด้วย `CRN_RUN_CLAUDE=false` (เร็ว ไม่เผา token) 7 เคส · รอบ B ของจริง Claude+docker 4 เคส
+**Subtasks:** SQL พิสูจน์ overlap ข้ามโปรเจค (>0) และห้าม overlap ในโปรเจคเดียวกัน (=0) · SQL หา peak concurrency เทียบเพดาน slot · ตาราง sign-off · ตาราง troubleshooting
+**AC:** คนอื่นหยิบเอกสารไปรันเทสเองได้โดยไม่ต้องถาม
+**Notes:** repo CRN · `docs/test-scripts/concurrent-builds.md`
+
+---
+
 # Todo / รอฝั่งอื่น
 
 | งาน | เจ้าของ | สถานะ |
 |---|---|---|
-| Deploy `42c50b9` + `make restart` บน .171 | เรา | รอทำ |
+| Deploy `42c50b9` + `91de383` (**migrate ก่อน restart**) บน .171 | เรา | รอทำ |
+| รัน test script `docs/test-scripts/concurrent-builds.md` บน .171 | เรา/QA | รอทำ |
 | Rebuild dashboard ให้ diff UI (`46f915b`) มีผล | เรา | รอทำ |
 | E2E amd64 บนเครื่องลูกค้า | เรา/เพื่อน | Todo |
 | Destructive migration (drop/rename column) | — | Todo (ตอนนี้ `db push` บล็อก) |
