@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `3efac43` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `82328a4` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -335,6 +335,13 @@
 **Subtasks:** positive case หยิบจาก AC/F พร้อมอ้าง id ในตาราง (`AC-2 · ...`) · negative case สังเคราะห์จาก Data Model (ชนิด/หน่วย/PK-FK/unique) + กฎ role-gated เพราะ BRD เขียนแต่ happy path · เพิ่ม **ตาราง coverage** ทุก AC + F ระดับ must ว่าเคสไหนคุม/ยังไม่รองรับ · หัวข้อ "ยังไม่รองรับ" ต้องอ้าง id ไม่ใช่หายเงียบ · SKILL step 1 อธิบายว่าเอกสารพวกนี้คือคำตอบลูกค้า ห้ามอ่านผ่าน
 **AC:** เอกสารเทสตอบได้ว่า "เดโมทำได้ตามที่ตกลงไว้ไหม" ไม่ใช่แค่ "ที่ทำมาใช้ได้ไหม"
 **Notes:** repo CRN · `SKILL.md`, `references/test-cases.md` · มีผลกับ build รอบถัดไป
+
+## [CRN] แก้แหล่งเคส negative — PRD เขียนไว้ตรง ๆ อยู่แล้ว
+**Type:** Task · **Status:** Done (`82328a4`)
+**Desc:** รอบก่อน (`3efac43`) สั่งให้ agent สังเคราะห์เคส negative เองจาก Data Model เพราะเข้าใจว่าเอกสารเขียนแต่ happy path — จริงเฉพาะ BRD. **PRD มี `§ การควบคุมความถูกต้องของข้อมูล (Validation & Edge Cases)`** เขียน negative ไว้ตรง ๆ เป็น เงื่อนไข→ผลลัพธ์ พร้อม**ข้อความ error จริง** และ Data Model ที่ละเอียดอยู่ใน **PRD** ไม่ใช่ BRD
+**Subtasks:** negative หยิบจาก PRD Validation ก่อน + copy ข้อความ error **verbatim** (คนเทสเทียบคำต่อคำ) · derive จาก Data Model เป็นส่วนขยาย ไม่ใช่แหล่งหลัก (`> 0`, ทศนิยม 2, บังคับกรอก, ห้ามซ้ำ, FK = 4-5 เคสในบรรทัดเดียว) · **match หัวข้อด้วย keyword ห้ามใช้เลข §** (เอกสาร generate จาก template เลขดริฟต์ได้ หาไม่เจอ = ถอยไปเดาจากหน้าจอ ซึ่งคือปัญหาที่จะแก้พอดี) · `ขอบเขต (ไม่ทำ)` / `Out of Scope` ห้ามเขียนเป็นเคส
+**AC:** เคส negative ในเอกสารตรงกับที่ PRD ระบุ รวมถึงข้อความเตือนคำต่อคำ
+**Notes:** repo CRN · ยืนยันโครงเอกสารกับ session ที่ถือโปรเจกต์จริง (Chokpranee Fabric Stock)
 
 ## [CRN] เลิกใส่ mock data — เหลือแค่บัญชี login
 **Type:** Task · **Status:** Done (`1afb2d3`)
