@@ -13,7 +13,7 @@
 | `INSTALL.md` | ขั้นตอนติดตั้ง |
 
 - **build เป็น `linux/amd64`** → รันบนเครื่อง x86_64 ได้ (แม้ CRN build บน Mac arm64)
-- **self-migrate-on-start:** ตอน container start entrypoint รัน `prisma db push` (data-safe) ยิงไป `DATABASE_URL` แล้วค่อย `node server.js`. seed เฉพาะเมื่อ `DEMO_SEED=1`
+- **self-migrate-on-start:** ตอน container start entrypoint รัน `prisma db push` (data-safe) ยิงไป `DATABASE_URL` แล้วค่อย `node server.js`. ระหว่างนั้นรัน seed ที่สร้าง **บัญชี login อย่างเดียว** (ปิดด้วย `SEED_LOGIN=0`)
 - **ไม่มี** migrate image แยก และ **ไม่มี** bundled postgres — DB คุณจัดหาเอง (central `ftc-demo-db` + 1 database/แอป)
 
 ---
@@ -33,7 +33,7 @@ docker run -d -P \
   <registry>/crn-demo-<slug>-<id8>:v<n>
 ```
 - `-P` publish port → หา URL ด้วย `docker port <container> 3000`
-- seed (demo data + dev login user) รัน **default**; ปิดด้วย `-e DEMO_SEED=0`
+- seed สร้าง **บัญชี login เท่านั้น ไม่มีข้อมูลตัวอย่าง** รัน **default**; ปิดด้วย `-e SEED_LOGIN=0`
 - **login**: demo ที่มี auth ใช้ email+password = `DEV_EMAIL`/`DEV_PASSWORD` (default `dev@fitt.local`/`changeme`) — set เองได้
 
 **หรือ compose:**
@@ -44,7 +44,7 @@ DATABASE_URL="postgresql://user:pass@ftc-demo-db:5432/demo_<slug>_<id8>" \
 
 ลำดับที่เกิดตอน start:
 1. `prisma db push` → สร้าง/sync schema ใน DB ที่ส่งให้ (DB เปล่า → สร้าง table; DB มี data → additive apply)
-2. `prisma db seed` (default; `DEMO_SEED=0` ปิด) — สร้าง demo data + dev login user
+2. `prisma db seed` (default; `SEED_LOGIN=0` ปิด) — upsert บัญชี login ด้วย `DEV_EMAIL` ถ้ายังไม่มี · **ไม่แตะข้อมูลอื่นเลย** รันซ้ำกี่รอบก็ไม่คืนชีพรายการที่ลบไปแล้ว
 3. `node server.js` → demo ขึ้น
 
 ---

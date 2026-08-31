@@ -90,8 +90,8 @@ Rules:
   `db push` can still add them to existing rows.
 - **Caveat (be honest in `BUILD_NOTES.md`):** a default only makes the *add-column*
   case safe. On a security-ish column (e.g. `password_hash @default("")`) the backfilled
-  rows get an empty/garbage value — fine for a demo (the seed re-upserts real rows, and
-  login is the standardized env check), but note it.
+  rows get an empty/garbage value — acceptable because login is the standardized env
+  check, not that column — but note it.
 - This does NOT cover DESTRUCTIVE changes (dropping/renaming a column, narrowing a type,
   adding `@unique` to a column with duplicates) — those are a data-migration problem, not
   a backfill, and `db push` will still refuse them (data-safe). That's expected; the
@@ -145,45 +145,54 @@ export async function addTask(title: string) {
 
 Call the action from the client component (form action or event handler). Alternatively expose a **Route Handler** at `app/api/tasks/route.ts` (`export async function GET/POST(req: Request)`) and `fetch` it. Prefer server actions for simple CRUD; use route handlers when the prototype clearly spoke to an HTTP API.
 
-The old in-memory array (e.g. `let tasks = [...]` in `data.ts`) is DELETED; its contents move to the seed (below).
+The old in-memory array (e.g. `let tasks = [...]` in `data.ts`) is DELETED and its
+contents go **nowhere** — mock rows are not carried into the database (see §5).
+What replaces them is a working **create path**: for every entity the mock array
+used to fill, the UI must be able to create a record. A delivered app that starts
+empty and offers no way to add anything is a dead shell.
 
-## 5. Seed — `prisma/seed.ts`
+## 5. Seed — the login account, and nothing else
 
-Port the prototype's mock array into a seed so the app has data. **The seed MUST
-be idempotent** — the delivered app image self-migrates on start and runs
-`prisma db seed` on EVERY start (seed runs by default; `DEMO_SEED=0` disables it),
-so re-running must never duplicate rows or fail on a unique constraint. **Always `upsert` keyed by a stable id** —
-never bare `create` / `createMany` (those insert duplicates on re-run unless the
-seeded field happens to have a unique constraint):
+**The prototype's mock rows do NOT become seed data. They are thrown away.**
+
+A delivered app starts on an EMPTY database and fills up with what its users
+actually type. Seeding the mock array is exactly what makes an app feel like a
+toy: the same fake names on every deploy, rows the operator deleted coming back
+after a restart (the image runs `prisma db seed` on EVERY start), and edits to a
+seeded row silently reverted by the next upsert.
+
+So `prisma/seed.ts` creates exactly ONE thing — the dev Admin account, so someone
+can sign in to a brand-new database:
 
 ```ts
 import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
-// Give every seeded row a stable, deterministic id so the upsert key is fixed.
-const tasks = [
-  { id: "t1", title: "Design the landing page" },
-  { id: "t2", title: "Wire up the API" },
-];
+const email = process.env.DEV_EMAIL ?? "dev@fitt.local";
 
 async function main() {
-  for (const t of tasks) {
-    await prisma.task.upsert({ where: { id: t.id }, update: t, create: t });
-  }
+  await prisma.user.upsert({
+    where: { email },
+    update: {},                         // never overwrite an existing account
+    create: { email, name: "Dev Admin", role: "Admin" /* + this app's required fields */ },
+  });
 }
 
 main().finally(() => prisma.$disconnect());
 ```
 
-Wire it in `package.json`:
+Keyed by email with `update: {}`, so re-running it on every container start is a
+no-op once the account exists — it never touches anything a user entered.
 
-```json
-"prisma": { "seed": "tsx prisma/seed.ts" }
-```
+**One narrow exception:** reference rows the app genuinely cannot render without
+— a status / category / role lookup the UI reads to draw itself. Seed those the
+same way (`upsert` by a stable id) and list them in `BUILD_NOTES.md` under
+**"Seeded reference data"**. "The screen looks nicer with rows in it" is NOT an
+exception; leave it empty and let the empty state do its job.
 
-Add `tsx` as a dev dep (`npm i -D tsx`). `prisma db seed` needs a live DB — it is
-NOT part of `next build`; the delivered app image runs it on start (by default;
-`DEMO_SEED=0` disables), and you can run it on demand locally.
+App with no `User` model: keep `prisma/seed.ts` and its `package.json` entry, but
+`main()` does nothing — the image's start-up `prisma db seed` must stay a no-op
+rather than an error.
 
 ### 5a. Auth — standardized env email+password login (CRITICAL)
 
@@ -287,8 +296,9 @@ Result: `npm install` -> `prisma generate` (no DB) -> `next build` (no DB) all p
 - [ ] Models derived from `src/data.ts`/`src/types.ts` + BRD/PRD.
 - [ ] `lib/prisma.ts` singleton; all server code imports it.
 - [ ] Mock reads/writes replaced by Prisma in server components / actions / route handlers.
-- [ ] `prisma/seed.ts` carries the old mock data; `prisma.seed` script + `tsx` dev dep.
-- [ ] Seed is **idempotent** — `upsert` keyed by a stable id (re-runs on every deploy; no bare `create`/`createMany`).
+- [ ] `prisma/seed.ts` seeds ONLY the dev Admin account (plus reference rows the app cannot render without, listed in BUILD_NOTES); **no mock/demo rows anywhere**; `prisma.seed` script + `tsx` dev dep.
+- [ ] Seed is **idempotent** — `upsert` keyed by a stable id with `update: {}` (it re-runs on every container start; no bare `create`/`createMany`).
+- [ ] Opened against an EMPTY database: every screen renders (empty state, not a blank page), and each main entity can be created from the UI.
 - [ ] `package-lock.json` committed (CRN's image build uses `npm ci`).
 - [ ] `postinstall: prisma generate`; DB-reading pages are `force-dynamic`.
 - [ ] `.env.example` has `DATABASE_URL`; `.env` gitignored.
