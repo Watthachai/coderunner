@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `1834127` (2026-08-11)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `b313840` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -321,6 +321,13 @@
 **Subtasks:** reference ใหม่ `references/test-cases.md` (ฟอร์แมต 6 คอลัมน์ · คลัง negative case แยกตามชนิดฟิลด์ · เคสประจำของ demo CRN · หัวข้อ "ยังไม่รองรับ") · SKILL.md step 9 ใหม่ + เกณฑ์จบข้อ (c) · ห้ามกรอกช่องผลจริง/สถานะ (ไม่ได้รันเอง = ห้ามเขียนผล) · ห้ามเพิ่มฟีเจอร์เพื่อให้เคสผ่าน ให้ประกาศเป็นข้อจำกัดแทน · QUICKSTART ชี้ไปที่ไฟล์
 **AC:** demo ที่ generate ใหม่มี `TEST_CASES.md` ครบทุกหน้าจอตาม `PORT_CHECKLIST.md` มีทั้ง positive/negative และช่องผลว่างให้กรอก
 **Notes:** repo CRN · `skillassets/SKILL.md`, `references/test-cases.md`, `scaffold.go` · มีผลกับ build **รอบถัดไป** · ต้อง `make restart` ให้ re-seed skill version ใหม่
+
+## [CRN] ปักหมุด model ที่ build ใช้ = Opus ล่าสุด
+**Type:** Task · **Status:** Done (`b313840`)
+**Desc:** `CRN_CLAUDE_MODEL` ไม่เคยถูกตั้ง → ไม่ส่ง `--model` เลย แต่ละเครื่องเลย build ด้วย model ที่ account นั้น default อยู่ ซึ่งอาจไม่เหมือนกัน (export เดียวกันได้ demo คนละคุณภาพ และ log ไม่บอกว่าเพราะอะไร)
+**Subtasks:** `defaultClaudeModel = "claude-opus-5"` (ใช้ id เต็ม ไม่ใช้ alias `opus` เพื่อให้ log/build trace ระบุ model ที่ผลิต demo ได้จริง) · `getEnv` แทน `os.Getenv` · main ตัดป้าย `(cli default)` ทิ้ง (ค่าว่างไม่มีอีกแล้ว) · `.env.example` + ตาราง env ใน deployment-config
+**AC:** boot log `claude_model=claude-opus-5` · ตั้ง `CRN_CLAUDE_MODEL=claude-sonnet-5` แล้ว restart = เปลี่ยนได้ทันที ไม่ต้อง rebuild
+**Notes:** repo CRN · `config.go`, `main.go` · **ค่าใช้จ่ายสูงขึ้น** — build เป็น agentic run ยาว ถ้าบิลพุ่งให้สลับเป็น sonnet
 
 ---
 
