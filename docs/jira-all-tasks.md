@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `82328a4` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `7c1246a` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -342,6 +342,13 @@
 **Subtasks:** negative หยิบจาก PRD Validation ก่อน + copy ข้อความ error **verbatim** (คนเทสเทียบคำต่อคำ) · derive จาก Data Model เป็นส่วนขยาย ไม่ใช่แหล่งหลัก (`> 0`, ทศนิยม 2, บังคับกรอก, ห้ามซ้ำ, FK = 4-5 เคสในบรรทัดเดียว) · **match หัวข้อด้วย keyword ห้ามใช้เลข §** (เอกสาร generate จาก template เลขดริฟต์ได้ หาไม่เจอ = ถอยไปเดาจากหน้าจอ ซึ่งคือปัญหาที่จะแก้พอดี) · `ขอบเขต (ไม่ทำ)` / `Out of Scope` ห้ามเขียนเป็นเคส
 **AC:** เคส negative ในเอกสารตรงกับที่ PRD ระบุ รวมถึงข้อความเตือนคำต่อคำ
 **Notes:** repo CRN · ยืนยันโครงเอกสารกับ session ที่ถือโปรเจกต์จริง (Chokpranee Fabric Stock)
+
+## [CRN] อ้าง requirement id ต้องบอกด้วยว่ามาจากเอกสารไหน
+**Type:** Task · **Status:** Done (`7c1246a`)
+**Desc:** `AC-2` เฉย ๆ กำกวม — BRD ใช้ `AC-1..`/`F-01..` ส่วน PRD ใช้ `US-01..` แล้วเขียน AC เป็น Given/When/Then แทรกในแถว US (โปรเจกต์นี้ไม่ชนกัน แต่เอกสาร LLM generate → โปรเจกต์อื่น PRD อาจ label เป็น `AC-x` จริงก็ได้) · อีกจุด: **negative case ใน PRD Validation & Edge Cases ไม่มี id เลย** เป็น list เปล่า `1. / 2. / 3.` ถ้าอ้างด้วยเลขลำดับจะเพี้ยนทันทีที่ regenerate เอกสาร
+**Subtasks:** บังคับ prefix ชื่อเอกสารทุกครั้ง (`BRD AC-2`, `BRD F-03`, `PRD US-02`) · edge case อ้างด้วย**ชื่อ** mint เป็น `EC-DuplicateBarcode` ห้ามใช้ตำแหน่งในลิสต์ · เก็บ id ด้วย `\b(AC|F|US)-\d+\b` เพราะ padding ไม่ตรงกัน (`AC-1` vs `US-01`) · ตาราง coverage ต้องครอบทั้ง BRD AC + F ระดับ must + PRD US + edge case ที่มีชื่อ
+**AC:** ตาราง coverage อ่านแล้วรู้ทันทีว่าข้อกำหนดมาจากเอกสารไหน ไม่ต้องไล่เช็ค scheme ของแต่ละโปรเจกต์
+**Notes:** repo CRN · `SKILL.md`, `references/test-cases.md`
 
 ## [CRN] เลิกใส่ mock data — เหลือแค่บัญชี login
 **Type:** Task · **Status:** Done (`1afb2d3`)
