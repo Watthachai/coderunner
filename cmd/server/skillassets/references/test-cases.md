@@ -12,15 +12,24 @@ It is a *script to be run by a human*, not a report of tests you ran.
 The requirements already exist — do not invent them from the screens. FITT
 Builder interviews the customer and synthesizes the answers into the three docs
 in the export's `docs/` folder. There is no separate Q&A file; **these ARE the
-answers**, already structured:
+answers**, already structured.
 
-| ไฟล์ | สิ่งที่หยิบไปใช้ |
+**Find the sections by keyword, never by number.** These docs are generated from
+a template: the heading *keywords* are stable, but section numbers and exact
+wording drift between projects. Match on `เกณฑ์การยอมรับ` / `Acceptance
+Criteria`, never on `## 8.`.
+
+| ต้องการอะไร | หาที่ไหน (match ด้วย keyword) |
 |---|---|
-| `docs/BRD.md` | **Functional Requirements `F-01…`** + **Acceptance Criteria `AC-1…`** → เคส positive แบบหยิบไปใช้ได้เลย · **Data Model** (entity, PK/FK, ชนิด, หน่วย) → วัตถุดิบของเคส negative · **ขอบเขต (ทำ/ไม่ทำ)** → สิ่งที่ห้ามเขียนเป็นเคส |
-| `docs/PRD.md` | ส่วนประกอบรายหน้าจอ + **กฎ role-gated** ("ปุ่มนี้ใช้ได้เฉพาะ Owner/Purchasing") → เคสสิทธิ์เข้าถึง |
-| `docs/IDEA.md` | Success Criteria ของเดโม |
+| เคส **positive** | BRD `เกณฑ์การยอมรับ` / `Acceptance Criteria` (`AC-x`) · BRD `ความต้องการเชิงฟังก์ชัน` / `Functional` (`F-xx`) · PRD `User Stories และเกณฑ์การยอมรับ` |
+| เคส **negative** | **PRD `Validation` / `Edge Cases` / `การควบคุมความถูกต้อง`** — เขียนไว้ตรง ๆ แล้ว พร้อมข้อความ error จริง |
+| ชนิด / หน่วย / ข้อจำกัดของฟิลด์ | PRD `Data Model` / `ข้อมูลและฟิลด์` · BRD `ข้อมูลหลักในระบบ` |
+| เคส **สิทธิ์ / บทบาท** | PRD `Validation & Edge Cases` + คำว่า "เฉพาะบทบาท…" ที่กระจายอยู่ในหัวข้อรายหน้าจอ |
+| สิ่งที่ **ห้าม** เขียนเป็นเคส | BRD `ขอบเขต` (ฝั่ง "ไม่ทำ") · PRD `ขอบเขตของ Demo (Out of Scope)` |
+| ตรวจซ้ำระดับโค้ด | `src/types.ts` ของ prototype — optional / enum ที่เอกสารไม่ได้ระบุ |
+| Success Criteria ของเดโม | `docs/IDEA.md` |
 
-You read all three in step 1 already. Read them again here, with a tester's eye.
+You read these in step 1 already. Read them again here, with a tester's eye.
 
 **Positive cases are quoted, not invented.** An acceptance criterion is already
 a test case in prose:
@@ -33,15 +42,25 @@ a test case in prose:
 (`AC-2 · จ่ายออกม้วนผ้า`) so every case traces back to something the customer
 actually agreed to.
 
-**Negative cases you have to synthesize — the BRD does not write them.** ACs and
-F-items describe the happy path; nobody writes down "จ่ายออกเกินความยาวคงเหลือ
-ไม่ได้". Derive them from:
+**Negative cases are usually written down too — read them before inventing
+one.** The PRD's Validation & Edge Cases section states them as condition →
+result, with the real error text:
 
-- the **Data Model** — a length in yards is a positive decimal, so: ติดลบ, ศูนย์,
-  ตัวอักษร, ทศนิยมเกิน · a quantity is bounded by stock · an FK means the
-  referenced record can be missing or deleted · a unique key means duplicates.
-- the **PRD's screen rules** — every role-gated control is a permission case.
-- the catalogue below, matched to the fields you actually built.
+> 1. Duplicate Barcode: ถ้าสแกนบาร์โค้ดที่ยังสถานะ เต็มม้วน/เศษผ้า → บล็อก +
+>    เตือนสีแดง "รหัสบาร์โค้ดนี้มีอยู่ในระบบแล้วและยังไม่ถูกจ่ายออก"
+
+Copy the expected message **verbatim** into ผลลัพธ์ที่คาดหวัง — a tester
+comparing wording needs the exact string, not your paraphrase.
+
+**Only then extend by derivation**, field by field from the Data Model, which
+carries type, unit and constraint:
+
+> - ความยาวเริ่มต้น (Initial Length): Decimal (ทศนิยม 2 ตำแหน่ง, บังคับกรอก, > 0, หน่วย: หลา)
+
+`> 0` → ติดลบ / ศูนย์ · `ทศนิยม 2 ตำแหน่ง` → ใส่ 3 ตำแหน่ง · `บังคับกรอก` →
+ปล่อยว่าง · `ห้ามซ้ำ` → ใส่ค่าซ้ำ · `ต้องมีอยู่จริง` (FK) → อ้างถึงรายการที่ถูกลบ.
+The catalogue further down is the backstop for fields the docs left
+unconstrained — never the starting point.
 
 **Then check every case against the app you really built.** A case whose feature
 does not exist is NOT deleted — it moves to "ยังไม่รองรับ" carrying its `AC`/`F`
@@ -53,11 +72,12 @@ what was agreed?", not merely "does what was built work?".
 1. **Never fill in the result columns.** `ผลการทดสอบจริง` and `สถานะ` stay
    EMPTY. You did not run the app against a browser and a live database — the
    tester does. Pre-filling them is faking a test report.
-2. **Docs first, then code.** Positive cases are lifted from `BRD` F-xx/AC-x and
-   the PRD's screen rules; negative cases are synthesized from the Data Model
-   (see above). Then read your own ported screens and reconcile: a case the app
-   cannot pass moves to "ยังไม่รองรับ" with its requirement id — never invent a
-   validation rule the app has and never quietly drop one the BRD asked for.
+2. **Docs first, then code.** Positive cases are lifted from BRD `AC-x`/`F-xx`,
+   negative cases from the PRD's Validation & Edge Cases (then extended from the
+   Data Model). Only after that do you read your own ported screens and
+   reconcile: a case the app cannot pass moves to "ยังไม่รองรับ" with its
+   requirement id — never invent a rule the docs never asked for, and never
+   quietly drop one they did.
 3. **Cover every screen in `PORT_CHECKLIST.md`.** One section per screen, in the
    order a user meets them (login → main list → detail → create/edit → …).
 4. **Both directions.** For each form: the happy path (correct data → saved) AND
@@ -122,10 +142,9 @@ section) so a tester can say "TC-14 fail" with no ambiguity.
 
 ## Negative-case catalogue — pick what applies, ignore the rest
 
-This is a menu, not a checklist. Only write the rows whose field type actually
-exists in the app you built — and pick them by looking at the BRD's **Data
-Model** (ชนิด, หน่วย, PK/FK, unique) field by field, not by scanning this table
-top to bottom.
+Use this only for fields the PRD's Validation & Edge Cases and Data Model left
+unconstrained. It is a menu, not a checklist: write a row only where that field
+type actually exists in the app you built.
 
 | ชนิดของช่อง | เคสที่ต้องมี |
 |---|---|
