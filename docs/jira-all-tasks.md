@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `7c1246a` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `32d73e3` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -349,6 +349,13 @@
 **Subtasks:** บังคับ prefix ชื่อเอกสารทุกครั้ง (`BRD AC-2`, `BRD F-03`, `PRD US-02`) · edge case อ้างด้วย**ชื่อ** mint เป็น `EC-DuplicateBarcode` ห้ามใช้ตำแหน่งในลิสต์ · เก็บ id ด้วย `\b(AC|F|US)-\d+\b` เพราะ padding ไม่ตรงกัน (`AC-1` vs `US-01`) · ตาราง coverage ต้องครอบทั้ง BRD AC + F ระดับ must + PRD US + edge case ที่มีชื่อ
 **AC:** ตาราง coverage อ่านแล้วรู้ทันทีว่าข้อกำหนดมาจากเอกสารไหน ไม่ต้องไล่เช็ค scheme ของแต่ละโปรเจกต์
 **Notes:** repo CRN · `SKILL.md`, `references/test-cases.md`
+
+## [CRN] หน้าจอนับจาก wiring ไม่ใช่จาก file tree (ไฟล์ผีใน export)
+**Type:** Task · **Status:** Done (`32d73e3`)
+**Desc:** export จริงมีไฟล์ orphan — `src/pages/` 9 ไฟล์ แต่ `App.tsx` import แค่ 2 ที่เหลือ render จาก `src/components/` แทน (เศษจากตอน codegen iterate) · step 3 เดินจาก file tree เลยนับไฟล์ตายเป็นงาน แล้วกฎ "port ทุกไฟล์ห้ามข้าม" ก็บังคับให้พอร์ตของที่ไม่มีใครเรียก · step 9 ก็จะเขียนเคสเทสให้หน้าที่กดเข้าไม่ถึง = coverage เขียวแต่ไม่ได้พิสูจน์อะไร
+**Subtasks:** รายชื่อหน้าจอมาจาก **wiring** (route table หรือ `activeMenu`/`activeView` switch) cross-check กับ PRD `หน้าจอทั้งหมด` · orphan **ไม่ข้ามเงียบ** — ต้องมีบรรทัดใน PORT_CHECKLIST ติดป้าย `[orphan]` + หลักฐานว่าไม่มีใคร import + ซ้ำใน BUILD_NOTES "Not ported" (กันไม่ให้ "มันเป็น orphan" กลายเป็นข้ออ้างข้ามงาน ซึ่งจะเปิดรูที่ `42c50b9` เพิ่งปิด) · เกณฑ์ตัดสินเป็นกลไก: มีใคร import ไหม / PRD ระบุเป็นหน้าจอไหม · schema ดึงจาก **PRD Data Model** เป็นหลัก (มี type/หน่วย/required/unique/FK ครบ) แล้ว cross-check `src/types.ts`
+**AC:** demo ไม่มีหน้าที่กดเข้าไม่ถึง · เอกสารเทสไม่มีเคสของหน้าผี · orphan ทุกไฟล์ถูกประกาศพร้อมเหตุผล
+**Notes:** repo CRN · `SKILL.md`, `references/nextjs-conversion.md`, `references/prisma-setup.md`, `references/test-cases.md` · ฝั่ง FBD ยืนยันว่า `docs/` มีแค่ 3 ไฟล์ (IDEA/BRD/PRD) และ prototype เป็น in-memory ล้วน ไม่มี persistence
 
 ## [CRN] เลิกใส่ mock data — เหลือแค่บัญชี login
 **Type:** Task · **Status:** Done (`1afb2d3`)
