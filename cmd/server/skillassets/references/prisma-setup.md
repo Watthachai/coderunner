@@ -1,6 +1,6 @@
 # Prisma + PostgreSQL setup for Next.js (App Router)
 
-Goal: replace the prototype's in-memory / mock data with a real Prisma + PostgreSQL layer, derived from the prototype's data shapes and the BRD/PRD — while keeping `next build` green WITHOUT a live database.
+Goal: replace the prototype's in-memory / mock data with a real Prisma + PostgreSQL layer, derived from the PRD's Data Model section and cross-checked against the prototype's own types — while keeping `next build` green WITHOUT a live database.
 
 ## 1. Install
 
@@ -14,7 +14,13 @@ npx prisma init --datasource-provider postgresql   # creates prisma/schema.prism
 
 ## 2. schema.prisma
 
-`prisma/schema.prisma` (provider postgresql, url from env). Derive the models from the prototype's `src/data.ts` / `src/types.ts` and the BRD/PRD entities. Example shape — REPLACE with the real model:
+`prisma/schema.prisma` (provider postgresql, url from env). **Derive the models from the PRD's Data Model section** (`ข้อมูลและฟิลด์` / `Data Model`) — it is written per field with the constraints you need:
+
+> - รหัสบาร์โค้ดม้วน (Roll Barcode): String (บังคับกรอก, ห้ามซ้ำในระบบ)
+> - ความยาวคงเหลือ (Current Length): Decimal (ทศนิยม 2 ตำแหน่ง, บังคับกรอก, >= 0, หน่วย: หลา)
+> - สถานะม้วนผ้า (Roll Status): Enum (เต็มม้วน / เศษผ้า / จ่ายออกแล้ว)
+
+`ห้ามซ้ำ` → `@unique` · `บังคับกรอก` → required + a type-appropriate `@default` (§2 below) · `ทศนิยม 2` → `Decimal @db.Decimal(12, 2)` · `ต้องมีอยู่จริง` → a relation · `Enum (…)` → a Prisma `enum` with those exact members. Cross-check `src/types.ts` for optionality and enum spelling; the prototype holds everything in `useState` with no persistence, so the docs — not the running app — are the source of truth. Example shape — REPLACE with the real model:
 
 ```prisma
 generator client {

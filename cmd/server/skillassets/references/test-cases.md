@@ -88,7 +88,7 @@ what was agreed?", not merely "does what was built work?".
    requirement id, always source-prefixed (`BRD AC-2`, `PRD US-01`,
    `EC-<ชื่อเคส>`) — never invent a rule the docs never asked for, and never
    quietly drop one they did.
-3. **Cover every screen in `PORT_CHECKLIST.md`.** One section per screen, in the
+3. **Cover every REACHABLE screen in `PORT_CHECKLIST.md`** — the ones wired into the router or the `activeMenu` switch, not every file in `src/pages/`; exports carry orphan components nobody can navigate to, and a case for a screen the user cannot open is a false green. One section per screen, in the
    order a user meets them (login → main list → detail → create/edit → …).
 4. **Both directions.** For each form: the happy path (correct data → saved) AND
    the negative cases (bad data → rejected with a message). Negative cases are

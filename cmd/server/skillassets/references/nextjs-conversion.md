@@ -44,7 +44,7 @@ tsconfig.json
 package.json
 ```
 
-Keep the same component boundaries and file names where practical — this is a port, not a rewrite. **Mirror nested directories as-is** (`src/components/dashboard/StatCard.tsx` → `components/dashboard/StatCard.tsx`): every file under `src/` that is not Vite bootstrap has exactly one counterpart here, so coverage is checkable by eye. Do not flatten the tree and do not fold several small components into one file.
+Keep the same component boundaries and file names where practical — this is a port, not a rewrite. **Mirror nested directories as-is** (`src/components/dashboard/StatCard.tsx` → `components/dashboard/StatCard.tsx`): every file under `src/` that is not Vite bootstrap has exactly one counterpart here, so coverage is checkable by eye. Do not flatten the tree and do not fold several small components into one file. The one exception is an **orphan** — a component nothing imports, left behind by the generator iterating (a `src/pages/` with nine files where `App.tsx` renders two of them and takes the rest from `src/components/`). Orphans are not ported; they are declared in `PORT_CHECKLIST.md` and `BUILD_NOTES.md` with the evidence that nothing imports them. Anything imported anywhere, or listed as a screen in the PRD, is not an orphan.
 
 ## 3. Entry points: index.html -> layout.tsx + page.tsx
 
