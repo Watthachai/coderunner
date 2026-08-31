@@ -39,13 +39,9 @@ func run() error {
 
 	logger := newLogger(cfg)
 	slog.SetDefault(logger)
-	modelLabel := cfg.ClaudeModel
-	if modelLabel == "" {
-		modelLabel = "(cli default)"
-	}
 	build := buildinfo.Read()
 	logger.Info("starting CRN", "env", cfg.Environment, "addr", cfg.ListenAddr,
-		"run_claude", cfg.RunClaude, "claude_model", modelLabel,
+		"run_claude", cfg.RunClaude, "claude_model", cfg.ClaudeModel,
 		"git_remote", cfg.GitRemote, "github_owner", cfg.GithubOwner,
 		"revision", build.Revision, "built", build.Time, "modified", build.Modified)
 

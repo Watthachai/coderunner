@@ -30,9 +30,10 @@ type Config struct {
 	// ClaudeBinPath is the absolute path to the `claude` CLI used to spawn runs.
 	ClaudeBinPath string
 
-	// ClaudeModel optionally pins the model the spawned `claude` uses via
-	// --model (e.g. "sonnet" for the latest Sonnet, or a full model id). Empty
-	// uses the CLI's default model.
+	// ClaudeModel is the model the spawned `claude` runs, passed as --model.
+	// It always has a value (defaultClaudeModel when CRN_CLAUDE_MODEL is
+	// unset), so a build never silently inherits whatever model the host
+	// account happens to default to.
 	ClaudeModel string
 
 	// DockerRegistryUser is the Docker Hub user image tags are pushed under:
@@ -120,6 +121,13 @@ type Config struct {
 	TerminalShell string
 }
 
+// defaultClaudeModel is the model builds use when CRN_CLAUDE_MODEL is unset:
+// the latest Opus. Pinned by full id rather than the CLI's "opus" alias so the
+// boot log and the build trace name the exact model that produced a demo.
+// Override with a full id ("claude-sonnet-5" — cheaper/faster) or an alias that
+// follows the newest of a family ("opus", "sonnet").
+const defaultClaudeModel = "claude-opus-5"
+
 // Load reads configuration from the environment.
 //
 // Required (Load errors if unset/empty):
@@ -140,6 +148,7 @@ type Config struct {
 //	CRN_SHUTDOWN_TIMEOUT   ("15s")
 //	CRN_ENV                ("development")
 //	CRN_TERMINAL_SHELL     ("" — falls back to $SHELL, then /bin/zsh/bash/sh)
+//	CRN_CLAUDE_MODEL       (defaultClaudeModel — the latest Opus)
 func Load() (*Config, error) {
 	cfg := &Config{
 		ListenAddr:         getEnv("CRN_LISTEN_ADDR", ":8080"),
@@ -147,7 +156,7 @@ func Load() (*Config, error) {
 		CentralDatabaseURL: os.Getenv("CRN_CENTRAL_DATABASE_URL"),
 		MongoURL:           getEnv("CRN_MONGO_URL", "mongodb://localhost:27017"),
 		ClaudeBinPath:      os.Getenv("CRN_CLAUDE_BIN"),
-		ClaudeModel:        os.Getenv("CRN_CLAUDE_MODEL"),
+		ClaudeModel:        getEnv("CRN_CLAUDE_MODEL", defaultClaudeModel),
 		DockerRegistryUser: os.Getenv("CRN_DOCKER_USER"),
 		ProjectsDir:        getEnv("CRN_PROJECTS_DIR", "/projects"),
 		GitRemote:          os.Getenv("CRN_GIT_REMOTE"),

@@ -41,6 +41,7 @@
 | | `CRN_FEEDBACK_INGEST_URL` | PostgREST feedback ingest (`:3010`) |
 | | `CRN_GIT_REMOTE` | git push target (ว่าง = skip push) |
 | | `CRN_MAX_CONCURRENT_BUILDS` | build พร้อมกันได้กี่ตัว (default `5`, ต่ำสุด `1`) |
+| | `CRN_CLAUDE_MODEL` | model ที่ build ใช้ (default `claude-opus-5` = Opus ล่าสุด; `claude-sonnet-5` ถูกกว่า) |
 | | `CRN_MONGO_URL` | Mongo |
 | **Dashboard** | `NEXT_PUBLIC_CRN_API` | **ปล่อยว่าง** = derive จาก browser host เอง |
 
