@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `b313840` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `1afb2d3` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -328,6 +328,13 @@
 **Subtasks:** `defaultClaudeModel = "claude-opus-5"` (ใช้ id เต็ม ไม่ใช้ alias `opus` เพื่อให้ log/build trace ระบุ model ที่ผลิต demo ได้จริง) · `getEnv` แทน `os.Getenv` · main ตัดป้าย `(cli default)` ทิ้ง (ค่าว่างไม่มีอีกแล้ว) · `.env.example` + ตาราง env ใน deployment-config
 **AC:** boot log `claude_model=claude-opus-5` · ตั้ง `CRN_CLAUDE_MODEL=claude-sonnet-5` แล้ว restart = เปลี่ยนได้ทันที ไม่ต้อง rebuild
 **Notes:** repo CRN · `config.go`, `main.go` · **ค่าใช้จ่ายสูงขึ้น** — build เป็น agentic run ยาว ถ้าบิลพุ่งให้สลับเป็น sonnet
+
+## [CRN] เลิกใส่ mock data — เหลือแค่บัญชี login
+**Type:** Task · **Status:** Done (`1afb2d3`)
+**Desc:** เกือบทุกหน้าขึ้นข้อมูลปลอม และ Prisma ก็มี mock data ด้วย เพราะ **skill สั่งเองว่า** "port the prototype's mock array into a seed so the app has data" + image รัน `prisma db seed` **ทุกครั้งที่ start** → ลบข้อมูลตัวอย่างทิ้งแล้วรีสตาร์ทมันกลับมา, แก้แถวที่ seed ไว้แล้วโดน upsert ทับ = ลูกค้าเอาไปใช้งานจริงไม่ได้
+**Subtasks:** prisma-setup §5 เขียนใหม่ = seed **บัญชี Admin อย่างเดียว** (`upsert` by email + `update: {}`) · mock array ถูกลบทิ้ง ไม่ย้ายไป seed · ยกเว้นเฉพาะ reference/lookup ที่ไม่มีแล้ว UI วาดไม่ได้ (ต้องประกาศใน BUILD_NOTES) · บังคับว่าทุก entity ต้องมีทางสร้างข้อมูลจาก UI + empty state ไม่ใช่หน้าขาว · เกณฑ์จบเพิ่มข้อ (c) รันบน DB ว่างได้ · rename `DEMO_SEED` → `SEED_LOGIN` (ชื่อเดิมโกหก และไม่เคยอยู่ใน env contract) · แก้ INSTALL/QUICKSTART/on-prem guide · TEST_CASES เพิ่มเคส "เปิดครั้งแรก DB ว่าง" + "รีสตาร์ทแล้วของที่ลบต้องไม่กลับมา"
+**AC:** demo ที่ build ใหม่เปิดมาไม่มีข้อมูลปลอมเลย · login ด้วย `DEV_EMAIL`/`DEV_PASSWORD` ได้ · กรอกข้อมูลเอง → รีสตาร์ท/deploy ใหม่ ข้อมูลอยู่ครบ ของที่ลบไม่กลับมา
+**Notes:** repo CRN · `SKILL.md`, `references/prisma-setup.md`, `dockerbuild.go`, `scaffold.go` · **มีผลกับ build รอบถัดไปเท่านั้น — demo เก่าต้อง rebuild**
 
 ---
 
