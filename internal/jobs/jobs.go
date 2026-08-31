@@ -658,6 +658,25 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		})
 	}
 
+	// Check the finished tree against the harness rules a green build cannot
+	// enforce: a login-only seed, a TEST_CASES.md, a ticked PORT_CHECKLIST. Those
+	// rules live in the skill as prose, so a model that ignores one still produces
+	// a build that looks successful. Findings go into the stream (and so into the
+	// durable trace) next to the push line — never fatal, because they are
+	// heuristics and the operator is the one who can tell a legitimate reference
+	// table from leftover demo rows.
+	if findings := buildstep.CheckHarnessRules(workDir); len(findings) > 0 {
+		buildstep.LogFindings(findings, log)
+		for _, f := range findings {
+			m.publish(job.ID, domain.BuildEventMsg{
+				Kind:      domain.WSAssistantText,
+				Text:      f.Text,
+				JobID:     job.ID.String(),
+				Timestamp: time.Now().UTC(),
+			})
+		}
+	}
+
 	// Write the on-prem delivery bundle (opaque app + migrate Dockerfiles, customer
 	// docker-compose, INSTALL) BEFORE the git push so it is committed alongside the
 	// build. Uses the deterministic image tags the push-time image build produces.
