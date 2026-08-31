@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `4c8ee7b` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `eb22875` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -370,6 +370,13 @@
 **Subtasks:** prisma-setup §5 เขียนใหม่ = seed **บัญชี Admin อย่างเดียว** (`upsert` by email + `update: {}`) · mock array ถูกลบทิ้ง ไม่ย้ายไป seed · ยกเว้นเฉพาะ reference/lookup ที่ไม่มีแล้ว UI วาดไม่ได้ (ต้องประกาศใน BUILD_NOTES) · บังคับว่าทุก entity ต้องมีทางสร้างข้อมูลจาก UI + empty state ไม่ใช่หน้าขาว · เกณฑ์จบเพิ่มข้อ (c) รันบน DB ว่างได้ · rename `DEMO_SEED` → `SEED_LOGIN` (ชื่อเดิมโกหก และไม่เคยอยู่ใน env contract) · แก้ INSTALL/QUICKSTART/on-prem guide · TEST_CASES เพิ่มเคส "เปิดครั้งแรก DB ว่าง" + "รีสตาร์ทแล้วของที่ลบต้องไม่กลับมา"
 **AC:** demo ที่ build ใหม่เปิดมาไม่มีข้อมูลปลอมเลย · login ด้วย `DEV_EMAIL`/`DEV_PASSWORD` ได้ · กรอกข้อมูลเอง → รีสตาร์ท/deploy ใหม่ ข้อมูลอยู่ครบ ของที่ลบไม่กลับมา
 **Notes:** repo CRN · `SKILL.md`, `references/prisma-setup.md`, `dockerbuild.go`, `scaffold.go` · **มีผลกับ build รอบถัดไปเท่านั้น — demo เก่าต้อง rebuild**
+
+## [CRN] ตัวตรวจว่า build ทำตามกฎ harness ไหม (seed / TEST_CASES / checklist)
+**Type:** Task · **Status:** Done (`eb22875`)
+**Desc:** กฎทั้งหมดที่แก้กันวันนี้ (seed แค่บัญชี login, ต้องมี `TEST_CASES.md`, `PORT_CHECKLIST` ต้องติ๊กครบ) **เป็น prompt ล้วน ๆ** — โมเดลไม่ทำตามเมื่อไหร่ build ก็ยังขึ้นว่าสำเร็จ ไม่มีใครรู้จนลูกค้าเปิดเจอข้อมูลปลอม กฎเลยไม่มีฟัน
+**Subtasks:** `buildstep/compliance.go` + test 12 เคส · เสียบใน `runJob` หลัง scaffold ก่อน git push · เตือน 3 อย่าง: seed เขียนเกิน 1 model / ใช้ `createMany` / เขียนเกิน 3 ครั้ง · ไม่มี `TEST_CASES.md` · `PORT_CHECKLIST` เหลือข้อไม่ติ๊ก (ข้าม `[orphan]` เพราะเป็นการประกาศ ไม่ใช่งานค้าง) · publish เป็น `WSAssistantText` → เห็นทั้ง live stream และ trace ที่เก็บไว้ + log `harness rule violated` ให้ grep ได้
+**AC:** build ที่ไม่ทำตามกฎ มีบรรทัด ⚠ โผล่ข้าง ๆ "✓ pushed" · build ที่ถูกต้องเงียบสนิท
+**Notes:** repo CRN · **เตือนอย่างเดียว ไม่ fail build** — เป็น heuristic และ reference data ที่ถูกกฎแยกจาก mock row ด้วยการนับไม่ได้ ต้องให้คนตัดสิน · client ใน seed ไม่ได้ชื่อ `prisma` เสมอ (บาง build ใช้ `db`) จึงอ่าน model จาก segment ที่ 2
 
 ---
 
