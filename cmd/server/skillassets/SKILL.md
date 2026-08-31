@@ -16,7 +16,7 @@ Use the ready-made `assets/Dockerfile` and `assets/.dockerignore` as your starti
 
 ## Steps
 
-1. **Extract & read.** Find the `*.zip` in this directory, extract it in place, then delete the zip. Read `docs/IDEA.md` / `docs/BRD.md` / `docs/PRD.md` (or root-level IDEA/BRD/PRD) — enough to name the product and derive the data model.
+1. **Extract & read.** Find the `*.zip` in this directory, extract it in place, then delete the zip. Read `docs/IDEA.md` / `docs/BRD.md` / `docs/PRD.md` (or root-level IDEA/BRD/PRD) — these are the customer's own answers, written up: the BRD carries Functional Requirements (`F-01…`), a Data Model, and Acceptance Criteria (`AC-1…`); the PRD carries per-screen components and role rules. They name the product, drive the schema (step 5), and are the source of the test cases (step 9) — do not skim them.
 
 2. **Recognize the source.** It is a **Vite + React SPA**: `index.html` (Tailwind CDN + fonts, `<div id="root">`), `src/main.tsx` (createRoot), `src/App.tsx` (root view), `src/index.css`, optional `src/data.ts`/`src/types.ts` (mock data), `vite.config.*`. Confirm before converting.
 
@@ -50,7 +50,12 @@ Use the ready-made `assets/Dockerfile` and `assets/.dockerignore` as your starti
 
 8. **Write `BUILD_NOTES.md`** at the root: the product in 1-2 lines; the stack (Next.js App Router + Prisma + Postgres + Docker); the exact commands (install / `prisma generate` / dev / build / `docker build`); the DB schema summary; a bullet list of everything you changed; a **coverage line** (`ported N/N screens, M source files`); and a **"Not ported"** section listing anything from `PORT_CHECKLIST.md` you deliberately left out, with the reason (empty section = nothing dropped).
 
-9. **Write `TEST_CASES.md`** at the root — the test script the customer's own testers run against this demo (see test-cases.md). In the briefs' language (normally Thai), one section per screen from `PORT_CHECKLIST.md`, numbered `TC-01`… across the whole file, with the six columns `ID | ฟังก์ชันที่ทดสอบ | ขั้นตอน / สิ่งที่กรอก | ผลลัพธ์ที่คาดหวัง | ผลการทดสอบจริง | สถานะ`. Every screen gets both the happy path and the **negative** cases that fit the fields you actually built (empty required field, letters in a number field, negative/zero price, over-long text, `<script>alert('x')</script>` in a text field, opening an inner page while logged out …). **Leave `ผลการทดสอบจริง` and `สถานะ` EMPTY** — you did not run the app; the tester fills them in. Close the file with **"สิ่งที่ demo นี้ยังไม่รองรับ (ทราบล่วงหน้า)"** listing the rules this port genuinely does not enforce — do NOT add features to make cases pass, and do NOT hide them.
+9. **Write `TEST_CASES.md`** at the root — the test script the customer's own testers run against this demo (see test-cases.md). In the briefs' language (normally Thai), numbered `TC-01`… across the whole file, six columns `ID | ฟังก์ชันที่ทดสอบ | ขั้นตอน / สิ่งที่กรอก | ผลลัพธ์ที่คาดหวัง | ผลการทดสอบจริง | สถานะ`.
+   - **The requirements are already written — go get them.** Positive cases come from `docs/BRD.md` (**Acceptance Criteria `AC-1…`** and **Functional Requirements `F-01…`** — each one is a test case in prose) and from the PRD's per-screen and **role-gated** rules. Quote the id in the ฟังก์ชันที่ทดสอบ column (`AC-2 · จ่ายออกม้วนผ้า`) so every case traces to something the customer agreed to.
+   - **Negative cases you synthesize** — the BRD writes the happy path only. Derive them field by field from the BRD's **Data Model** (ชนิด/หน่วย/PK/FK/unique) plus the catalogue in test-cases.md, matched to the fields you actually built.
+   - **Add a coverage table** listing EVERY `AC` and every must-level `F`: which `TC` covers it, or "ยังไม่รองรับ".
+   - **Leave `ผลการทดสอบจริง` and `สถานะ` EMPTY** — you did not run the app; the tester fills them in.
+   - Close with **"สิ่งที่ demo นี้ยังไม่รองรับ (ทราบล่วงหน้า)"** — every requirement the port does not meet, cited by `AC`/`F` id. Do NOT add features to make a case pass, and do NOT hide a requirement you skipped.
 
 10. **Honest outcome — a green build is NOT the finish line.** Finish only when ALL hold:
    - (a) `npx next build` passes,

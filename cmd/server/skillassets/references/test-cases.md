@@ -7,15 +7,57 @@ written at the repo root next to `BUILD_NOTES.md`.
 
 It is a *script to be run by a human*, not a report of tests you ran.
 
+## Where the cases come from
+
+The requirements already exist — do not invent them from the screens. FITT
+Builder interviews the customer and synthesizes the answers into the three docs
+in the export's `docs/` folder. There is no separate Q&A file; **these ARE the
+answers**, already structured:
+
+| ไฟล์ | สิ่งที่หยิบไปใช้ |
+|---|---|
+| `docs/BRD.md` | **Functional Requirements `F-01…`** + **Acceptance Criteria `AC-1…`** → เคส positive แบบหยิบไปใช้ได้เลย · **Data Model** (entity, PK/FK, ชนิด, หน่วย) → วัตถุดิบของเคส negative · **ขอบเขต (ทำ/ไม่ทำ)** → สิ่งที่ห้ามเขียนเป็นเคส |
+| `docs/PRD.md` | ส่วนประกอบรายหน้าจอ + **กฎ role-gated** ("ปุ่มนี้ใช้ได้เฉพาะ Owner/Purchasing") → เคสสิทธิ์เข้าถึง |
+| `docs/IDEA.md` | Success Criteria ของเดโม |
+
+You read all three in step 1 already. Read them again here, with a tester's eye.
+
+**Positive cases are quoted, not invented.** An acceptance criterion is already
+a test case in prose:
+
+> AC-2: "บันทึกจ่ายออกม้วนผ้า (ขายยกม้วน) สถานะของม้วนต้องเปลี่ยนเป็น
+> 'จ่ายออกแล้ว' และความยาวคงเหลือต้องกลายเป็น 0 ทันทีแบบ Real-time"
+
+→ ขั้นตอน = บันทึกจ่ายออกม้วนผ้าแบบยกม้วน · ผลที่คาดหวัง = สถานะเป็น "จ่ายออกแล้ว"
+และคงเหลือ = 0 ทันที. Put the id in the **ฟังก์ชันที่ทดสอบ** column
+(`AC-2 · จ่ายออกม้วนผ้า`) so every case traces back to something the customer
+actually agreed to.
+
+**Negative cases you have to synthesize — the BRD does not write them.** ACs and
+F-items describe the happy path; nobody writes down "จ่ายออกเกินความยาวคงเหลือ
+ไม่ได้". Derive them from:
+
+- the **Data Model** — a length in yards is a positive decimal, so: ติดลบ, ศูนย์,
+  ตัวอักษร, ทศนิยมเกิน · a quantity is bounded by stock · an FK means the
+  referenced record can be missing or deleted · a unique key means duplicates.
+- the **PRD's screen rules** — every role-gated control is a permission case.
+- the catalogue below, matched to the fields you actually built.
+
+**Then check every case against the app you really built.** A case whose feature
+does not exist is NOT deleted — it moves to "ยังไม่รองรับ" carrying its `AC`/`F`
+id. That is the whole point: the document then answers "does this demo match
+what was agreed?", not merely "does what was built work?".
+
 ## Five rules
 
 1. **Never fill in the result columns.** `ผลการทดสอบจริง` and `สถานะ` stay
    EMPTY. You did not run the app against a browser and a live database — the
    tester does. Pre-filling them is faking a test report.
-2. **Every case must come from code you actually wrote.** Read your own ported
-   screens before writing a case. A case about a field that does not exist, or a
-   validation rule the app never implements, is noise that makes the whole
-   document untrustworthy.
+2. **Docs first, then code.** Positive cases are lifted from `BRD` F-xx/AC-x and
+   the PRD's screen rules; negative cases are synthesized from the Data Model
+   (see above). Then read your own ported screens and reconcile: a case the app
+   cannot pass moves to "ยังไม่รองรับ" with its requirement id — never invent a
+   validation rule the app has and never quietly drop one the BRD asked for.
 3. **Cover every screen in `PORT_CHECKLIST.md`.** One section per screen, in the
    order a user meets them (login → main list → detail → create/edit → …).
 4. **Both directions.** For each form: the happy path (correct data → saved) AND
@@ -51,9 +93,19 @@ It is a *script to be run by a human*, not a report of tests you ran.
 | หัวข้อ | จำนวนเคส | Pass | Fail |
 ...
 
+## ความครอบคลุมข้อกำหนด (BRD)
+| ข้อกำหนด | ใจความ | เคสที่คุม | สถานะ |
+|---|---|---|---|
+| AC-1 | <ย่อ 1 บรรทัด> | TC-04, TC-05 | มีเคส |
+| AC-4 | <ย่อ 1 บรรทัด> | — | ยังไม่รองรับ (ดูท้ายเอกสาร) |
+
 ## สิ่งที่ demo นี้ยังไม่รองรับ (ทราบล่วงหน้า)
 <ดูหัวข้อท้ายไฟล์นี้>
 ```
+
+The coverage table must list **every** `AC` and every `must`-level `F` in the
+BRD — one row each, no omissions. It is what turns the file from a click-list
+into an answer to "ตกลงเดโมนี้ทำได้ตามที่คุยไว้ไหม".
 
 Case table — these six columns, always:
 
@@ -62,6 +114,7 @@ Case table — these six columns, always:
 |---|---|---|---|---|---|
 | TC-01 | เข้าสู่ระบบ | กรอกอีเมล/รหัสผ่านที่ถูกต้อง แล้วกดเข้าสู่ระบบ | เข้าสู่หน้าหลักได้ | | |
 | TC-02 | เข้าสู่ระบบ | กรอกอีเมลถูก แต่รหัสผ่านผิด | ไม่เข้าระบบ + ขึ้นข้อความแจ้งเตือน | | |
+| TC-03 | `AC-2` · จ่ายออกม้วนผ้า | เลือกม้วน → บันทึกจ่ายออกแบบยกม้วน | สถานะเป็น "จ่ายออกแล้ว" และคงเหลือ = 0 ทันที | | |
 ```
 
 Number `TC-01`, `TC-02`, … continuously across the whole document (not per
@@ -70,7 +123,9 @@ section) so a tester can say "TC-14 fail" with no ambiguity.
 ## Negative-case catalogue — pick what applies, ignore the rest
 
 This is a menu, not a checklist. Only write the rows whose field type actually
-exists in the app you built.
+exists in the app you built — and pick them by looking at the BRD's **Data
+Model** (ชนิด, หน่วย, PK/FK, unique) field by field, not by scanning this table
+top to bottom.
 
 | ชนิดของช่อง | เคสที่ต้องมี |
 |---|---|
@@ -83,7 +138,7 @@ exists in the app you built.
 | ตัวเลือก / ความสัมพันธ์ | เลือกรายการที่ถูกลบไปแล้ว · ไม่เลือกอะไรเลยแล้วบันทึก |
 | รายการ / ตาราง | ไม่มีข้อมูลเลย (empty state ต้องไม่ใช่หน้าขาว) · ค้นหาคำที่ไม่มี · หน้าสุดท้ายของ pagination |
 | ลบ / ยกเลิก | กดลบแล้วยกเลิก → ข้อมูลต้องยังอยู่ · ลบรายการที่มีของอื่นอ้างถึง |
-| สิทธิ์เข้าถึง | เปิด URL ของหน้าภายในทั้งที่ยังไม่ล็อกอิน → ต้องเด้งไปหน้าเข้าสู่ระบบ |
+| สิทธิ์เข้าถึง | เปิด URL ของหน้าภายในทั้งที่ยังไม่ล็อกอิน → ต้องเด้งไปหน้าเข้าสู่ระบบ · **ทุกกฎ role-gated ใน PRD** ("ปุ่มนี้ใช้ได้เฉพาะ Owner") → เข้าด้วยบทบาทอื่นแล้วต้องไม่เห็น/กดไม่ได้ |
 | ตะกร้า / ชำระเงิน *(เฉพาะแอปที่มีจริง)* | กดชำระเงินโดยตะกร้าว่าง · สั่งเกินสต็อก · คูปองหมดอายุ / ใช้ซ้ำ |
 | อัปโหลดไฟล์ *(เฉพาะแอปที่มีจริง)* | ไฟล์ผิดชนิด · ไฟล์ใหญ่เกินกำหนด |
 
@@ -108,13 +163,17 @@ validation for a case in the catalogue, do NOT invent a rule and do NOT quietly
 drop the case — list it under **"สิ่งที่ demo นี้ยังไม่รองรับ (ทราบล่วงหน้า)"**:
 
 ```markdown
-| สิ่งที่ยังไม่รองรับ | ผลที่จะเกิดถ้าลอง | ถ้าต้องการให้รองรับ |
-|---|---|---|
-| ช่องราคายังไม่กันค่าติดลบ | บันทึกได้ ยอดรวมติดลบ | เพิ่มการตรวจค่า > 0 ทั้งฝั่งหน้าจอและ server action |
-| ยังไม่มีการล็อกบัญชีเมื่อกรอกรหัสผิดหลายครั้ง | ลองรหัสผ่านซ้ำได้ไม่จำกัด | เพิ่มการนับครั้งที่ผิดต่อบัญชี |
+| อ้างอิง | สิ่งที่ยังไม่รองรับ | ผลที่จะเกิดถ้าลอง | ถ้าต้องการให้รองรับ |
+|---|---|---|---|
+| `AC-4` | แจ้งเตือนเมื่อสต็อกต่ำกว่า Reorder Point | ไม่มีแถบเตือน ต้องดูตัวเลขเอง | คำนวณผลรวมต่อรหัสแล้วเทียบ Reorder Point ตอน render |
+| (derive) | ช่องราคายังไม่กันค่าติดลบ | บันทึกได้ ยอดรวมติดลบ | เพิ่มการตรวจค่า > 0 ทั้งหน้าจอและ server action |
+| (derive) | ยังไม่ล็อกบัญชีเมื่อกรอกรหัสผิดหลายครั้ง | ลองรหัสผ่านซ้ำได้ไม่จำกัด | นับครั้งที่ผิดต่อบัญชี |
 ```
 
-This section is what makes the document useful: the customer learns the demo's
-real boundaries instead of discovering them as "bugs". Writing it does NOT mean
+Cite the `AC`/`F` id when the gap is something the BRD asked for, and `(derive)`
+when it is a validation rule nobody wrote down. This section is what makes the
+document useful: the customer learns the demo's real boundaries instead of
+discovering them as "bugs", and sees exactly which agreed requirement is still
+open. Writing it does NOT mean
 implementing the missing rules — the port stays faithful (see the hard rules in
 SKILL.md); it means being straight about what the demo does today.
