@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `1afb2d3` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `3efac43` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -328,6 +328,13 @@
 **Subtasks:** `defaultClaudeModel = "claude-opus-5"` (ใช้ id เต็ม ไม่ใช้ alias `opus` เพื่อให้ log/build trace ระบุ model ที่ผลิต demo ได้จริง) · `getEnv` แทน `os.Getenv` · main ตัดป้าย `(cli default)` ทิ้ง (ค่าว่างไม่มีอีกแล้ว) · `.env.example` + ตาราง env ใน deployment-config
 **AC:** boot log `claude_model=claude-opus-5` · ตั้ง `CRN_CLAUDE_MODEL=claude-sonnet-5` แล้ว restart = เปลี่ยนได้ทันที ไม่ต้อง rebuild
 **Notes:** repo CRN · `config.go`, `main.go` · **ค่าใช้จ่ายสูงขึ้น** — build เป็น agentic run ยาว ถ้าบิลพุ่งให้สลับเป็น sonnet
+
+## [CRN] เคสเทสต้องมาจาก BRD/PRD ไม่ใช่จากหน้าจอ
+**Type:** Task · **Status:** Done (`3efac43`)
+**Desc:** กฎเดิมใน `references/test-cases.md` บอกว่า "ทุกเคสต้องมาจากโค้ดที่เขียนจริง" → เทสได้แค่สิ่งที่ทำไปแล้ว ถ้า port ข้าม AC ข้อไหนไป เอกสารเทสก็ข้ามตาม ลูกค้าไม่มีทางรู้ว่าขาด. ตรวจกับ FBD แล้ว (ยืนยันกับ session ที่ถือโปรเจกต์จริง): `docs/BRD.md` มีโครงตายตัว — Functional Requirements `F-01..`, Data Model (entity/PK/FK/หน่วย), **Acceptance Criteria `AC-1..`** และ `docs/PRD.md` มีรายหน้าจอ + กฎ role-gated · ไม่มีไฟล์ Q&A แยก คำตอบถูกสังเคราะห์ลง 3 เอกสารนี้แล้ว
+**Subtasks:** positive case หยิบจาก AC/F พร้อมอ้าง id ในตาราง (`AC-2 · ...`) · negative case สังเคราะห์จาก Data Model (ชนิด/หน่วย/PK-FK/unique) + กฎ role-gated เพราะ BRD เขียนแต่ happy path · เพิ่ม **ตาราง coverage** ทุก AC + F ระดับ must ว่าเคสไหนคุม/ยังไม่รองรับ · หัวข้อ "ยังไม่รองรับ" ต้องอ้าง id ไม่ใช่หายเงียบ · SKILL step 1 อธิบายว่าเอกสารพวกนี้คือคำตอบลูกค้า ห้ามอ่านผ่าน
+**AC:** เอกสารเทสตอบได้ว่า "เดโมทำได้ตามที่ตกลงไว้ไหม" ไม่ใช่แค่ "ที่ทำมาใช้ได้ไหม"
+**Notes:** repo CRN · `SKILL.md`, `references/test-cases.md` · มีผลกับ build รอบถัดไป
 
 ## [CRN] เลิกใส่ mock data — เหลือแค่บัญชี login
 **Type:** Task · **Status:** Done (`1afb2d3`)
