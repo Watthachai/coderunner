@@ -38,9 +38,14 @@ a test case in prose:
 > 'จ่ายออกแล้ว' และความยาวคงเหลือต้องกลายเป็น 0 ทันทีแบบ Real-time"
 
 → ขั้นตอน = บันทึกจ่ายออกม้วนผ้าแบบยกม้วน · ผลที่คาดหวัง = สถานะเป็น "จ่ายออกแล้ว"
-และคงเหลือ = 0 ทันที. Put the id in the **ฟังก์ชันที่ทดสอบ** column
-(`AC-2 · จ่ายออกม้วนผ้า`) so every case traces back to something the customer
-actually agreed to.
+และคงเหลือ = 0 ทันที. Put the id in the **ฟังก์ชันที่ทดสอบ** column so every case
+traces back to something the customer actually agreed to — and **always prefix
+it with the document it came from**: `BRD AC-2 · จ่ายออกม้วนผ้า`, `BRD F-03 · …`,
+`PRD US-02 · …`. The two docs number independently (the PRD usually labels
+`US-01…` and writes its acceptance criteria as Given/When/Then inside each user
+story), so a bare `AC-2` turns ambiguous the moment a project numbers both.
+Collect ids with `\b(AC|F|US)-\d+\b` — padding is inconsistent (`AC-1` vs
+`US-01`).
 
 **Negative cases are usually written down too — read them before inventing
 one.** The PRD's Validation & Edge Cases section states them as condition →
@@ -51,6 +56,10 @@ result, with the real error text:
 
 Copy the expected message **verbatim** into ผลลัพธ์ที่คาดหวัง — a tester
 comparing wording needs the exact string, not your paraphrase.
+
+These entries carry **no id** — they are a bare numbered list — but each has a
+name. Cite the name, never the position: `EC-DuplicateBarcode`, not
+`PRD §6.1 #2`. Regenerating the docs reorders the list; the name survives.
 
 **Only then extend by derivation**, field by field from the Data Model, which
 carries type, unit and constraint:
@@ -76,7 +85,8 @@ what was agreed?", not merely "does what was built work?".
    negative cases from the PRD's Validation & Edge Cases (then extended from the
    Data Model). Only after that do you read your own ported screens and
    reconcile: a case the app cannot pass moves to "ยังไม่รองรับ" with its
-   requirement id — never invent a rule the docs never asked for, and never
+   requirement id, always source-prefixed (`BRD AC-2`, `PRD US-01`,
+   `EC-<ชื่อเคส>`) — never invent a rule the docs never asked for, and never
    quietly drop one they did.
 3. **Cover every screen in `PORT_CHECKLIST.md`.** One section per screen, in the
    order a user meets them (login → main list → detail → create/edit → …).
@@ -116,15 +126,19 @@ what was agreed?", not merely "does what was built work?".
 ## ความครอบคลุมข้อกำหนด (BRD)
 | ข้อกำหนด | ใจความ | เคสที่คุม | สถานะ |
 |---|---|---|---|
-| AC-1 | <ย่อ 1 บรรทัด> | TC-04, TC-05 | มีเคส |
-| AC-4 | <ย่อ 1 บรรทัด> | — | ยังไม่รองรับ (ดูท้ายเอกสาร) |
+| `BRD AC-1` | <ย่อ 1 บรรทัด> | TC-04, TC-05 | มีเคส |
+| `BRD F-03` | <ย่อ 1 บรรทัด> | TC-07 | มีเคส |
+| `PRD US-02` | <ย่อ 1 บรรทัด> | TC-11 | มีเคส |
+| `EC-DuplicateBarcode` | <ย่อ 1 บรรทัด> | TC-12 | มีเคส |
+| `BRD AC-4` | <ย่อ 1 บรรทัด> | — | ยังไม่รองรับ (ดูท้ายเอกสาร) |
 
 ## สิ่งที่ demo นี้ยังไม่รองรับ (ทราบล่วงหน้า)
 <ดูหัวข้อท้ายไฟล์นี้>
 ```
 
-The coverage table must list **every** `AC` and every `must`-level `F` in the
-BRD — one row each, no omissions. It is what turns the file from a click-list
+The coverage table must list **every** BRD `AC`, every `must`-level BRD `F`,
+every PRD `US`, and every named entry in the PRD's Validation & Edge Cases —
+one row each, no omissions. It is what turns the file from a click-list
 into an answer to "ตกลงเดโมนี้ทำได้ตามที่คุยไว้ไหม".
 
 Case table — these six columns, always:
@@ -134,7 +148,7 @@ Case table — these six columns, always:
 |---|---|---|---|---|---|
 | TC-01 | เข้าสู่ระบบ | กรอกอีเมล/รหัสผ่านที่ถูกต้อง แล้วกดเข้าสู่ระบบ | เข้าสู่หน้าหลักได้ | | |
 | TC-02 | เข้าสู่ระบบ | กรอกอีเมลถูก แต่รหัสผ่านผิด | ไม่เข้าระบบ + ขึ้นข้อความแจ้งเตือน | | |
-| TC-03 | `AC-2` · จ่ายออกม้วนผ้า | เลือกม้วน → บันทึกจ่ายออกแบบยกม้วน | สถานะเป็น "จ่ายออกแล้ว" และคงเหลือ = 0 ทันที | | |
+| TC-03 | `BRD AC-2` · จ่ายออกม้วนผ้า | เลือกม้วน → บันทึกจ่ายออกแบบยกม้วน | สถานะเป็น "จ่ายออกแล้ว" และคงเหลือ = 0 ทันที | | |
 ```
 
 Number `TC-01`, `TC-02`, … continuously across the whole document (not per
@@ -184,13 +198,14 @@ drop the case — list it under **"สิ่งที่ demo นี้ยัง
 ```markdown
 | อ้างอิง | สิ่งที่ยังไม่รองรับ | ผลที่จะเกิดถ้าลอง | ถ้าต้องการให้รองรับ |
 |---|---|---|---|
-| `AC-4` | แจ้งเตือนเมื่อสต็อกต่ำกว่า Reorder Point | ไม่มีแถบเตือน ต้องดูตัวเลขเอง | คำนวณผลรวมต่อรหัสแล้วเทียบ Reorder Point ตอน render |
+| `BRD AC-4` | แจ้งเตือนเมื่อสต็อกต่ำกว่า Reorder Point | ไม่มีแถบเตือน ต้องดูตัวเลขเอง | คำนวณผลรวมต่อรหัสแล้วเทียบ Reorder Point ตอน render |
 | (derive) | ช่องราคายังไม่กันค่าติดลบ | บันทึกได้ ยอดรวมติดลบ | เพิ่มการตรวจค่า > 0 ทั้งหน้าจอและ server action |
 | (derive) | ยังไม่ล็อกบัญชีเมื่อกรอกรหัสผิดหลายครั้ง | ลองรหัสผ่านซ้ำได้ไม่จำกัด | นับครั้งที่ผิดต่อบัญชี |
 ```
 
-Cite the `AC`/`F` id when the gap is something the BRD asked for, and `(derive)`
-when it is a validation rule nobody wrote down. This section is what makes the
+Cite the source-prefixed id when the gap is something the docs asked for
+(`BRD AC-4`, `PRD US-02`, `EC-DuplicateBarcode`), and `(derive)` when it is a
+validation rule nobody wrote down. This section is what makes the
 document useful: the customer learns the demo's real boundaries instead of
 discovering them as "bugs", and sees exactly which agreed requirement is still
 open. Writing it does NOT mean
