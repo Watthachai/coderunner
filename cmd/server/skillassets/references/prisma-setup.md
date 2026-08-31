@@ -153,9 +153,22 @@ Call the action from the client component (form action or event handler). Altern
 
 The old in-memory array (e.g. `let tasks = [...]` in `data.ts`) is DELETED and its
 contents go **nowhere** — mock rows are not carried into the database (see §5).
-What replaces them is a working **create path**: for every entity the mock array
-used to fill, the UI must be able to create a record. A delivered app that starts
-empty and offers no way to add anything is a dead shell.
+What replaces them is a working **write path**. Every entity must be populatable
+from inside the app — but that does not mean every entity needs its own create
+form. Two shapes are both correct:
+
+- **Its own form** — master and transactional data (Fabric, PO, SO, Roll).
+- **A side effect of another flow** — event/log rows. A stock movement written by
+  check-in/check-out is correct with no form of its own; demanding one would be
+  wrong.
+
+The failure to look for is an entity that appears **only** in the mock array
+(`INITIAL_<X>`) with no insert anywhere in the code — no form, no handler, no
+`set<X>s(prev => [...])`. Once the mock is deleted that screen is dead forever.
+Report-only, derived and lookup/config entities are where this shows up. For
+those, add a minimal create form and record it in `BUILD_NOTES.md` under
+**"Added to keep the app usable"** — a narrow, declared exception to the
+faithful-port rule, exactly like the standardized login.
 
 ## 5. Seed — the login account, and nothing else
 
@@ -304,7 +317,7 @@ Result: `npm install` -> `prisma generate` (no DB) -> `next build` (no DB) all p
 - [ ] Mock reads/writes replaced by Prisma in server components / actions / route handlers.
 - [ ] `prisma/seed.ts` seeds ONLY the dev Admin account (plus reference rows the app cannot render without, listed in BUILD_NOTES); **no mock/demo rows anywhere**; `prisma.seed` script + `tsx` dev dep.
 - [ ] Seed is **idempotent** — `upsert` keyed by a stable id with `update: {}` (it re-runs on every container start; no bare `create`/`createMany`).
-- [ ] Opened against an EMPTY database: every screen renders (empty state, not a blank page), and each main entity can be created from the UI.
+- [ ] Opened against an EMPTY database: every screen renders (empty state, not a blank page), and every entity is populatable from inside the app — its own form, or a write that is a side effect of another flow.
 - [ ] `package-lock.json` committed (CRN's image build uses `npm ci`).
 - [ ] `postinstall: prisma generate`; DB-reading pages are `force-dynamic`.
 - [ ] `.env.example` has `DATABASE_URL`; `.env` gitignored.
