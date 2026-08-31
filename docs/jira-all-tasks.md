@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `32d73e3` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `4c8ee7b` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -356,6 +356,13 @@
 **Subtasks:** รายชื่อหน้าจอมาจาก **wiring** (route table หรือ `activeMenu`/`activeView` switch) cross-check กับ PRD `หน้าจอทั้งหมด` · orphan **ไม่ข้ามเงียบ** — ต้องมีบรรทัดใน PORT_CHECKLIST ติดป้าย `[orphan]` + หลักฐานว่าไม่มีใคร import + ซ้ำใน BUILD_NOTES "Not ported" (กันไม่ให้ "มันเป็น orphan" กลายเป็นข้ออ้างข้ามงาน ซึ่งจะเปิดรูที่ `42c50b9` เพิ่งปิด) · เกณฑ์ตัดสินเป็นกลไก: มีใคร import ไหม / PRD ระบุเป็นหน้าจอไหม · schema ดึงจาก **PRD Data Model** เป็นหลัก (มี type/หน่วย/required/unique/FK ครบ) แล้ว cross-check `src/types.ts`
 **AC:** demo ไม่มีหน้าที่กดเข้าไม่ถึง · เอกสารเทสไม่มีเคสของหน้าผี · orphan ทุกไฟล์ถูกประกาศพร้อมเหตุผล
 **Notes:** repo CRN · `SKILL.md`, `references/nextjs-conversion.md`, `references/prisma-setup.md`, `references/test-cases.md` · ฝั่ง FBD ยืนยันว่า `docs/` มีแค่ 3 ไฟล์ (IDEA/BRD/PRD) และ prototype เป็น in-memory ล้วน ไม่มี persistence
+
+## [CRN] แก้กฎ "ทุก entity ต้องมีฟอร์มสร้าง" — มันฟ้องผิด
+**Type:** Task · **Status:** Done (`4c8ee7b`)
+**Desc:** ตอนตัด mock data ออก (`1afb2d3`) ผมพ่วงกฎว่า "ทุก entity ต้องมี create form ใน UI" ไม่งั้นแอปจะเป็นซากเปล่า — แต่กฎนี้**ฟ้องโค้ดที่ถูกต้อง**: entity ประเภท event/log ถูกสร้างเป็น side-effect เช่นรายการเคลื่อนไหวสต็อกเกิดตอน check-in/check-out (Chokpranee ไม่มี CreateTransaction form เลย และนั่นถูกแล้ว) การมีฟอร์มสร้างตรง ๆ ต่างหากที่ผิด
+**Subtasks:** เกณฑ์ใหม่ = **populatable จากในแอปทางใดทางหนึ่ง** (ฟอร์มของตัวเอง **หรือ** insert ที่เป็นผลพลอยได้ของ flow อื่น) · เคสที่ต้อง flag จริงแคบกว่ามาก = entity ที่โผล่แต่ใน `INITIAL_<X>` โดยไม่มี write path ที่ไหนเลย (report-only / derived / lookup มักเป็นตัวนี้) · เฉพาะกรณีนั้นให้เพิ่มฟอร์มขั้นต่ำ + ประกาศใน BUILD_NOTES หัวข้อ "Added to keep the app usable" เป็นข้อยกเว้นที่ประกาศไว้ ทรงเดียวกับ login
+**AC:** ไม่ฟ้อง entity ที่ถูกสร้างแบบ side-effect · แต่จับ entity ที่ตัด mock แล้วกรอกไม่ได้จริง
+**Notes:** repo CRN · ฝั่ง FBD ไล่ write path ครบทั้ง 6 entity ของ export จริงมายืนยัน · prompt ของ codegen เป็น skill-based (erp/booking/crm/…) **ไม่มีกฎกลางว่าทุก entity ต้องมีฟอร์ม** → harness ต้อง detect ไม่ใช่ assume
 
 ## [CRN] เลิกใส่ mock data — เหลือแค่บัญชี login
 **Type:** Task · **Status:** Done (`1afb2d3`)
