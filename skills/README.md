@@ -16,6 +16,11 @@ Claude Code.
 | `data-tables` | list / search / filter / sort / pagination screens |
 | `charts` | chart screens and the server→client aggregation seam |
 | `printable-documents` | documents meant for paper — print CSS, บาทถ้วน, running numbers |
+| `mail-service` | outbound email through the DMailService API |
+
+> `mail-service` was authored directly in the CRN dashboard and existed only as a
+> row in the database. It is mirrored here so a lost volume or a new machine
+> cannot take it with them; the copy came from `GET /internal/skills/mail-service`.
 
 ## Uploading
 
