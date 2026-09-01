@@ -2,7 +2,7 @@
 
 > ทุกงานที่ทำ (CRN `fitt-coderunner` + FBD `fitt-builder-v2`) — แต่ละ `##` = 1 issue, copy ตั้งแต่ Title ลงไปเข้า Jira ได้เลย
 > `Done` = commit+push แล้ว (`feat/feedback-panel` == `dev`) · repo ระบุใน Notes
-> **ครอบคลุมถึง `eb22875` (2026-08-31)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
+> **ครอบคลุมถึง `8ab3c89` (2026-09-01)** · EPIC A–F = รอบแรก · EPIC G–N = รอบ on-prem/FITTCORE integration · **EPIC O = throughput**
 
 ---
 
@@ -377,6 +377,13 @@
 **Subtasks:** `buildstep/compliance.go` + test 12 เคส · เสียบใน `runJob` หลัง scaffold ก่อน git push · เตือน 3 อย่าง: seed เขียนเกิน 1 model / ใช้ `createMany` / เขียนเกิน 3 ครั้ง · ไม่มี `TEST_CASES.md` · `PORT_CHECKLIST` เหลือข้อไม่ติ๊ก (ข้าม `[orphan]` เพราะเป็นการประกาศ ไม่ใช่งานค้าง) · publish เป็น `WSAssistantText` → เห็นทั้ง live stream และ trace ที่เก็บไว้ + log `harness rule violated` ให้ grep ได้
 **AC:** build ที่ไม่ทำตามกฎ มีบรรทัด ⚠ โผล่ข้าง ๆ "✓ pushed" · build ที่ถูกต้องเงียบสนิท
 **Notes:** repo CRN · **เตือนอย่างเดียว ไม่ fail build** — เป็น heuristic และ reference data ที่ถูกกฎแยกจาก mock row ด้วยการนับไม่ได้ ต้องให้คนตัดสิน · client ใน seed ไม่ได้ชื่อ `prisma` เสมอ (บาง build ใช้ `db`) จึงอ่าน model จาก segment ที่ 2
+
+## [CRN] Skill library ชุดแรก 4 ตัว (thai-formatting / data-tables / charts / printable-documents)
+**Type:** Task · **Status:** Done (`8ab3c89`) · รอ upload หลัง deploy
+**Desc:** skill store มีแค่ `fitt-build` + `mail-service` → ทุก build ต้องคิดใหม่เองหมดว่าจัดรูปแบบเงินไทยยังไง ตารางว่างแสดงอะไร กราฟไม่มีข้อมูลทำไง ใบเสนอราคาพิมพ์ยังไง ได้ผลไม่เหมือนกันทุกครั้ง · เลือก 4 ตัวจาก**หลักฐาน** (feature ที่ FBD สั่ง generate จริงข้าม erp/crm/dashboard/booking/ecommerce/landing) ไม่ใช่เดา · 2 ใน 4 ปิดรูที่เพิ่งเปิดเช้านี้ — พอตัด mock data ทุกกราฟ/ตารางเจอ 0 แถวเป็นครั้งแรก
+**Subtasks:** เขียนขนานด้วย 4 agent · `skills/README.md` วางสัญญา (description คือทุกอย่างเพราะ progressive disclosure · บอก HOW ห้ามสั่ง WHAT · สมมติ DB ว่าง · ห้ามถาม · ห้ามข้อมูลปลอม · แบ่งความเป็นเจ้าของกันชนกัน) · agent ตรวจสอบข้อเท็จจริงด้วยการรันจริง เจอ: `th-TH` เป็น พ.ศ. อยู่แล้ว (`+543` ได้ 3112) · `Decimal` ใน `reduce(...,0)` ต่อ string เป็น `฿NaN` · VAT ปัดต่อบรรทัด vs ต่อใบ ต่างกัน 1 สตางค์ · headless browser รันใน `.next/standalone` ไม่ได้ และ PDF writer แบบ JS ล้วนทำสระ/วรรณยุกต์ไทยเพี้ยน
+**AC:** demo ที่ build ใหม่จัดรูปแบบเงิน/วันที่/VAT ตรงกันทุกหน้า · ตารางและกราฟที่ไม่มีข้อมูลแสดง empty state ภาษาไทย ไม่ใช่หน้าขาว/crash
+**Notes:** repo CRN · `skills/` (10 ไฟล์ 1,785 บรรทัด) · รีวิวแก้ 2 จุด: ข้ออ้างเรื่อง collation ที่ยังไม่ได้พิสูจน์ และเลขรันเอกสารที่ 2 skill สั่งคนละแบบ (`count()+1` ชนกันตอนกดพร้อมกัน → ใช้ counter row ใน `$transaction`) · **ยังไม่ upload** ต้องรอ backend บน .171
 
 ---
 
