@@ -39,7 +39,8 @@
 
 | งาน | หมายเหตุ |
 |---|---|
-| **รัน test script ของ concurrency** | ยังไม่เคยพิสูจน์ว่าขนานได้จริงบนเครื่องจริงสักครั้ง |
+| **รัน test script ของ concurrency** | ยังไม่เคยพิสูจน์ว่าขนานได้จริงบนเครื่องจริงสักครั้ง · migration ลงแล้ว ไบนารีรองรับแล้ว → รอบ B รันได้เลยไม่ต้อง restart · รอบ A ยังต้อง restart เพราะต้องตั้ง `CRN_RUN_CLAUDE=false` (อ่านคำเตือนเรื่อง ssh ด้านล่างก่อน) |
+| **อัป skill 4 ตัวใหม่เข้า CRN** | `skills/` เป็น uploadable **ไม่มี `go:embed`** → `git pull` เฉย ๆ build ไม่เห็น ต้อง POST เข้า `/internal/skills/upload` |
 | **`CRN_CLAUDE_MODEL` มีผลไปแล้ว** | ~~เข้าใจผิดตอนแรกว่ายังไม่มีผล~~ — `b313840` (default = `claude-opus-5`) เป็น **ancestor** ของ `e63014c` ที่รันอยู่ และ `.env` บน .171 ไม่ได้ตั้งทับ → **ทุก build ตั้งแต่ 31 ส.ค. 17:02 ใช้ Opus 5 แล้ว** · exposure จริงถึงตอนนี้ = **1 build (failed)** · ถ้าจะถอย ตั้ง `CRN_CLAUDE_MODEL=claude-sonnet-5` ใน `.env` แล้ว restart |
 | rebuild dashboard | diff UI จาก `46f915b` ยังไม่รู้ว่า rebuild หรือยัง |
 | E2E amd64 บนเครื่องลูกค้า | ค้างมานาน |
@@ -59,6 +60,15 @@
 **`.env` ของ FBD hardcode IP ของ CRN ไว้** — ย้ายเครื่องแล้วไม่แก้ FBD จะบูตปกติ หน้าจอครบ **แต่กด generate เงียบ** ไม่มี error ให้เห็น
 
 **Spotlight** — ต้องมี `.metadata_never_index` ไม่งั้น `ENOTEMPTY` ตอน rebuild
+
+**🔴 ห้ามรัน `make restart` ผ่าน ssh** — CRN ไม่มี launchd ไม่มีตัวคุมอะไรเลย มันเป็นลูกของ**เชลล์ล็อกอินจริงบน `ttys000`** ที่เปิดค้างไว้ตั้งแต่ 24 ส.ค. (`make restart` ตัวเดิมยังค้างเป็น PID 87019 อยู่ เพราะ `run-bin` ไม่เคย return) · `make run-bin` รัน binary แบบ foreground ไม่มี `nohup` ไม่มี `&` → สั่งผ่าน ssh = `make stop` ฆ่าตัวที่ดีอยู่ แล้วตัวใหม่ผูกกับเซสชัน ssh พอหลุดก็ตาย **ไม่มีอะไรปลุก ล่มเงียบไม่มี error** ท่าที่ปลอดภัย:
+```bash
+cd ~/fitt-coderunner && make stop && \
+  ( set -a; . ./.env; set +a; nohup ./bin/crn-server > ~/crn.log 2>&1 & )
+```
+แล้ว**ตัด ssh ก่อน** ค่อย `curl /healthz` จากเครื่องตัวเอง ถึงจะพิสูจน์ว่าหลุดจากเซสชันจริง · ทางที่ถูกระยะยาวคือทำ launchd agent — **ยังไม่มีใครทำ**
+
+**boot log ไม่ได้ลงไฟล์** — CRN ไม่ได้อยู่ใน docker compose (มีแค่ postgres/postgrest/mongo) log ออกหน้าเทอร์มินัล `ttys000` เท่านั้น `docker compose logs crn` ไม่มีวันได้อะไร
 
 **อย่าเทียบว่า commit ไหนใหม่กว่าด้วยสายตา** — ผมเคยสรุปว่าไบนารีที่รันอยู่เก่ากว่า commit ที่เปลี่ยน default model ทั้งที่มันเป็นลูกหลานของกันและกัน ทำให้รายงานเรื่องค่าใช้จ่ายผิดไปคนละทาง ใช้ `git merge-base --is-ancestor A B` แล้วอ่านไฟล์ ณ commit นั้นตรง ๆ (`git show <rev>:<path>`)
 
