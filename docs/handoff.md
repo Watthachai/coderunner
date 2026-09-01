@@ -12,7 +12,7 @@
 | dashboard | `:3001` · Postgres `:5433` · PostgREST `:3010` · Mongo `:27017` |
 | registry | `172.168.1.234:5050/fitt/demos` |
 | FTC DV / FITTCORE | `172.168.1.247:3101` · gateway ที่ FBD ชี้ไป: `172.168.1.167:8080` |
-| commit ที่ deploy | `6e95f73` (source) · **binary ที่รันอยู่คือ `e63014c`** ยังไม่ได้ compile ใหม่ |
+| commit ที่ deploy | source ตามที่ pull ล่าสุด · **binary ที่รันอยู่คือ `e63014c`** (31 ส.ค. 17:02) ยังไม่ได้ compile ใหม่ — เช็คด้วย `/healthz` เสมอ อย่าเดาจากวันที่ commit |
 | schema | `0011_concurrent_builds` ✅ |
 
 `ssh macagents@172.168.1.171` เข้าได้ด้วยกุญแจแล้ว — **แต่ shell แบบ non-interactive ไม่มี PATH ของ docker** ต้อง `export PATH=/usr/local/bin:/opt/homebrew/bin:$PATH` ก่อนทุกครั้ง ไม่งั้นเจอ `command not found: docker`
@@ -40,7 +40,7 @@
 | งาน | หมายเหตุ |
 |---|---|
 | **รัน test script ของ concurrency** | ยังไม่เคยพิสูจน์ว่าขนานได้จริงบนเครื่องจริงสักครั้ง |
-| **`CRN_CLAUDE_MODEL` ยังไม่มีผล** | binary ที่รันอยู่เก่ากว่า commit ที่เปลี่ยน default เป็น `claude-opus-5` → ตอนนี้ยังไม่ส่ง `--model` เลย ต้อง `make restart` ถึงจะมีผล (แพงขึ้น — เจ้าของงานยังไม่ตัดสิน) |
+| **`CRN_CLAUDE_MODEL` มีผลไปแล้ว** | ~~เข้าใจผิดตอนแรกว่ายังไม่มีผล~~ — `b313840` (default = `claude-opus-5`) เป็น **ancestor** ของ `e63014c` ที่รันอยู่ และ `.env` บน .171 ไม่ได้ตั้งทับ → **ทุก build ตั้งแต่ 31 ส.ค. 17:02 ใช้ Opus 5 แล้ว** · exposure จริงถึงตอนนี้ = **1 build (failed)** · ถ้าจะถอย ตั้ง `CRN_CLAUDE_MODEL=claude-sonnet-5` ใน `.env` แล้ว restart |
 | rebuild dashboard | diff UI จาก `46f915b` ยังไม่รู้ว่า rebuild หรือยัง |
 | E2E amd64 บนเครื่องลูกค้า | ค้างมานาน |
 | destructive migration | `db push` ยังบล็อกอยู่ |
@@ -59,6 +59,8 @@
 **`.env` ของ FBD hardcode IP ของ CRN ไว้** — ย้ายเครื่องแล้วไม่แก้ FBD จะบูตปกติ หน้าจอครบ **แต่กด generate เงียบ** ไม่มี error ให้เห็น
 
 **Spotlight** — ต้องมี `.metadata_never_index` ไม่งั้น `ENOTEMPTY` ตอน rebuild
+
+**อย่าเทียบว่า commit ไหนใหม่กว่าด้วยสายตา** — ผมเคยสรุปว่าไบนารีที่รันอยู่เก่ากว่า commit ที่เปลี่ยน default model ทั้งที่มันเป็นลูกหลานของกันและกัน ทำให้รายงานเรื่องค่าใช้จ่ายผิดไปคนละทาง ใช้ `git merge-base --is-ancestor A B` แล้วอ่านไฟล์ ณ commit นั้นตรง ๆ (`git show <rev>:<path>`)
 
 ---
 
