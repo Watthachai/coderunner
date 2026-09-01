@@ -30,18 +30,25 @@ var (
 	refNextjsConversion string
 	//go:embed skillassets/references/prisma-setup.md
 	refPrismaSetup string
+	//go:embed skillassets/references/test-cases.md
+	refTestCases string
 	//go:embed skillassets/assets/Dockerfile
 	assetDockerfile string
 	//go:embed skillassets/assets/.dockerignore
 	assetDockerignore string
 )
 
-// builtinSkillFiles is the OPTIONAL set of extra files shipped with the built-in
-// skill, keyed by path relative to the skill dir (SKILL.md is NOT here — it is
+// builtinSkillFiles is the set of extra files shipped with the built-in skill,
+// keyed by path relative to the skill dir (SKILL.md is NOT here — it is
 // builtinSkillBody). It is wired into the seed as domain.Skill.Files.
+//
+// Adding a file under skillassets/ is NOT enough: it must be embedded above and
+// listed here, or SKILL.md ends up citing a reference the build never receives.
+// TestBuiltinSkillShipsEveryAsset fails when the two drift apart.
 var builtinSkillFiles = map[string]string{
 	"references/nextjs-conversion.md": refNextjsConversion,
 	"references/prisma-setup.md":      refPrismaSetup,
+	"references/test-cases.md":        refTestCases,
 	"assets/Dockerfile":               assetDockerfile,
 	"assets/.dockerignore":            assetDockerignore,
 }
