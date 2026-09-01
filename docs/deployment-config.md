@@ -28,6 +28,23 @@
 
 ---
 
+## เครื่องในระบบ (ตรวจสดเมื่อ 2026-09-01)
+
+| IP | ชื่อเรียก | รันอะไร | ยืนยันยังไง |
+|---|---|---|---|
+| `172.168.1.175` | **M1** (MacBook) | dev — checkout ของ CRN/FBD | `ipconfig getifaddr en0` |
+| `172.168.1.168` | **M5** (MacBook) | dev — มีแค่ `fitt-builder-v2` | ping ตอบ · `:3000` ยังไม่ได้รัน |
+| `172.168.1.171` | **macagents** (Mac mini) | **CRN ตัวจริง** `:8080` · dashboard `:3001` · Postgres `:5433` · PostgREST `:3010` · Mongo `:27017` | `/healthz` คืน `{"build":{"revision":…},"status":"ok"}` |
+| `172.168.1.167` | FITTCORE **Gateway** | `:8080` | `/healthz` คืน `{"requestId":…,"code":200,"success":true}` |
+| `172.168.1.247` | FTC DV / FITTCORE | `:3101` | ตอบ HTTP 200 |
+| `172.168.1.234` | GitLab registry | `:5050/fitt/demos` | tag ของ image ที่ push |
+
+> ⚠️ **`.167` กับ `.171` ใช้ port 8080 เหมือนกันแต่คนละบริการ** — ชี้ผิดตัวแล้วจะได้ HTTP 200 เหมือนกันทั้งคู่ ไม่มีอะไรฟ้อง แยกด้วยหน้าตาของ `/healthz`: CRN มี field `build.revision`, Gateway มี `requestId`
+>
+> `FITTCORE_GATEWAY_URL` ต้องชี้ **`.167`** · `FITTCORE_DIRECT_CRN_URL` ต้องชี้ **`.171`** (หรือ `localhost` ถ้ารันเครื่องเดียวกัน) — สลับกันเมื่อไหร่ build จะเงียบโดยไม่มี error
+
+---
+
 ## จุด config ทั้งหมด (env)
 
 | box | env | หน้าที่ |
