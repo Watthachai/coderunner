@@ -9,15 +9,17 @@ A scan screen is one input box and a great deal of failure handling. On the deli
 
 **Lane.** `data-tables` owns the list of scanned rows and its filters. `thai-formatting` owns every rendered value — `formatQty`, `formatTHB`, `formatDateTime` from `lib/format.ts`. This skill owns the input, the lookup, the duplicate and not-found paths, and the write.
 
-## The camera is not available. Plan for the scanner instead.
+## The scanner is the input. The camera is a special case, not the default.
 
-CRN delivers the demo as a plain-HTTP container — `docker-compose.customer.yml` publishes `APP_PORT:3000`, with no TLS, no certificate and no proxy. Customers open it at `http://HOST:PORT` on a LAN address. Browsers expose `navigator.mediaDevices` **only in a secure context** (HTTPS, or `localhost`), so on every machine except the one running the container it is `undefined` — and naive camera code fails as `TypeError: Cannot read properties of undefined (reading 'getUserMedia')`, which reaches the user as a blank panel or a crashed boundary.
+Read the briefs before assuming a camera is wanted at all: these documents typically say `สแกน` and `เครื่องสแกน` and never mention กล้อง, มือถือ or camera, and describe the screen as a `ช่องกรอก/สแกนบาร์โค้ด`. A field that is typed *or* scanned is a text input — that is the whole requirement, and it is satisfied by the section below without any device API.
+
+The camera is also usually unavailable. CRN delivers the demo as a plain-HTTP container — `docker-compose.customer.yml` publishes `APP_PORT:3000`, with no TLS, no certificate and no proxy. Customers open it at `http://HOST:PORT` on a LAN address. Browsers expose `navigator.mediaDevices` **only in a secure context** (HTTPS, or `localhost`), so on every machine except the one running the container it is `undefined` — and naive camera code fails as `TypeError: Cannot read properties of undefined (reading 'getUserMedia')`, which reaches the user as a blank panel or a crashed boundary.
 
 This is not a limitation to work around; it matches how Thai warehouses and shops already work. A **USB or Bluetooth barcode scanner is a keyboard**: it types the code and presses Enter. So the primary implementation reads keystrokes, and it needs no library at all.
 
 **`isSecureContext` is also true on `http://localhost`** — and that is the trap, not the escape hatch. The camera therefore works perfectly on the machine running the container, which is exactly where the demo gets rehearsed, and is dead on every phone and laptop that opens it over the LAN, which is exactly where it gets shown to the customer. A feature that fails everywhere is found on day one; this one waits until it has an audience.
 
-So when the prototype genuinely had a camera scanner, keep it as **progressive enhancement** and **say why it is unavailable** — never hide the button silently, or the operator reports a broken demo:
+So on the rare export that genuinely had a camera scanner, keep it as **progressive enhancement** and **say why it is unavailable** — never hide the button silently, or the operator reports a broken demo:
 
 ```tsx
 const cameraReady =
@@ -42,6 +44,8 @@ Binding the scanner to a single `<input>` assumes the cursor is in it. It will n
 "use client";
 // A scanner types a whole code in well under a second; a human cannot.
 const MAX_GAP_MS = 120;      // between keys within one scan
+// Set from the SHORTEST code format the PRD's Data Model documents (e.g. "R-00001"
+// -> 7). Only fall back to 4 when the documents state no format at all.
 const MIN_LENGTH = 4;        // shorter bursts are someone using the keyboard
 
 export function useScanner(onCode: (code: string) => void) {
@@ -96,6 +100,8 @@ function charFromEvent(e: KeyboardEvent): string | null {
 ```
 
 Barcode symbologies in use here (Code 39, Code 128, EAN) are ASCII, so mapping the physical key is always safe — there is no legitimate Thai character in a barcode. Uppercase via `normalizeCode` below rather than trusting Shift, since scanners vary in how they send capitals.
+
+`event.code` earns its place a second time even on a US layout: many scanners ship configured to emit digits as **numpad** keys, and with NumLock off `event.key` for those arrives as `ArrowLeft`, `Home`, `PageUp` — navigation, not digits — while `event.code` is still `Numpad4`. The mapper above accepts `Digit0-9` and `Numpad0-9` both, so it does not matter which mode the device is in. Do not narrow it to one: the briefs do not name the scanner model, and you cannot know.
 
 ## Codes are strings, and they are not clean
 

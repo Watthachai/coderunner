@@ -1,6 +1,6 @@
 ---
 name: role-gated-ui
-description: Enforce the per-role rules of a ported FITT demo — who sees a menu item, a column, a button or a whole page, and who is allowed to perform a write — on the server, where hiding actually holds, and keep every role demonstrable even though the delivered app has ONE standardized login. Use when the PRD or prototype mentions บทบาท/สิทธิ์/ระดับผู้ใช้ (ผู้ดูแลระบบ, แอดมิน, ผู้จัดการ, หัวหน้างาน, พนักงาน, ผู้ใช้ทั่วไป, ผู้อนุมัติ), เฉพาะผู้ดูแลระบบ, ต้องได้รับการอนุมัติ, ไม่มีสิทธิ์เข้าถึง, a role column on a user, a menu that differs per user, an approve/reject step, or a screen the prototype showed only to some users. Skip when every user of the app sees exactly the same thing.
+description: Enforce the per-role rules of a ported FITT demo — who sees a menu item, a column, a button or a whole page, and who is allowed to perform a write — on the server, where hiding actually holds, and keep every role demonstrable even though the delivered app has ONE standardized login — by porting the prototype's own role switcher when it has one, and saying plainly what cannot be tested when it does not. Use when the PRD or prototype mentions บทบาท/สิทธิ์/ระดับผู้ใช้ (ผู้ดูแลระบบ, แอดมิน, ผู้จัดการ, หัวหน้างาน, พนักงาน, ผู้ใช้ทั่วไป, ผู้อนุมัติ), เฉพาะผู้ดูแลระบบ, ต้องได้รับการอนุมัติ, ไม่มีสิทธิ์เข้าถึง, a role column on a user, a menu that differs per user, an approve/reject step, or a screen the prototype showed only to some users. Skip when every user of the app sees exactly the same thing.
 ---
 
 # role-gated-ui — permissions that survive the port
@@ -11,40 +11,44 @@ The prototype faked its roles. It picked one from a dropdown, or hard-coded `cur
 
 **Lane.** `data-tables` owns the list screen; this skill only decides which rows and columns it may show. `thai-formatting` owns the Thai strings for values. This skill owns the session, the role read, the gate and the denial message.
 
-## The constraint you cannot design around: there is ONE login
+## First: find the role mechanism the prototype already has
 
-`fitt-build` standardizes every login to a single email+password checked against `DEV_EMAIL` / `DEV_PASSWORD`, and the seed creates exactly one user — `role: "Admin"`. That is deliberate: the operator needs one credential that opens every UAT. It has a consequence this skill exists to handle: **if you gate purely on the logged-in user's stored role, the customer can only ever see the Admin view, and every other role in the PRD becomes untestable.** A demo that cannot show the พนักงาน screen has not delivered the พนักงาน requirement.
+**Before deciding anything, go and look.** Prototypes in this pipeline routinely ship their own role switcher — a `useState<UserRole>('Warehouse Staff')` in `App.tsx` and a button in `Header.tsx` labelled something like `สิทธิ์สลับทดสอบ`, switching between the roles the PRD defines. It is client-side and unrelated to the login.
 
-So separate the two ideas:
+If that exists, **port it as-is and stop reading this section.** It is not an exception, it needs no `BUILD_NOTES.md` entry, and it is not a redesign — it is the prototype's own UI, and the port rule says port everything. *Failing* to bring it across is the violation, and it is the one that costs the customer the ability to see their own role rules working. Replacing it with a config knob is worse still: swapping a real control for an env var is exactly the "consolidate or simplify" the hard rules forbid.
 
-- **Authentication** stays exactly as `fitt-build` mandates. One env credential. Do not add users to the login, do not seed a second password, do not restore the prototype's user picker as a way in.
-- **Effective role** is session state that starts at the seeded user's role and, *for an Admin*, can be switched to any role the PRD defines — so the tester can walk through every role's screens with the one credential they were given.
+Grep the export for `role`, `Role`, `สิทธิ์`, `บทบาท` before you write a line.
+
+## Only if the prototype has NO role mechanism
+
+Then the constraint bites. `fitt-build` standardizes every login to a single email+password checked against `DEV_EMAIL` / `DEV_PASSWORD`, and the seed creates exactly one user — `role: "Admin"`. So if the PRD states role rules but the prototype never exposed a way to be anything but one role, **the other roles cannot be exercised in the delivered demo at all.**
+
+Do not invent a switcher to paper over that. Gate exactly as the PRD says, and then **say so out loud in two places**:
+
+- `BUILD_NOTES.md` — the app has one account (`DEV_EMAIL`, `Admin`), so only the Admin path is reachable;
+- `TEST_CASES.md` — every role case for another role is `ยังไม่รองรับ (มีบัญชีเดียว)` in the coverage table, citing its `AC`/`US` id.
+
+Silence here is the real failure: the coverage table goes green while nobody can prove a single role requirement. An honest gap the customer can see beats a demo that quietly claims more than it delivers.
+
+## Reading the current user
 
 ```ts
 // lib/session.ts
 import { cookies } from "next/headers";
 
 export type Role = "Admin" | "Manager" | "Staff";      // from the PRD, not invented
-const ROLES: Role[] = ["Admin", "Manager", "Staff"];
 
 export async function currentUser() {
   const jar = await cookies();                          // Next 16: cookies() is async
   const id = jar.get("uid")?.value;
-  const user = id ? await prisma.user.findUnique({ where: { id } }) : null;
-  if (!user) return null;
-
-  // Admin may view the app as another role. Anyone else is their own role, always.
-  const viewAs = jar.get("viewAs")?.value as Role | undefined;
-  const effective: Role =
-    user.role === "Admin" && viewAs && ROLES.includes(viewAs) ? viewAs : (user.role as Role);
-
-  return { ...user, role: effective, realRole: user.role as Role };
+  if (!id) return null;
+  return prisma.user.findUnique({ where: { id } });
 }
 ```
 
 Reading `cookies()` opts the route out of static prerender, which is what you want — every gated page is per-request anyway. Keep `export const dynamic = "force-dynamic"`.
 
-The switcher is a small control in the header, visible **only** when `realRole === "Admin"`, labelled plainly (`ดูในมุมมองของ:`) so nobody mistakes it for a real login. It is a declared addition: record it in `BUILD_NOTES.md` under **"Added to keep the app usable"**, exactly like the standardized login. Add it only when the PRD defines more than one role — a single-role app does not need it.
+When the prototype's own switcher is in play, it drives the *effective* role for display and for the gates; the session still identifies the one real account. Keep the switcher's own state exactly where the prototype kept it, and pass the role down from the server component that read it — a client component cannot call `currentUser()`, and the role must never be re-read from `localStorage`, where the user edits it.
 
 ## Gate the action, then the page, then the pixel
 
@@ -108,21 +112,21 @@ Denial itself is a designed screen too: a short Thai explanation and a link back
 ## Rules
 
 - **Every server action and route handler re-checks the role.** No exceptions, including the ones whose button is already hidden.
-- **Never trust anything from the client** — not a role in a form field, a header, `localStorage`, or a `viewAs` cookie belonging to a non-Admin. The check above re-reads the user from the database every request.
+- **Never trust a role that arrived from the client** — not from a form field, a header, `localStorage`, or a cookie. A switcher may drive what is *shown*; what is *allowed* is re-derived on the server every request.
 - **`redirect()` for a denied page, a returned `{ error }` for a denied action.** Throwing inside a server action surfaces as an unhandled boundary error and gets reported to the 🐞 widget as a crash.
 - **Copy the denial text verbatim from the PRD's `การควบคุมความถูกต้องของข้อมูล (Validation & Edge Cases)`** — it states the real Thai message for an unauthorized attempt. Do not invent wording.
 - **Do not add roles, capabilities or an approval step the documents do not describe.** Port the rules; do not design a permission system.
-- **Do not weaken the standardized login** to demonstrate roles. The switcher rides on top of it; it never replaces it.
+- **Do not weaken the standardized login** to demonstrate roles, and do not replace a switcher the prototype had with an env var or a config file.
 - **Never ask.** Builds run unattended. If the PRD names a role but no rule for it, give it the narrowest capability set that still lets its screens render, and say so in `BUILD_NOTES.md`.
 
 ## Verify before you finish
 
 Signed in with the one env credential, on an **empty** database:
 
-- as Admin every gated screen opens, and the `ดูในมุมมองของ` control is visible;
+- if the prototype had a role switcher, it is present and works exactly as it did there;
 - switching to each PRD role changes the menu, the visible columns and the buttons;
-- while viewing as a lower role, calling a privileged server action — submit the form, or hit the route directly — is **refused by the server**, not merely hidden;
-- switching back to Admin restores everything, and a non-Admin cannot set `viewAs` at all;
+- while acting as a lower role, calling a privileged server action — submit the form, or hit the route directly — is **refused by the server**, not merely hidden;
+- if the prototype had NO switcher, `BUILD_NOTES.md` and the `TEST_CASES.md` coverage table both say which roles are unreachable, and neither claims a role case passed;
 - a denied page redirects somewhere useful instead of blanking;
 - an empty approval queue says it is empty, not that you lack permission;
 - `TEST_CASES.md` has a negative case per role rule, quoting the `AC`/`US` id it came from.
