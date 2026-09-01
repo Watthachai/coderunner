@@ -17,6 +17,10 @@ Claude Code.
 | `charts` | chart screens and the server→client aggregation seam |
 | `printable-documents` | documents meant for paper — print CSS, บาทถ้วน, running numbers |
 | `mail-service` | outbound email through the DMailService API |
+| `calendar-scheduling` | month/week grids, slot availability, double-booking checks |
+| `explainable-scoring` | a derived score and the breakdown that must add up to it |
+| `role-gated-ui` | who may see and who may do — enforced on the server |
+| `barcode-scanning` | scan input, code lookup, and the not-found/duplicate paths |
 
 > `mail-service` was authored directly in the CRN dashboard and existed only as a
 > row in the database. It is mirrored here so a lost volume or a new machine
