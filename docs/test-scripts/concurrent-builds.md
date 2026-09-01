@@ -141,6 +141,39 @@ git merge-base --is-ancestor 91de383 $(curl -s $CRN/healthz | jq -r .build.revis
 **ยังต้อง restart อยู่กรณีเดียว: รอบ A** เพราะ `CRN_RUN_CLAUDE=false` เป็น env ของ server
 เปลี่ยนแล้วต้อง restart ถึงมีผล (ดูข้อ 6) — ถ้าจะรันเฉพาะรอบ B ด้วย build จริง ไม่ต้อง restart เลย
 
+> ### 🔴 อย่ารัน `make restart` ผ่าน ssh เฉย ๆ — CRN จะตายตอนคุณตัดการเชื่อมต่อ
+>
+> ตรวจจากเครื่องจริงเมื่อ 2026-09-01: **CRN ไม่มี launchd ไม่มีตัวคุมใด ๆ เลย** มันรันเป็น
+> โปรเซสลูกของ**เชลล์ล็อกอินจริงบน `ttys000`** ที่เปิดค้างไว้ตั้งแต่ 24 ส.ค.
+>
+> ```
+> $ launchctl list | grep -i crn        →  (ไม่มีอะไรเลย)
+> $ ps -o pid,ppid,tty,command -t ttys000
+>   42562  login -fp macagents
+>   42564  -zsh
+>   87019  make restart          ← ยังค้างอยู่ เพราะ run-bin ไม่เคย return
+>   87042  ./bin/crn-server      ← ตัวจริง
+> ```
+>
+> `make run-bin` รัน `./bin/crn-server` แบบ **foreground** ไม่มี `nohup` ไม่มี `&`
+> เพราะฉะนั้นถ้ารัน `make restart` ผ่าน ssh ลำดับที่เกิดขึ้นคือ:
+> `make stop` ฆ่าตัวที่ทำงานดีอยู่ → ตัวใหม่ผูกกับเซสชัน ssh ของคุณ → คุณ logout → **CRN ตาย
+> และไม่มีอะไรปลุกมันขึ้นมา** ระบบล่มเงียบ ๆ โดยไม่มี error ให้ใคร
+>
+> ถ้าต้อง restart จาก ssh จริง ๆ ต้องถอดมันออกจากเซสชันก่อน:
+>
+> ```bash
+> ssh macagents@172.168.1.171 'export PATH=/usr/local/bin:/opt/homebrew/bin:$PATH; \
+>   cd ~/fitt-coderunner && make stop && \
+>   ( set -a; . ./.env; set +a; nohup ./bin/crn-server > ~/crn.log 2>&1 & )'
+> ```
+>
+> แล้วยืนยันว่ารอดจริงด้วยการ **ตัด ssh ออกไปก่อน** ค่อย `curl $CRN/healthz` จากเครื่องตัวเอง
+> — ถ้ายังตอบอยู่แปลว่าหลุดจากเซสชันสำเร็จ (`~/crn.log` คือที่เดียวที่จะมี boot log
+> เพราะตอนนี้ log ไปออกหน้าเทอร์มินัลของ `ttys000` ไม่ได้ลงไฟล์เลย)
+>
+> ทางที่ถูกจริงระยะยาวคือทำ launchd agent ให้มัน — ยังไม่มีใครทำ
+
 ถ้าจำเป็นต้อง deploy จริง ลำดับเดิมยังใช้ได้และ**ห้ามสลับ**:
 
 ```bash
