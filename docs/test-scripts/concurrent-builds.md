@@ -4,10 +4,10 @@
 |---|---|
 | **รหัสเอกสาร** | TS-CRN-001 |
 | **เรื่อง** | CRN รัน build ของหลายโปรเจคพร้อมกัน (จากเดิม 1 build ต่อ 1 org) |
-| **commit ที่ทดสอบ** | `91de383` — *feat(jobs): run builds of different projects concurrently* |
+| **commit ที่ทดสอบ** | `91de383` — *feat(jobs): run builds of different projects concurrently* · ใช้ได้กับทุก revision ที่มี commit นี้เป็น ancestor |
 | **migration** | `migrations/0011_concurrent_builds.sql` |
 | **repo** | `fitt-coderunner` (CRN) · branch `dev` / `feat/feedback-panel` |
-| **เวอร์ชันเอกสาร** | 1.0 · 2026-08-11 |
+| **เวอร์ชันเอกสาร** | 1.1 · 2026-09-01 (แก้ SETUP-1/2: migration ลงแล้ว, ไบนารีรองรับแล้ว, ไม่ต้อง restart เว้นแต่รอบ A) |
 | **จำนวนเคส** | 11 (รอบ A = 7 เคส, รอบ B = 4 เคส) |
 | **เวลาที่ใช้โดยประมาณ** | รอบ A ~20 นาที (ไม่เผา token) · รอบ B ~40–60 นาที (build จริง) |
 
@@ -114,34 +114,93 @@ CRN ล็อกคิว build **ที่ระดับ org** สองชั
 
 ## 5. การเตรียมก่อนทดสอบ
 
-### SETUP-1 · Deploy ให้ถูกลำดับ
+### SETUP-1 · ตรวจก่อนว่ายังต้อง deploy อะไรไหม (อัปเดต 2026-09-01)
+
+> **เอกสารรอบแรกเขียนไว้ว่าต้อง `make migrate && make restart` ก่อนเสมอ — ตอนนี้ไม่จริงแล้ว**
+> ทั้ง migration และไบนารีบน `.171` พร้อมอยู่ก่อนแล้ว ตรวจซ้ำก่อนสั่ง restart โดยไม่จำเป็น
+
+**migration `0011` — ลงแล้ว** (ลงเมื่อ 2026-09-01) ยืนยันจาก index จริง ไม่ใช่จากชื่อไฟล์:
+
+```bash
+psql -c "\d project_jobs" | grep uq_jobs_one_building
+# ต้องเห็น  uq_jobs_one_building_per_project  ... WHERE (status = 'building')
+# ถ้ายังเห็น uq_jobs_one_building_per_org แปลว่ายังไม่ลง -> make migrate
+```
+
+**ไบนารีที่รันอยู่รองรับ concurrency แล้ว** — `91de383` (2026-08-03) เป็น **ancestor** ของ `e63014c`
+ที่รันอยู่จริง (2026-08-31) เพราะฉะนั้น**ไม่ต้อง restart เพื่อให้ได้ฟีเจอร์นี้**
+
+```bash
+git merge-base --is-ancestor 91de383 $(curl -s $CRN/healthz | jq -r .build.revision) \
+  && echo "รองรับแล้ว" || echo "ยังไม่รองรับ -> ต้อง make restart"
+```
+
+> **ห้ามเทียบ revision ด้วยสายตาหรือด้วย `==`** เอกสารรอบแรกเขียนว่า "`revision` ต้องเป็น `91de383`"
+> ซึ่งทำให้เข้าใจผิดว่าต้อง restart ทั้งที่ของพร้อมอยู่แล้ว — ใช้ `merge-base --is-ancestor` เท่านั้น
+
+**ยังต้อง restart อยู่กรณีเดียว: รอบ A** เพราะ `CRN_RUN_CLAUDE=false` เป็น env ของ server
+เปลี่ยนแล้วต้อง restart ถึงมีผล (ดูข้อ 6) — ถ้าจะรันเฉพาะรอบ B ด้วย build จริง ไม่ต้อง restart เลย
+
+> ### 🔴 อย่ารัน `make restart` ผ่าน ssh เฉย ๆ — CRN จะตายตอนคุณตัดการเชื่อมต่อ
+>
+> ตรวจจากเครื่องจริงเมื่อ 2026-09-01: **CRN ไม่มี launchd ไม่มีตัวคุมใด ๆ เลย** มันรันเป็น
+> โปรเซสลูกของ**เชลล์ล็อกอินจริงบน `ttys000`** ที่เปิดค้างไว้ตั้งแต่ 24 ส.ค.
+>
+> ```
+> $ launchctl list | grep -i crn        →  (ไม่มีอะไรเลย)
+> $ ps -o pid,ppid,tty,command -t ttys000
+>   42562  login -fp macagents
+>   42564  -zsh
+>   87019  make restart          ← ยังค้างอยู่ เพราะ run-bin ไม่เคย return
+>   87042  ./bin/crn-server      ← ตัวจริง
+> ```
+>
+> `make run-bin` รัน `./bin/crn-server` แบบ **foreground** ไม่มี `nohup` ไม่มี `&`
+> เพราะฉะนั้นถ้ารัน `make restart` ผ่าน ssh ลำดับที่เกิดขึ้นคือ:
+> `make stop` ฆ่าตัวที่ทำงานดีอยู่ → ตัวใหม่ผูกกับเซสชัน ssh ของคุณ → คุณ logout → **CRN ตาย
+> และไม่มีอะไรปลุกมันขึ้นมา** ระบบล่มเงียบ ๆ โดยไม่มี error ให้ใคร
+>
+> ถ้าต้อง restart จาก ssh จริง ๆ ต้องถอดมันออกจากเซสชันก่อน:
+>
+> ```bash
+> ssh macagents@172.168.1.171 'export PATH=/usr/local/bin:/opt/homebrew/bin:$PATH; \
+>   cd ~/fitt-coderunner && make stop && \
+>   ( set -a; . ./.env; set +a; nohup ./bin/crn-server > ~/crn.log 2>&1 & )'
+> ```
+>
+> แล้วยืนยันว่ารอดจริงด้วยการ **ตัด ssh ออกไปก่อน** ค่อย `curl $CRN/healthz` จากเครื่องตัวเอง
+> — ถ้ายังตอบอยู่แปลว่าหลุดจากเซสชันสำเร็จ (`~/crn.log` คือที่เดียวที่จะมี boot log
+> เพราะตอนนี้ log ไปออกหน้าเทอร์มินัลของ `ttys000` ไม่ได้ลงไฟล์เลย)
+>
+> ทางที่ถูกจริงระยะยาวคือทำ launchd agent ให้มัน — ยังไม่มีใครทำ
+
+ถ้าจำเป็นต้อง deploy จริง ลำดับเดิมยังใช้ได้และ**ห้ามสลับ**:
 
 ```bash
 cd ~/fitt-coderunner
 git pull origin dev
-make migrate      # ← ต้องมาก่อน
+make migrate      # ← ต้องมาก่อนเสมอ
 make restart
 ```
 
-> **ห้ามสลับลำดับ** ถ้า restart ก่อน migrate: binary ใหม่จะพยายามรัน 2 build พร้อมกัน แต่ index เก่าระดับ org ยังอยู่ → ตัวที่ 2 ตายด้วย unique violation (ความเสี่ยง R1)
+> restart ก่อน migrate = ไบนารีใหม่พยายามรัน 2 build พร้อมกันแต่ index เก่ายังเป็นระดับ org
+> → ตัวที่ 2 ตายด้วย unique violation (ความเสี่ยง R1)
 
-### SETUP-2 · ยืนยันว่า deploy ลงจริง
+### SETUP-2 · ยืนยันว่าของบนเครื่องตรงกับที่จะเทส
 
 ```bash
 export CRN=http://172.168.1.171:8080
 curl -s $CRN/healthz | jq .
 ```
 
-ต้องได้ (ตัวอย่าง)
+ตัวอย่างผลจริง ณ 2026-09-01:
 
 ```json
-{
-  "status": "ok",
-  "build": { "revision": "91de383", "time": "2026-08-11T...Z", "modified": false }
-}
+{"build":{"revision":"e63014c","time":"2026-08-31T10:02:13Z","modified":false},"status":"ok"}
 ```
 
-- `revision` ต้องเป็น `91de383` — ถ้าเป็น `unknown` แปลว่ารันด้วย `make run` (`go run` ไม่ stamp) ให้ใช้ `make restart` แทน
+- `revision` **ไม่จำเป็นต้องเท่ากับ `91de383`** — ขอแค่มี `91de383` เป็นบรรพบุรุษ (เช็คด้วยคำสั่งใน SETUP-1)
+- `revision: "unknown"` = รันด้วย `make run` (`go run` ไม่ stamp) → ใช้ `make restart` แทน
 - `modified: true` = build จาก working tree ที่ยังไม่ commit → อย่าเอาผลเทสไปอ้างอิง
 
 ### SETUP-3 · เครื่องมือ + shortcut
