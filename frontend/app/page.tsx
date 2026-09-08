@@ -16,6 +16,7 @@ import { ProjectsTable } from "./components/ProjectsTable";
 import { ActivityFeed } from "./components/ActivityFeed";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { FeedbackBell } from "./components/FeedbackBell";
+import { BuildStamp } from "./components/BuildStamp";
 
 export default function Home() {
   const { data, error, loading } = useDashboard(2500);
@@ -47,6 +48,7 @@ export default function Home() {
             {connLabel}
           </span>
           <code className="api-base">{API_BASE}</code>
+          <BuildStamp />
         </div>
       </header>
 

@@ -182,6 +182,13 @@ export function skillVersionsUrl(name: string): string {
   return `${API_BASE}/internal/skills/${encodeURIComponent(name)}/versions`;
 }
 
+// Liveness plus the daemon's VCS build stamp (no auth) — how the console shows
+// which commit this box is running.
+//   GET /healthz
+export function healthUrl(): string {
+  return `${API_BASE}/healthz`;
+}
+
 // Optional: the git remote builds are pushed to. When set, project branches
 // in the table link to GitHub. Empty -> branches render as plain text.
 export const GIT_REMOTE = process.env.NEXT_PUBLIC_CRN_GIT_REMOTE ?? "";

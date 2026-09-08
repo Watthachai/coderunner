@@ -240,3 +240,31 @@ export interface FeedbackRequest {
   issue_number?: number; // set once mirrored to GitHub
   issue_url?: string;
 }
+
+// --- health + build stamp (GET /healthz) ---
+// The VCS stamp Go embeds at build time. It is the only thing that identifies
+// what a box is actually running: the repo has no release tags, and the
+// dashboard's own package.json version is an untouched npm default.
+
+export interface BuildInfo {
+  revision: string; // short git commit, or "unknown"
+  time: string; // commit time (RFC3339), or ""
+  modified: boolean; // built from a dirty working tree
+}
+
+export interface Health {
+  status: string;
+  build: BuildInfo;
+}
+
+// --- companion skill drift (the `drift` key of GET /internal/skills) ---
+// One skill under skills/ whose stored copy no longer matches the source.
+// Skills that match are omitted, as are dashboard-authored skills with no
+// source at all. "missing" = never uploaded; "stale" = uploaded, then either
+// the source or the stored copy moved on.
+
+export interface SkillDrift {
+  name: string;
+  status: "missing" | "stale";
+  detail: string; // what differs, e.g. "SKILL.md differs"
+}

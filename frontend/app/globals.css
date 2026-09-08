@@ -3620,3 +3620,73 @@ body {
 .vm-empty {
   flex: 1;
 }
+
+/* --- build stamp + companion skill drift ---------------------------------- */
+
+/* The daemon's commit, beside the API base in the page header. Shares
+   .api-base's pill shape; "dirty" (built from uncommitted changes) is the one
+   state worth colouring, since that binary matches no commit at all. */
+.build-stamp {
+  font-weight: 600;
+}
+
+.build-stamp--dirty {
+  color: var(--queued);
+  border-color: var(--queued);
+}
+
+/* Amber, not red: a stale skill is a deploy step someone still owes, not a
+   broken daemon. Matches the queued/attention colour used elsewhere. */
+.drift-notice {
+  border: 1px solid var(--queued);
+  background: rgba(255, 150, 0, 0.08);
+  border-radius: 8px;
+  padding: 0.7rem 0.85rem;
+  margin: 0 0 0.75rem;
+}
+
+.drift-notice-head,
+.drift-notice-foot {
+  font-size: 0.8rem;
+  color: var(--fg);
+  margin: 0;
+}
+
+.drift-notice-foot {
+  color: var(--fg-muted);
+  margin-top: 0.5rem;
+}
+
+.drift-list {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.drift-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.drift-detail {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+}
+
+.drift-pill {
+  color: var(--queued);
+  border-color: var(--queued);
+}
+
+/* "missing" is the harder case: the skill has no row at all, so no build has
+   ever received it — unlike a stale one, which at least runs an older body. */
+.drift-pill--missing {
+  color: var(--error);
+  border-color: var(--error);
+}

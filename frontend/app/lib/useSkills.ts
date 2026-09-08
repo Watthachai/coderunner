@@ -2,10 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { skillsUrl } from "./config";
-import type { Skill } from "./types";
+import type { Skill, SkillDrift } from "./types";
 
 export interface SkillsState {
   skills: Skill[];
+  // Companion skills whose stored copy no longer matches skills/. Empty when
+  // everything reviewed in the repo is what builds actually receive.
+  drift: SkillDrift[];
   error: string | null;
   loading: boolean;
   refresh: () => Promise<void>;
@@ -13,6 +16,7 @@ export interface SkillsState {
 
 interface SkillsResponse {
   skills: Skill[];
+  drift: SkillDrift[];
 }
 
 /**
@@ -22,6 +26,7 @@ interface SkillsResponse {
  */
 export function useSkills(): SkillsState {
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [drift, setDrift] = useState<SkillDrift[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const alive = useRef(true);
@@ -33,6 +38,9 @@ export function useSkills(): SkillsState {
       const json = (await res.json()) as SkillsResponse;
       if (!alive.current) return;
       setSkills(json.skills);
+      // An older daemon has no `drift` key; treat that as nothing to report
+      // rather than crashing the list it is attached to.
+      setDrift(json.drift ?? []);
       setError(null);
     } catch (e) {
       if (!alive.current) return;
@@ -50,5 +58,5 @@ export function useSkills(): SkillsState {
     };
   }, [refresh]);
 
-  return { skills, error, loading, refresh };
+  return { skills, drift, error, loading, refresh };
 }

@@ -15,9 +15,39 @@ import {
   skillVersionsUrl,
 } from "../lib/config";
 import { useSkills } from "../lib/useSkills";
-import type { Skill, SkillVersion } from "../lib/types";
+import { BuildStamp } from "../components/BuildStamp";
+import type { Skill, SkillDrift, SkillVersion } from "../lib/types";
 import { collapse, fileChanges, lineDiff } from "../lib/linediff";
 import type { DiffLine } from "../lib/linediff";
+
+// A companion skill is uploaded by hand, so editing one in skills/ changes
+// nothing about a running CRN until someone uploads it. Nothing used to say so,
+// which let a build pass its whole delivery gate while running a harness that
+// no longer matched the reviewed source. This banner is that missing warning.
+function DriftNotice({ drift }: { drift: SkillDrift[] }) {
+  if (drift.length === 0) return null;
+  const plural = drift.length === 1 ? "" : "s";
+  return (
+    <div className="drift-notice">
+      <p className="drift-notice-head">
+        {drift.length} skill{plural} in <code>skills/</code> {drift.length === 1 ? "does" : "do"}{" "}
+        not match this daemon — builds still receive the stored copy.
+      </p>
+      <ul className="drift-list">
+        {drift.map((d) => (
+          <li key={d.name}>
+            <span className="skill-name">{d.name}</span>
+            <span className={`pill drift-pill drift-pill--${d.status}`}>{d.status}</span>
+            <span className="drift-detail">{d.detail}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="drift-notice-foot">
+        Upload the changed folder as a zip to sync it, then check it is still enabled.
+      </p>
+    </div>
+  );
+}
 
 // Renders one collapsed diff as a <pre> of +/-/context/gap lines.
 function DiffPre({ lines }: { lines: DiffLine[] }) {
@@ -132,7 +162,12 @@ function formatShortDate(iso: string): string {
 }
 
 export default function SkillsPage() {
-  const { skills, error, loading, refresh } = useSkills();
+  const { skills, drift, error, loading, refresh } = useSkills();
+  // Drift is reported per skill name; the list needs it keyed for its badges.
+  const driftByName = useMemo(
+    () => new Map(drift.map((d) => [d.name, d])),
+    [drift],
+  );
 
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -473,6 +508,7 @@ export default function SkillsPage() {
             {connLabel}
           </span>
           <code className="api-base">{API_BASE}</code>
+          <BuildStamp />
         </div>
       </header>
 
@@ -481,6 +517,8 @@ export default function SkillsPage() {
           Can’t reach the daemon at {API_BASE} — {error}.
         </p>
       ) : null}
+
+      <DriftNotice drift={drift} />
 
       <div className="row skills-layout">
         {/* --- list --- */}
@@ -527,6 +565,7 @@ export default function SkillsPage() {
             <ul className="skill-list">
               {skills.map((s) => {
                 const active = s.name === selectedName;
+                const drifted = driftByName.get(s.name);
                 return (
                   <li key={s.name}>
                     <button
@@ -538,6 +577,14 @@ export default function SkillsPage() {
                         <span className="skill-name">{s.name}</span>
                         {s.is_builtin ? (
                           <span className="pill skill-pill">built-in</span>
+                        ) : null}
+                        {drifted ? (
+                          <span
+                            className="pill skill-pill drift-pill drift-pill--stale"
+                            title={drifted.detail}
+                          >
+                            drift
+                          </span>
                         ) : null}
                       </span>
                       <span
