@@ -12,75 +12,43 @@ import (
 	"strings"
 )
 
-// dockerbuild.go turns a built Next.js (App Router, standalone) demo into an
-// opaque production Docker image and pushes it to a registry. Only the compiled
-// standalone output ships in the image — no .tsx/source — so a customer can run
-// the demo on their own LAN without seeing our code. CRN writes its own known-
-// good Dockerfile (deterministic, mirrors the fitt-build harness asset) rather
-// than trusting whatever the model produced, then execs the host `docker`.
+// dockerbuild.go builds the compiled Next.js application plus the production
+// tooling needed for migrations and first-install bootstrap. The template is
+// also packaged in the fitt-build skill and exercised by the delivery verifier.
+// Runtime database scripts are shipped source; this is not a source-secrecy boundary.
 
-// productionDockerfile is the multi-stage build for a Next.js app using
-// output:"standalone". The runner stage copies ONLY .next/standalone + static +
-// public, so source files never land in the image. Kept in sync with the
-// fitt-build skill's assets/Dockerfile.
-const productionDockerfile = `# Auto-written by FITT Code Runner — production image for this demo.
-# Multi-stage: build the Next.js standalone app, then a lean runner that also
-# self-migrates the schema on start (prisma db push) against an EXTERNAL Postgres
-# (DATABASE_URL injected at run time). Only the compiled standalone output + the
-# DB layer (schema/seed/prisma CLI) ship — no app source (.tsx).
-FROM node:20-alpine AS deps
-RUN apk add --no-cache libc6-compat
+const productionDockerfile = `# Auto-written by FITT Code Runner — locked customer runtime.
+FROM node:22-bookworm-slim AS deps
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+FROM deps AS builder
 COPY . .
-# prisma generate needs no database; safe no-op if the project has no Prisma.
-RUN npx prisma generate 2>/dev/null || true
+RUN mkdir -p public prisma /runtime-config && for f in prisma.config.*; do if [ -f "$f" ]; then cp "$f" /runtime-config/; fi; done
 ENV NEXT_TELEMETRY_DISABLED=1
+# Build never connects to customer infrastructure; Prisma config may require a URL.
+ENV DATABASE_URL=postgresql://build:build@127.0.0.1:1/build
+RUN npm run db:generate --if-present
 RUN npm run build
+# Retain only lockfile-resolved production tools for migrations/bootstrap.
+RUN npm prune --omit=dev --ignore-scripts
 
-# dbtools: prisma CLI + tsx (for seed) installed in isolation so migrate-on-start
-# works WITHOUT shipping the full dev node_modules. Versions follow the app's
-# package.json ranges. --ignore-scripts so a postinstall (prisma generate) doesn't
-# run here (no schema present).
-FROM node:20-alpine AS dbtools
+FROM node:22-bookworm-slim AS runner
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm install --no-save --ignore-scripts --no-audit --no-fund prisma tsx
-
-FROM node:20-alpine AS runner
-WORKDIR /app
-# openssl + libc6-compat: prisma's schema engine needs them at run time (db push).
-RUN apk add --no-cache libc6-compat openssl
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN addgroup --system --gid 1001 nodejs \
-  && adduser --system --uid 1001 nextjs
-# DB tooling first so the app's traced node_modules (standalone, copied next) wins
-# for any shared dependency; prisma + tsx (absent from standalone) remain.
-COPY --from=dbtools --chown=nextjs:nodejs /app/node_modules ./node_modules
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-# DB layer for migrate-on-start (no app source): schema + seed + the seed config in
-# package.json. The skill guarantees a prisma/ dir on every build.
-COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
-COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
-# Entrypoint: sync schema to the external DB then serve. db push runs WITHOUT the
-# destructive-drop flag, so an additive change applies (data kept) while a destructive
-# one FAILS LOUDLY (container won't start) instead of silently dropping data. The seed
-# runs by DEFAULT (SEED_LOGIN=0 disables it) and creates ONE thing: the login account,
-# upserted by email. It carries no demo rows — the skill forbids them — so re-running it
-# on every start cannot resurrect a deleted record or revert an edited one.
-# No-op migrate when the app has no Prisma.
-RUN printf '#!/bin/sh\nset -e\nif [ -f prisma/schema.prisma ]; then\n  echo "[crn] migrate-on-start: prisma db push"\n  npx prisma db push --skip-generate\n  if [ "${SEED_LOGIN:-1}" != "0" ]; then echo "[crn] ensuring login account"; npx prisma db seed || echo "[crn] seed failed (continuing)"; fi\nfi\nexec node server.js\n' > /app/docker-entrypoint.sh \
-  && chmod +x /app/docker-entrypoint.sh \
-  && chown nextjs:nodejs /app/docker-entrypoint.sh
-USER nextjs
+COPY --from=builder --chown=node:node /app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
+COPY --from=builder --chown=node:node /app/prisma ./prisma
+COPY --from=builder --chown=node:node /app/package.json ./package.json
+COPY --from=builder --chown=node:node /runtime-config/ ./
+RUN printf '#!/bin/sh\nset -eu\nif [ -f prisma/schema.prisma ]; then\n  npm run db:deploy\n  npm run db:seed\nfi\nexec node server.js\n' > /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
+USER node
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
@@ -99,20 +67,20 @@ npm-debug.log
 
 // customerCompose runs the delivered demo against an EXTERNAL Postgres the operator
 // supplies via DATABASE_URL — no bundled database, no separate migrate service. The
-// app image self-migrates (prisma db push) on start. Placeholders rendered per build.
-const customerCompose = `# Auto-generated by FITT Code Runner — run this demo against your OWN Postgres.
-#   DATABASE_URL=postgresql://user:pass@host:5432/db docker compose -f docker-compose.customer.yml up -d
-# No source ships (app is a compiled image). The app self-migrates its schema on start
-# (prisma db push) and makes sure the login account exists. It seeds NO demo data — your
-# data is the only data.
+// app image applies committed migrations on start. Placeholders rendered per build.
+const customerCompose = `# Customer deployment. Supply unique secrets through your deployment environment.
 services:
   app:
     image: {{APP_IMAGE}}
     environment:
-      DATABASE_URL: "${DATABASE_URL:?set DATABASE_URL to your Postgres, e.g. postgresql://user:pass@host:5432/db}"
-      # SEED_LOGIN: "0"   # uncomment to SKIP creating the login account on start
+      DATABASE_URL: "${DATABASE_URL:-}"
+      AUTH_SECRET: "${AUTH_SECRET:-}"
+      BOOTSTRAP_ADMIN_EMAIL: "${BOOTSTRAP_ADMIN_EMAIL:-}"
+      BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
+      FITT_FEEDBACK_URL: "${FITT_FEEDBACK_URL:-}"
     ports:
       - "${APP_PORT:-{{PORT}}}:3000"
+    restart: unless-stopped
 `
 
 // DemoEnvExample is the runtime env contract for the delivered demo image — an
@@ -127,18 +95,18 @@ type DemoEnvExample struct {
 	// AppPort is the suggested HOST port to publish → container 3000 (per-project,
 	// avoids collisions); override freely.
 	AppPort string `json:"APP_PORT"`
-	// DevEmail/DevPassword are THE login credential for every auth demo: the skill
-	// standardizes any prototype login into an email+password form that accepts ONLY
-	// these env values. The operator sets them; these are the fallback defaults. Seed
-	// runs by default, so the matching Admin user exists out of the box. Never a real
-	// secret — change for anything beyond a demo. Apps without login ignore them.
+	// Deprecated callback keys retained as empty strings for older consumers.
+	// Customer applications use persisted accounts and once-only bootstrap inputs.
 	DevEmail    string `json:"DEV_EMAIL"`
 	DevPassword string `json:"DEV_PASSWORD"`
 	// FeedbackURL is where the in-demo feedback widget POSTs. Read from RUNTIME env
 	// (the widget's data-ingest is server-rendered from process.env.FITT_FEEDBACK_URL),
 	// so the operator points it at their receiver per deployment without a rebuild.
 	// Only relevant when the widget was injected (CRN_FEEDBACK_INGEST_URL set at build).
-	FeedbackURL string `json:"FITT_FEEDBACK_URL"`
+	FeedbackURL       string `json:"FITT_FEEDBACK_URL"`
+	BootstrapEmail    string `json:"BOOTSTRAP_ADMIN_EMAIL"`
+	BootstrapPassword string `json:"BOOTSTRAP_ADMIN_PASSWORD"`
+	AuthSecret        string `json:"AUTH_SECRET"`
 }
 
 // NewDemoEnvExample builds the env contract for a demo whose per-project host port
@@ -148,50 +116,26 @@ func NewDemoEnvExample(port int) DemoEnvExample {
 		DatabaseURL: "postgresql://USER:PASSWORD@HOST:5432/DB?schema=public",
 		Port:        "3000",
 		AppPort:     strconv.Itoa(port),
-		DevEmail:    "dev@fitt.local",
-		DevPassword: "changeme",
+		DevEmail:    "",
+		DevPassword: "",
 		FeedbackURL: "http://FEEDBACK_HOST:PORT/api/ingest/feedback",
 	}
 }
 
-const installMD = `# INSTALL — รัน demo นี้บนเครื่องคุณ
+const installMD = `# INSTALL — Customer application
 
-App เป็น image ที่ compile แล้ว (**ไม่มี source code**) และ **self-migrate**: ตอน start มัน
-รัน ` + "`prisma db push`" + ` สร้าง/sync schema ใส่ **Postgres ของคุณเอง** (ต่อผ่าน ` + "`DATABASE_URL`" + `) แล้วค่อยเปิด demo.
+The image contains compiled application output plus database tooling. Supply your own PostgreSQL connection through DATABASE_URL and run docker-compose.customer.yml. The app applies committed migrations with db:deploy and executes db:seed before serving; a failure stops startup.
 
-## ต้องมี
-- Docker (+ Compose ถ้าใช้ compose)
-- **Postgres ของคุณเอง** + database ว่าง 1 อัน + connection string (` + "`DATABASE_URL`" + `)
-- เข้าถึง image registry ได้ (หรือมีไฟล์ image tarball)
+## First installation
+For a local-account application, supply a unique BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD (at least 16 characters), plus a strong AUTH_SECRET through deployment secrets. No shared password ships. The bootstrap transaction creates the first administrator and a durable completion marker. Existing users are adopted without creation. Change the initial password at first login, then remove the bootstrap variables from deployment.
 
-## รัน (docker run)
-` + "```bash" + `
-# ถ้า registry ต้อง login (deploy token):
-docker login {{REGISTRY}} -u <user> -p <token>
+## Restarts and issue builds
+Use the SAME customer database and preserve the authentication secret. Migrations retain their history; completed bootstrap ignores absent or changed bootstrap credentials. Accounts, password hashes and business records are not reseeded. A deleted initial account is not recreated. Account recovery uses the application's documented recovery process.
 
-docker run -d -p {{PORT}}:3000 \
-  -e DATABASE_URL="postgresql://user:pass@host:5432/db" \
-  {{APP_IMAGE}}
-` + "```" + `
-เปิด http://localhost:{{PORT}}
+## Upgrade and recovery
+Back up the database before migrations. Review BUILD_NOTES.md and CRN_VERIFICATION.json. Deploy image {{APP_IMAGE}} with docker compose -f docker-compose.customer.yml up -d, then verify health and core flows. A schema change may require a forward fix; an older image is not automatically compatible with a migrated database. Keep the previous image and tested recovery instructions. Never reset or db-push a customer database.
 
-## รัน (compose)
-` + "```bash" + `
-DATABASE_URL="postgresql://user:pass@host:5432/db" \
-  docker compose -f docker-compose.customer.yml up -d
-` + "```" + `
-
-## เกิดอะไรขึ้นตอน start
-1. app รัน ` + "`prisma db push`" + ` → สร้าง/sync schema ใน DB ของคุณ (additive = data เดิมอยู่ครบ)
-2. สร้างบัญชี login (` + "`DEV_EMAIL`/`DEV_PASSWORD`" + `) ถ้ายังไม่มี — **ไม่ใส่ข้อมูลตัวอย่างใด ๆ** ข้อมูลที่คุณกรอกไว้ไม่ถูกแตะ (ปิดด้วย ` + "`SEED_LOGIN=0`" + `)
-3. เปิด demo ที่ port
-
-## อัปเดตเป็นเวอร์ชันใหม่
-เปลี่ยน tag ` + "`:v<n>`" + ` (docker run/compose) แล้วรันใหม่ ชี้ ` + "`DATABASE_URL`" + ` เดิม — additive change data อยู่ครบ
-
-## ⚠️ ข้อควรรู้
-- schema เปลี่ยนแบบ **destructive** (ลบ/rename column ที่มี data) → ` + "`db push`" + ` จะ **fail ไม่ start** (กัน data หาย) ไม่ drop เงียบ — ต้อง migrate มือ
-- **backup DB ก่อนอัปเวอร์ชัน** ที่มี schema เปลี่ยนใหญ่
+Published port defaults to {{PORT}}; override APP_PORT. For private registries authenticate using your deployment secret manager. Do not place passwords on command lines or commit .env files. Required provider configuration and live integrations are listed in BUILD_NOTES.md.
 `
 
 // DemoImageTag builds the image tag for a build:
@@ -262,10 +206,11 @@ func IsNextApp(dir string) bool {
 
 // WriteImageBundle writes CRN's deterministic on-prem delivery bundle into dir,
 // overwriting any model-produced versions:
-//   - Dockerfile             (opaque, self-migrating app image — standalone, no source)
+//   - Dockerfile             (compiled app plus runtime database tooling)
 //   - .dockerignore
 //   - docker-compose.customer.yml (app only; points at the operator's external Postgres)
 //   - INSTALL.md
+//
 // appImage is the (deterministic) tag the pipeline will build+push; registry + port
 // are rendered into the compose/INSTALL. The app image self-migrates on start, so
 // there is no separate migrate image. Returns false (no error) when dir is not a

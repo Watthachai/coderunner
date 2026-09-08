@@ -1,60 +1,36 @@
-# Multi-stage build for a Next.js (App Router) app using output: "standalone".
-# Produces a small runtime image that runs .next/standalone/server.js as a
-# non-root user. Requires `output: "standalone"` in next.config.ts.
-
-# 1. Install dependencies only when needed.
-FROM node:20-alpine AS deps
-# libc6-compat helps some native deps (e.g. Prisma engines) on Alpine.
-RUN apk add --no-cache libc6-compat
+# Auto-written by FITT Code Runner — locked customer runtime.
+FROM node:22-bookworm-slim AS deps
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-
-# Install with whichever lockfile is present. --ignore-scripts skips lifecycle
-# scripts (e.g. a `postinstall: prisma generate`) at this stage: the Prisma
-# schema isn't copied yet, so postinstall would fail. The client is generated
-# explicitly in the builder stage below, after the full source is copied.
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 
-# 2. Build the app (also generates the Prisma client).
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+FROM deps AS builder
 COPY . .
-
-# Generate Prisma Client before building. `prisma generate` needs no database.
-# (Safe to keep even if the project has no Prisma — remove this line if so.)
-RUN npx prisma generate
-
-# next build must NOT require a live DB (keep DB-reading routes force-dynamic).
+RUN mkdir -p public prisma /runtime-config && for f in prisma.config.*; do if [ -f "$f" ]; then cp "$f" /runtime-config/; fi; done
 ENV NEXT_TELEMETRY_DISABLED=1
+# Build never connects to customer infrastructure; Prisma config may require a URL.
+ENV DATABASE_URL=postgresql://build:build@127.0.0.1:1/build
+RUN npm run db:generate --if-present
 RUN npm run build
+# Retain only lockfile-resolved production tools for migrations/bootstrap.
+RUN npm prune --omit=dev --ignore-scripts
 
-# 3. Production image — copy only the standalone output.
-FROM node:20-alpine AS runner
+FROM node:22-bookworm-slim AS runner
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-
-# Run as a non-root user.
-RUN addgroup --system --gid 1001 nodejs \
-  && adduser --system --uid 1001 nextjs
-
-# Public assets and the standalone server + traced node_modules.
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# If the app uses Prisma at runtime, the generated client + engines are already
-# traced into ./node_modules by standalone output. The image CRN actually produces is
-# SELF-MIGRATING: its entrypoint runs `prisma db push` (data-safe) against the external
-# DATABASE_URL, `prisma db seed` by default (DEMO_SEED=0 disables), then `node server.js`.
-# (This reference keeps the plain `node server.js` CMD for illustration.)
-
-USER nextjs
+COPY --from=builder --chown=node:node /app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
+COPY --from=builder --chown=node:node /app/prisma ./prisma
+COPY --from=builder --chown=node:node /app/package.json ./package.json
+COPY --from=builder --chown=node:node /runtime-config/ ./
+RUN printf '#!/bin/sh\nset -eu\nif [ -f prisma/schema.prisma ]; then\n  npm run db:deploy\n  npm run db:seed\nfi\nexec node server.js\n' > /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
+USER node
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-
-# server.js is emitted by Next.js standalone output.
-CMD ["node", "server.js"]
+CMD ["/app/docker-entrypoint.sh"]

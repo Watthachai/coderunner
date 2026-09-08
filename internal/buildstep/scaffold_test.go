@@ -27,7 +27,7 @@ func TestScaffoldRunPrisma(t *testing.T) {
 	}
 
 	dc, _ := os.ReadFile(filepath.Join(dir, "docker-compose.yml"))
-	if !strings.Contains(string(dc), "prisma db push") {
+	if !strings.Contains(string(dc), "npm run db:deploy") {
 		t.Errorf("docker-compose.yml not overwritten with the working runner")
 	}
 

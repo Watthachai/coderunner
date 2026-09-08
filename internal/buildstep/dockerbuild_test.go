@@ -86,12 +86,12 @@ func TestWriteImageBundle(t *testing.T) {
 	// App Dockerfile ships only the standalone output (no source) and self-migrates
 	// on start via a data-safe db push (no --accept-data-loss).
 	df := readFile(t, filepath.Join(next, "Dockerfile"))
-	for _, want := range []string{".next/standalone", "prisma db push", "node server.js"} {
+	for _, want := range []string{".next/standalone", "npm run db:deploy", "node server.js"} {
 		if !strings.Contains(df, want) {
 			t.Errorf("app Dockerfile missing %q", want)
 		}
 	}
-	if strings.Contains(df, "--accept-data-loss") {
+	if strings.Contains(df, "--accept-data-loss") || strings.Contains(df, "db push") || strings.Contains(df, "seed failed (continuing)") {
 		t.Error("app Dockerfile must NOT use --accept-data-loss (data-safe migrate)")
 	}
 	// Customer compose is app-only against an external DATABASE_URL — no bundled DB,
