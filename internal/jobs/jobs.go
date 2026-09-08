@@ -477,13 +477,10 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 
 	// --- source-hash dedup ----------------------------------------------------
-	// A fresh build re-runs the (expensive) AI conversion from scratch. When the
-	// EXACT same source is resubmitted (a retry, or a rebuild with an unchanged
-	// prototype) there is nothing to convert: reuse the last successful build's
-	// image instead of burning another agent run. Edit builds carry a Change, not a
-	// source zip, so srcHash is "" for them and reuse is skipped.
+	// Customer builds rerun conversion and verification with current skills.
+	// Only the legacy materialize-only path may reuse the source/image cache.
 	srcHash := sourceHash(spec.Files)
-	if spec.Mode != "edit" && srcHash != "" {
+	if !m.runClaude && !m.buildImage && spec.Mode != "edit" && srcHash != "" {
 		cachedHash, cachedImage, err := m.store.GetProjectBuildCache(ctx, job.ProjectID)
 		if err != nil {
 			log.Warn("build cache lookup failed (converting normally)", "err", err)
@@ -496,6 +493,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// resumeSession is the Claude session to --resume for this run; the Claude
 	// prompt is the requirement handed to Claude. Both are set per-mode below.
 	var resumeSession, claudePrompt string
+	var priorMigrations map[string][]byte
 
 	if spec.Mode == "edit" {
 		// --- EDIT mode: clone/pull the existing branch, do NOT reset/materialize ---
@@ -505,14 +503,27 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			return
 		}
 		m.publishPhase(job.ID, "pull")
-		if err := buildstep.GitCloneOrPull(ctx, workDir, pushRemote, pushBranch, m.logger); err != nil {
+		if err := buildstep.GitCloneOrPull(runCtx, workDir, pushRemote, pushBranch, m.logger); err != nil {
 			log.Error("edit clone/pull failed", "err", err, "branch", pushBranch)
-			m.finishFailed(ctx, job, "edit clone/pull failed: "+err.Error(), 0)
+			if runCtx.Err() != nil && ctx.Err() == nil {
+				m.finishCancelled(ctx, job, 0)
+			} else {
+				m.finishFailed(ctx, job, "edit clone/pull failed: "+err.Error(), 0)
+			}
 			return
 		}
 		log.Info("edit workspace ready", "workdir", workDir, "branch", pushBranch)
+		if m.runClaude || m.buildImage {
+			var err error
+			priorMigrations, err = buildstep.SnapshotMigrations(workDir)
+			if err != nil {
+				m.finishFailed(ctx, job, "read existing migration history: "+err.Error(), 0)
+				return
+			}
+		}
 
 		claudePrompt = "You are editing an existing project in the current directory. " +
+			"Use the fitt-build skill and its delivery checks for this edit. Preserve migration history, accounts and customer data. " +
 			"Apply this change and keep everything else working:\n\n" + spec.Change
 
 		// Resume the project's last Claude session so the edit has full context.
@@ -677,6 +688,24 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 	}
 
+	// The AI repairs within its single session; this independent gate cannot be
+	// satisfied by an authored claim of success. Run after widget/scaffold changes.
+	if m.runClaude || m.buildImage {
+		m.publishPhase(job.ID, "verify")
+		if err := buildstep.CheckMigrationHistory(workDir, priorMigrations); err != nil {
+			m.finishFailed(ctx, job, err.Error(), result.CostUSD)
+			return
+		}
+		if err := buildstep.VerifyDelivery(runCtx, workDir); err != nil {
+			if runCtx.Err() != nil && ctx.Err() == nil {
+				m.finishCancelled(ctx, job, result.CostUSD)
+			} else {
+				m.finishFailed(ctx, job, err.Error(), result.CostUSD)
+			}
+			return
+		}
+	}
+
 	// Write the on-prem delivery bundle (opaque app + migrate Dockerfiles, customer
 	// docker-compose, INSTALL) BEFORE the git push so it is committed alongside the
 	// build. Uses the deterministic image tags the push-time image build produces.
@@ -693,10 +722,14 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		m.publishPhase(job.ID, "git")
 		m.publishPhase(job.ID, "push")
 		msg := commitMessage(spec, job)
-		commit, err := buildstep.GitCommitAndPush(ctx, workDir, pushRemote, pushBranch, msg, m.logger)
+		commit, err := buildstep.GitCommitAndPush(runCtx, workDir, pushRemote, pushBranch, msg, m.logger)
 		if err != nil {
 			log.Error("git push failed", "err", err)
-			m.finishFailed(ctx, job, "git push failed: "+err.Error(), result.CostUSD)
+			if runCtx.Err() != nil && ctx.Err() == nil {
+				m.finishCancelled(ctx, job, result.CostUSD)
+			} else {
+				m.finishFailed(ctx, job, "git push failed: "+err.Error(), result.CostUSD)
+			}
 			return
 		}
 		commitSHA = commit
@@ -715,15 +748,6 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 		job.DockerTag = "branch:" + pushBranch
 
-		// Owner model: an edit driven by a GitHub issue comments the commit back on
-		// the issue (best-effort — never fails the build).
-		if ownerMode && spec.Mode == "edit" && spec.IssueNumber > 0 && repoSlug != "" {
-			summary := fmt.Sprintf("🛠 Fixed by CRN — build #%d\n\nBranch `%s` · commit `%s`",
-				job.BuildNo, pushBranch, shortSHA(commit))
-			if err := github.CloseIssue(ctx, repoSlug, spec.IssueNumber, "completed", summary, m.logger); err != nil {
-				log.Warn("close issue failed", "err", err, "issue", spec.IssueNumber)
-			}
-		}
 	} else {
 		log.Info("git push skipped (no CRN_GIT_REMOTE / CRN_GITHUB_OWNER)", "branch", pushBranch)
 		m.publishPhase(job.ID, "push_skipped")
@@ -735,17 +759,36 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// deliverable: if it can't be built/pushed, FAIL the build rather than
 	// releasing with a "branch:main" tag that would make a consumer fall back to
 	// git-cloning the source repo. (When image mode is off, this is a no-op.)
-	if err := m.buildAndPushImage(ctx, workDir, spec, job, log); err != nil {
+	if err := m.buildAndPushImage(runCtx, workDir, spec, job, log); err != nil {
 		log.Error("image build failed; failing the build", "err", err)
-		m.finishFailed(ctx, job, err.Error(), result.CostUSD)
+		if runCtx.Err() != nil && ctx.Err() == nil {
+			m.finishCancelled(ctx, job, result.CostUSD)
+		} else {
+			m.finishFailed(ctx, job, err.Error(), result.CostUSD)
+		}
 		return
 	}
 
+	if runCtx.Err() != nil {
+		if ctx.Err() == nil {
+			m.finishCancelled(ctx, job, result.CostUSD)
+		}
+		return
+	}
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobDone, ""); err != nil {
 		log.Error("mark done failed", "err", err)
 		// Best-effort failure path so subscribers are not left hanging.
 		m.finishFailed(ctx, job, "persist done status failed: "+err.Error(), result.CostUSD)
 		return
+	}
+	// Owner model: an edit driven by a GitHub issue comments the commit back on
+	// the issue (best-effort — never fails the build).
+	if ownerMode && spec.Mode == "edit" && spec.IssueNumber > 0 && repoSlug != "" {
+		summary := fmt.Sprintf("🛠 Fixed by CRN — build #%d\n\nBranch `%s` · commit `%s`",
+			job.BuildNo, pushBranch, shortSHA(commitSHA))
+		if err := github.CloseIssue(ctx, repoSlug, spec.IssueNumber, "completed", summary, m.logger); err != nil {
+			log.Warn("close issue failed", "err", err, "issue", spec.IssueNumber)
+		}
 	}
 	job.Status = domain.JobDone
 	log.Info("build done", "cost_usd", result.CostUSD, "session_id", result.SessionID, "branch", job.DockerTag)
@@ -1368,8 +1411,8 @@ func (s *subscriber) closeLocked() {
 // injectSkills writes every enabled skill into {workDir}/.claude/skills so the
 // spawned `claude` discovers the fitt-build harness. Each skill's SKILL.md (its
 // Body) plus every entry in its Files map (scripts/, references/, ...) is
-// written under {workDir}/.claude/skills/{name}/. It is a no-op (no error) when
-// no skills are enabled. The caller removes {workDir}/.claude before the git
+// written under {workDir}/.claude/skills/{name}/. Customer builds require the
+// core fitt-build skill to be enabled. The caller removes .claude before the git
 // phase so the harness is never committed.
 func (m *manager) injectSkills(ctx context.Context, workDir string) error {
 	skills, err := m.store.ListSkills(ctx)
@@ -1377,16 +1420,43 @@ func (m *manager) injectSkills(ctx context.Context, workDir string) error {
 		return fmt.Errorf("list skills: %w", err)
 	}
 	var files []buildstep.SkillFile
+	var manifest []map[string]string
 	for _, sk := range skills {
 		if !sk.Enabled {
 			continue
 		}
 		files = append(files, buildstep.SkillFile{Name: sk.Name, Body: sk.Body, Files: sk.Files})
+		raw, err := json.Marshal(struct {
+			Body  string
+			Files map[string]string
+		}{sk.Body, sk.Files})
+		if err != nil {
+			return err
+		}
+		hash := sha256.Sum256(raw)
+		manifest = append(manifest, map[string]string{"name": sk.Name, "sha256": hex.EncodeToString(hash[:])})
 	}
 	if len(files) == 0 {
-		return nil
+		return fmt.Errorf("no enabled build skills")
+	}
+	core := false
+	for _, sk := range files {
+		if sk.Name == "fitt-build" {
+			core = true
+		}
+	}
+	if !core {
+		return fmt.Errorf("fitt-build must be enabled for customer builds")
 	}
 	if err := buildstep.InjectSkills(workDir, files); err != nil {
+		return err
+	}
+	sort.Slice(manifest, func(i, j int) bool { return manifest[i]["name"] < manifest[j]["name"] })
+	raw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(workDir, "CRN_SKILLS.json"), raw, 0o644); err != nil {
 		return err
 	}
 	m.logger.Info("injected skills", "count", len(files), "workdir", workDir)
@@ -1398,7 +1468,7 @@ func (m *manager) injectSkills(ctx context.Context, workDir string) error {
 // back to the parsed legacy/edit-request prompt so the run is never empty.
 func harnessPrompt(spec payloadSpec) string {
 	if spec.Idea == "" && spec.BRD == "" && spec.PRD == "" {
-		return spec.Prompt
+		return "Use the fitt-build skill and its delivery checks.\n\n" + spec.Prompt
 	}
 	return fmt.Sprintf(
 		"You are in a fresh project directory containing a FITT Builder export "+
