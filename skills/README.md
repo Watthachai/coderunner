@@ -50,9 +50,7 @@ fires on every build. Keep it under 1024 characters.
 render the chart the prototype already has; it must never cause a chart, a
 column, or a document to appear that the prototype did not have.
 
-**Assume an empty database.** Delivered demos seed the login account and nothing
-else, so every screen's first render has zero rows. Guards for that belong
-inside the snippet, not in a closing note.
+**Support first install and upgrades.** A new customer database bootstraps its administrator once; later builds preserve accounts and data. Disposable test fixtures are allowed only in isolated test databases. A fresh installation has no business sample rows; required reference data is allowed. Existing installations retain their data. Every screen must handle its real empty state.
 
 **Never ask a question.** Builds run unattended (`claude -p`). A skill that
 stops to ask has stopped the build. Tell it how to decide instead.

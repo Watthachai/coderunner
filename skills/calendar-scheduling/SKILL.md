@@ -27,7 +27,7 @@ export const dayStart = (ymd: string) => new Date(`${ymd}T00:00:00${ICT}`);
 export const dayEnd = (ymd: string) => new Date(dayStart(ymd).getTime() + 86_400_000);
 ```
 
-Store every `startAt` / `endAt` as Prisma `DateTime` (UTC in the column). **Never** `toISOString().slice(0, 10)` to get "the date" — at 21:00 in Bangkok that returns yesterday. Use `toDateInput` from `lib/format.ts`, which formats in `Asia/Bangkok`.
+Store every `startAt` / `endAt` as Prisma `DateTime` (UTC in the column). **Never** `toISOString().slice(0, 10)` to get "the date" — at 00:30 in Bangkok that returns yesterday. Use `toDateInput` from `lib/format.ts`, which formats in `Asia/Bangkok`.
 
 ## The grid is built from ค.ศ. and labelled in พ.ศ.
 
@@ -86,7 +86,7 @@ catch (e) {
 }
 ```
 
-If the prototype books **arbitrary** ranges rather than fixed slots, no single unique index expresses that. Do the check and the insert inside one `prisma.$transaction`, keep the `P2002` handler for whatever unique keys do exist, and write the remaining race window into `BUILD_NOTES.md` rather than pretending it is closed. Do not invent a locking scheme the prototype never had.
+For arbitrary ranges, enforce non-overlap in PostgreSQL with an exclusion constraint for active bookings per resource (or a serializable transaction with bounded serialization-failure retry). A check then insert under the default transaction isolation is insufficient. Test simultaneous overlapping requests: exactly one succeeds; adjacent non-overlapping slots both succeed. Preserve the UI while implementing the data invariant.
 
 ## An empty calendar is a full screen, not an empty state
 
@@ -138,5 +138,5 @@ Against an **empty** database, then with bookings you created through the app's 
 - 10:00–11:00 and 10:30–11:30 refuse, with the PRD's message;
 - rescheduling a booking to a time overlapping only itself succeeds;
 - cancelling a booking frees its slot for a new one;
-- a booking created at 21:00 Bangkok time appears on **today**, not tomorrow;
+- a booking created at 00:30 Bangkok time appears on **today**, not yesterday;
 - no `Invalid Date`, no `NaN`, no off-by-one day anywhere.

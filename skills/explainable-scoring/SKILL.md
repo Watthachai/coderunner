@@ -109,7 +109,7 @@ An "explainable" score whose explanation is a tooltip saying "based on multiple 
 
 **Persist** only when the PRD asks for history ("คะแนนย้อนหลัง") or the score must be stable at a point in time (an approval decision). Then store the total **and the factor values it came from**, so an old score can still be explained. Storing a bare number produces a screen that shows 72 and cannot say why, which fails the one requirement this feature has.
 
-Never persist a score in a required column without a `@default` — the delivered image self-migrates with `db push` against a database that may already hold rows.
+Preserve required score constraints. Use committed migrations with an explicit backfill for existing records; choose a default only when it has business meaning. Never replace an unknown score with zero just to deploy.
 
 ## Thresholds and bands
 
