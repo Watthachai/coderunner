@@ -1,6 +1,6 @@
-# TEST_CASES.md — the test script that ships with the demo
+# TEST_CASES.md — the test script that ships with the application
 
-The people who receive this demo are not developers. They open the app, click
+The people who receive this application are not developers. They open the app, click
 around, and need a sheet that tells them **what to try, what should happen, and
 where to write down what actually happened**. That sheet is `TEST_CASES.md`,
 written at the repo root next to `BUILD_NOTES.md`.
@@ -73,7 +73,7 @@ unconstrained — never the starting point.
 
 **Then check every case against the app you really built.** A case whose feature
 does not exist is NOT deleted — it moves to "ยังไม่รองรับ" carrying its `AC`/`F`
-id. That is the whole point: the document then answers "does this demo match
+id. That is the whole point: the document then answers "does this application match
 what was agreed?", not merely "does what was built work?".
 
 ## Five rules
@@ -132,7 +132,7 @@ what was agreed?", not merely "does what was built work?".
 | `EC-DuplicateBarcode` | <ย่อ 1 บรรทัด> | TC-12 | มีเคส |
 | `BRD AC-4` | <ย่อ 1 บรรทัด> | — | ยังไม่รองรับ (ดูท้ายเอกสาร) |
 
-## สิ่งที่ demo นี้ยังไม่รองรับ (ทราบล่วงหน้า)
+## สิ่งที่ application นี้ยังไม่รองรับ (ทราบล่วงหน้า)
 <ดูหัวข้อท้ายไฟล์นี้>
 ```
 
@@ -175,13 +175,13 @@ type actually exists in the app you built.
 | ตะกร้า / ชำระเงิน *(เฉพาะแอปที่มีจริง)* | กดชำระเงินโดยตะกร้าว่าง · สั่งเกินสต็อก · คูปองหมดอายุ / ใช้ซ้ำ |
 | อัปโหลดไฟล์ *(เฉพาะแอปที่มีจริง)* | ไฟล์ผิดชนิด · ไฟล์ใหญ่เกินกำหนด |
 
-## Cases every CRN demo should have
+## Cases every CRN application should have
 
 These come from what CRN itself puts in the image, so they apply to every build:
 
 | ต้องเทส | ผลลัพธ์ที่คาดหวัง |
 |---|---|
-| เข้าสู่ระบบด้วย `DEV_EMAIL` / `DEV_PASSWORD` | เข้าได้ (ถ้าแอปมีหน้าล็อกอิน) |
+| เข้าสู่ระบบด้วย `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | ใช้ตั้งบัญชีครั้งแรกเท่านั้น จากนั้นเข้าสู่ระบบด้วยบัญชีจริงและเปลี่ยนรหัสผ่าน |
 | เข้าสู่ระบบด้วยรหัสผ่านผิด / อีเมลผิด / เว้นว่าง | ไม่เข้า + มีข้อความแจ้ง |
 | ปุ่ม 💬 feedback มุมจอ | กดแล้วส่งข้อความได้ มีหน้ายืนยันก่อนส่ง |
 | ปุ่ม 🐞 error | โผล่เฉพาะตอนเกิด error จริงเท่านั้น |
@@ -193,7 +193,7 @@ These come from what CRN itself puts in the image, so they apply to every build:
 
 A ported prototype is not a hardened product. Where the app genuinely has no
 validation for a case in the catalogue, do NOT invent a rule and do NOT quietly
-drop the case — list it under **"สิ่งที่ demo นี้ยังไม่รองรับ (ทราบล่วงหน้า)"**:
+drop the case — list it under **"สิ่งที่ application นี้ยังไม่รองรับ (ทราบล่วงหน้า)"**:
 
 ```markdown
 | อ้างอิง | สิ่งที่ยังไม่รองรับ | ผลที่จะเกิดถ้าลอง | ถ้าต้องการให้รองรับ |
@@ -206,8 +206,8 @@ drop the case — list it under **"สิ่งที่ demo นี้ยัง
 Cite the source-prefixed id when the gap is something the docs asked for
 (`BRD AC-4`, `PRD US-02`, `EC-DuplicateBarcode`), and `(derive)` when it is a
 validation rule nobody wrote down. This section is what makes the
-document useful: the customer learns the demo's real boundaries instead of
+document useful: the customer learns the application's real boundaries instead of
 discovering them as "bugs", and sees exactly which agreed requirement is still
 open. Writing it does NOT mean
 implementing the missing rules — the port stays faithful (see the hard rules in
-SKILL.md); it means being straight about what the demo does today.
+SKILL.md); it means being straight about what the application does today.

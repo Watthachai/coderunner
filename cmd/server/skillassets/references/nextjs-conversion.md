@@ -2,7 +2,7 @@
 
 You are converting a **FITT Builder export**: a client-only **Vite + React 18** single-page app. Convert it to **Next.js (App Router, TypeScript)** while preserving the EXACT UI/UX and behavior. This guide is the map.
 
-**Install the LATEST Next.js — always.** Run `npm install next@latest react@latest react-dom@latest` (currently **Next 16**). Do NOT install or pin Next 14/15: `next.config.ts`, current App Router APIs, and `output: "standalone"` behavior assume the latest major.
+**Resolve compatible versions once.** Read the installed Next.js documentation, select a supported version compatible with the application and pin Next, React and React DOM exactly in package.json and package-lock.json. Use npm ci for subsequent installs. Preserve working versions on issue edits unless an upgrade is part of the requested change or fixes a demonstrated compatibility/security issue.
 
 ## 1. What the export looks like
 
@@ -161,8 +161,6 @@ export default nextConfig;
 - **Do not use `pages/`** — this is App Router. No `_app`, no `_document`, no `getServerSideProps`; use layouts, server components, and route handlers.
 - **Metadata**: don't hand-write `<title>` in a client component; use the `metadata` export in a server layout/page.
 
-## 10. Definition of done
+## 10. Delivery gate
 
-`npm install` succeeds and `npx next build` passes. The rendered UI is visually identical to the prototype, the same interactions work, and data now flows through Prisma (see prisma-setup.md) instead of in-memory mocks. `next build` must succeed WITHOUT a live database (see prisma-setup.md, section "Make next build pass WITHOUT a live DB").
-
-**Plus the coverage gate:** `PORT_CHECKLIST.md` is fully ticked — every screen, component, hook, and asset from the source tree has its counterpart. A green `next build` over an unticked checklist is a failed port (see SKILL.md step 9). Sanity-check by counting: source component files vs ported component files should match, minus only the Vite bootstrap files the conversion rules delete.
+Use references/delivery-checks.md as the finish gate on every build and edit. Preserve wired screens and data constraints. Compilation is one check; executable behavior, empty-database startup, authentication and upgrade/once-only bootstrap tests are required. Use locked compatible dependencies; do not upgrade frameworks as an incidental issue fix.
