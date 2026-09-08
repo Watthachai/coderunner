@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "checks": [
+    {
+      "name": "delivery contract",
+      "passed": true
+    },
+    {
+      "name": "locked install",
+      "passed": true
+    },
+    {
+      "name": "generate client",
+      "passed": true
+    },
+    {
+      "name": "typecheck",
+      "passed": true
+    },
+    {
+      "name": "unit tests",
+      "passed": true
+    },
+    {
+      "name": "production build without DB",
+      "passed": true
+    },
+    {
+      "name": "build customer runtime image",
+      "passed": true
+    },
+    {
+      "name": "isolated runtime network",
+      "passed": true
+    },
+    {
+      "name": "start isolated database",
+      "passed": true
+    },
+    {
+      "name": "database port",
+      "passed": true
+    },
+    {
+      "name": "database readiness",
+      "passed": true
+    },
+    {
+      "name": "apply migrations in customer image",
+      "passed": true
+    },
+    {
+      "name": "first-install bootstrap in customer image",
+      "passed": true
+    },
+    {
+      "name": "repeat bootstrap with changed inputs",
+      "passed": true
+    },
+    {
+      "name": "restart without bootstrap inputs",
+      "passed": true
+    },
+    {
+      "name": "browser installation",
+      "passed": true
+    },
+    {
+      "name": "start customer image",
+      "passed": true
+    },
+    {
+      "name": "application port",
+      "passed": true
+    },
+    {
+      "name": "browser smoke tests",
+      "passed": true
+    }
+  ],
+  "started_at": "2026-09-07T09:33:51.916Z",
+  "node_version": "24.19.0",
+  "lockfile_sha256": "9a609ee6870b829939af6b62d69209e4de439475cfeb5f8737788c542fa800e0",
+  "unit_tests": 2,
+  "browser_tests": 2,
+  "finished_at": "2026-09-07T09:34:34.492Z"
+}
