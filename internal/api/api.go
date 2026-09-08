@@ -395,7 +395,13 @@ func (s *server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	if skills == nil {
 		skills = []*domain.Skill{}
 	}
-	s.writeJSON(w, r, http.StatusOK, map[string]any{"skills": skills})
+	// `drift` reports companion skills whose stored copy no longer matches
+	// skills/ — the console's only warning that a reviewed edit was never
+	// uploaded and builds are still running the old body. See skilldrift.go.
+	s.writeJSON(w, r, http.StatusOK, map[string]any{
+		"skills": skills,
+		"drift":  companionDrift(skills),
+	})
 }
 
 // handleGetSkill returns one skill by name (404 if absent).
