@@ -440,6 +440,13 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 
 	spec := parsePayload(job.Payload, m.logger)
 
+	// meta accumulates what the durable trace will record. It is threaded through
+	// every terminal path so a build that dies late still remembers how far it
+	// got — a failure at the image step used to lose the commit it had already
+	// pushed, which reads as "the code never shipped" when it is sitting on the
+	// remote.
+	meta := traceMeta{mode: buildMode(spec)}
+
 	// --- resolve the git model for this build ---------------------------------
 	// SHARED (githubOwner == ""): push a "crn/<slug>-<id8>" branch to gitRemote —
 	//   the legacy behavior, unchanged.
@@ -460,7 +467,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		repoURL, err := github.EnsureRepo(ctx, m.githubOwner, repoName, m.repoPrivate, m.logger)
 		if err != nil {
 			log.Error("ensure github repo failed", "err", err, "repo", repoSlug)
-			m.finishFailed(ctx, job, "ensure github repo failed: "+err.Error(), 0)
+			m.finishFailed(ctx, job, "ensure github repo failed: "+err.Error(), meta)
 			return
 		}
 		// Record the repo URL on the project once (idempotent SetProjectRepo).
@@ -475,6 +482,9 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		pushRemote = m.gitRemote
 		pushBranch = "crn/" + slug + "-" + id8
 	}
+	// Where this build would push, known before anything can fail — so even a
+	// build that dies during materialize records where its code was headed.
+	meta.remote, meta.branch = pushRemote, pushBranch
 
 	// --- source-hash dedup ----------------------------------------------------
 	// Customer builds rerun conversion and verification with current skills.
@@ -485,7 +495,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		if err != nil {
 			log.Warn("build cache lookup failed (converting normally)", "err", err)
 		} else if cachedHash == srcHash && cachedImage != "" {
-			m.finishReused(ctx, job, cachedImage, pushRemote, pushBranch, log)
+			m.finishReused(ctx, job, cachedImage, meta, log)
 			return
 		}
 	}
@@ -499,16 +509,16 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		// --- EDIT mode: clone/pull the existing branch, do NOT reset/materialize ---
 		if pushRemote == "" {
 			log.Error("edit build requires a git remote (set CRN_GIT_REMOTE or CRN_GITHUB_OWNER)")
-			m.finishFailed(ctx, job, "edit build requires a git remote (set CRN_GIT_REMOTE or CRN_GITHUB_OWNER)", 0)
+			m.finishFailed(ctx, job, "edit build requires a git remote (set CRN_GIT_REMOTE or CRN_GITHUB_OWNER)", meta)
 			return
 		}
 		m.publishPhase(job.ID, "pull")
 		if err := buildstep.GitCloneOrPull(runCtx, workDir, pushRemote, pushBranch, m.logger); err != nil {
 			log.Error("edit clone/pull failed", "err", err, "branch", pushBranch)
 			if runCtx.Err() != nil && ctx.Err() == nil {
-				m.finishCancelled(ctx, job, 0)
+				m.finishCancelled(ctx, job, meta)
 			} else {
-				m.finishFailed(ctx, job, "edit clone/pull failed: "+err.Error(), 0)
+				m.finishFailed(ctx, job, "edit clone/pull failed: "+err.Error(), meta)
 			}
 			return
 		}
@@ -517,7 +527,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			var err error
 			priorMigrations, err = buildstep.SnapshotMigrations(workDir)
 			if err != nil {
-				m.finishFailed(ctx, job, "read existing migration history: "+err.Error(), 0)
+				m.finishFailed(ctx, job, "read existing migration history: "+err.Error(), meta)
 				return
 			}
 		}
@@ -540,7 +550,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		// would make the harness ambiguous about which to extract.
 		if err := resetWorkspace(workDir, job.ID.String(), log); err != nil {
 			log.Error("reset workspace failed", "err", err, "workdir", workDir)
-			m.finishFailed(ctx, job, "reset workspace failed: "+err.Error(), 0)
+			m.finishFailed(ctx, job, "reset workspace failed: "+err.Error(), meta)
 			return
 		}
 
@@ -548,7 +558,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		m.publishPhase(job.ID, "materialize")
 		if err := buildstep.WriteFiles(workDir, spec.Files); err != nil {
 			log.Error("materialize files failed", "err", err)
-			m.finishFailed(ctx, job, "materialize files failed: "+err.Error(), 0)
+			m.finishFailed(ctx, job, "materialize files failed: "+err.Error(), meta)
 			return
 		}
 		log.Info("materialized files", "count", len(spec.Files), "workdir", workDir)
@@ -565,7 +575,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		// .claude dir is removed before the git phase so it is never committed.
 		if err := m.injectSkills(ctx, workDir); err != nil {
 			log.Error("inject skills failed", "err", err)
-			m.finishFailed(ctx, job, "inject skills failed: "+err.Error(), 0)
+			m.finishFailed(ctx, job, "inject skills failed: "+err.Error(), meta)
 			return
 		}
 
@@ -599,6 +609,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 
 		var runErr error
 		result, runErr = m.runner.Run(runCtx, runSpec, emit)
+		meta.cost = result.CostUSD
 
 		// Remove the injected .claude dir (success OR fail) BEFORE the git phase so
 		// the harness skills are never committed/pushed.
@@ -621,7 +632,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			// cancelled) instead of failed.
 			if runCtx.Err() != nil && ctx.Err() == nil {
 				log.Info("build cancelled by operator", "cost_usd", result.CostUSD)
-				m.finishCancelled(ctx, job, result.CostUSD)
+				m.finishCancelled(ctx, job, meta)
 				return
 			}
 			// Parent ctx cancelled == server shutdown mid-build: leave the job
@@ -635,7 +646,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 				errMsg = runErr.Error()
 			}
 			log.Error("build failed", "err", errMsg, "cost_usd", result.CostUSD)
-			m.finishFailed(ctx, job, errMsg, result.CostUSD)
+			m.finishFailed(ctx, job, errMsg, meta)
 			return
 		}
 	} else {
@@ -693,14 +704,14 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	if m.runClaude || m.buildImage {
 		m.publishPhase(job.ID, "verify")
 		if err := buildstep.CheckMigrationHistory(workDir, priorMigrations); err != nil {
-			m.finishFailed(ctx, job, err.Error(), result.CostUSD)
+			m.finishFailed(ctx, job, err.Error(), meta)
 			return
 		}
 		if err := buildstep.VerifyDelivery(runCtx, workDir); err != nil {
 			if runCtx.Err() != nil && ctx.Err() == nil {
-				m.finishCancelled(ctx, job, result.CostUSD)
+				m.finishCancelled(ctx, job, meta)
 			} else {
-				m.finishFailed(ctx, job, err.Error(), result.CostUSD)
+				m.finishFailed(ctx, job, err.Error(), meta)
 			}
 			return
 		}
@@ -726,13 +737,14 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		if err != nil {
 			log.Error("git push failed", "err", err)
 			if runCtx.Err() != nil && ctx.Err() == nil {
-				m.finishCancelled(ctx, job, result.CostUSD)
+				m.finishCancelled(ctx, job, meta)
 			} else {
-				m.finishFailed(ctx, job, "git push failed: "+err.Error(), result.CostUSD)
+				m.finishFailed(ctx, job, "git push failed: "+err.Error(), meta)
 			}
 			return
 		}
 		commitSHA = commit
+		meta.commit = commit
 		log.Info("git pushed", "branch", pushBranch, "commit", commit, "remote", pushRemote)
 		// Surface the push in the live stream so it also lands in the saved trace:
 		// the operator sees exactly what was committed and where it went.
@@ -762,23 +774,23 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	if err := m.buildAndPushImage(runCtx, workDir, spec, job, log); err != nil {
 		log.Error("image build failed; failing the build", "err", err)
 		if runCtx.Err() != nil && ctx.Err() == nil {
-			m.finishCancelled(ctx, job, result.CostUSD)
+			m.finishCancelled(ctx, job, meta)
 		} else {
-			m.finishFailed(ctx, job, err.Error(), result.CostUSD)
+			m.finishFailed(ctx, job, err.Error(), meta)
 		}
 		return
 	}
 
 	if runCtx.Err() != nil {
 		if ctx.Err() == nil {
-			m.finishCancelled(ctx, job, result.CostUSD)
+			m.finishCancelled(ctx, job, meta)
 		}
 		return
 	}
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobDone, ""); err != nil {
 		log.Error("mark done failed", "err", err)
 		// Best-effort failure path so subscribers are not left hanging.
-		m.finishFailed(ctx, job, "persist done status failed: "+err.Error(), result.CostUSD)
+		m.finishFailed(ctx, job, "persist done status failed: "+err.Error(), meta)
 		return
 	}
 	// Owner model: an edit driven by a GitHub issue comments the commit back on
@@ -816,13 +828,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// Snapshot the full live event stream + derived summary into the durable
 	// trace store BEFORE closeSubscribers discards the in-memory buffer. This is
 	// what makes the build inspectable retroactively (state trace).
-	m.saveTrace(ctx, job, traceMeta{
-		mode:   buildMode(spec),
-		commit: commitSHA,
-		branch: pushBranch,
-		remote: pushRemote,
-		cost:   result.CostUSD,
-	})
+	m.saveTrace(ctx, job, meta)
 	m.closeSubscribers(job.ID)
 }
 
@@ -840,10 +846,10 @@ func (m *manager) publishPhase(jobID uuid.UUID, phase string) {
 // prior successful build, so we re-emit that build's image (no agent run, no git,
 // no docker). Same terminal events as a normal done (build_done + FTC callback)
 // with the reused image_ref and zero cost.
-func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef, pushRemote, pushBranch string, log *slog.Logger) {
+func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef string, meta traceMeta, log *slog.Logger) {
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobDone, ""); err != nil {
 		log.Error("mark done (reused) failed", "err", err)
-		m.finishFailed(ctx, job, "persist done status failed: "+err.Error(), 0)
+		m.finishFailed(ctx, job, "persist done status failed: "+err.Error(), meta)
 		return
 	}
 	job.Status = domain.JobDone
@@ -867,14 +873,18 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef, p
 		Timestamp: time.Now().UTC(),
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(filepath.Join(m.projectsDir, job.ProjectID.String())))
-	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, pushRemote, pushBranch, envEx))
-	go m.ftcCallback(job.ID, job.BuildNo, imageRef, pushRemote, pushBranch, "released", "", envEx)
+	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, meta.remote, meta.branch, envEx))
+	go m.ftcCallback(job.ID, job.BuildNo, imageRef, meta.remote, meta.branch, "released", "", envEx)
+
+	// A reused build is still a build the operator may need to inspect later.
+	m.saveTrace(ctx, job, meta)
 	m.closeSubscribers(job.ID)
 }
 
 // finishFailed records the failure, notifies the central DB, pushes a terminal
 // error to live subscribers, and closes their channels.
-func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg string, costUSD float64) {
+func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg string, meta traceMeta) {
+	meta.errMsg = errMsg
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobFailed, errMsg); err != nil {
 		m.logger.Error("mark failed failed", "job_id", job.ID, "err", err)
 	}
@@ -884,7 +894,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Kind:      domain.WSError,
 		Phase:     string(domain.JobFailed),
 		Text:      errMsg,
-		CostUSD:   costUSD,
+		CostUSD:   meta.cost,
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
@@ -894,7 +904,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 	// Persist the trace for the failed build too — the operator needs to see how
 	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
 	// discards the in-memory buffer.
-	m.saveTrace(ctx, job, traceMeta{cost: costUSD, errMsg: errMsg})
+	m.saveTrace(ctx, job, meta)
 	m.closeSubscribers(job.ID)
 }
 
@@ -903,8 +913,9 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 // no 'cancelled' type — a cancelled build simply did not succeed), the trace,
 // and a best-effort FTC callback. Uses the caller's ctx (the parent, alive on a
 // user cancel) — never the cancelled runCtx.
-func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, costUSD float64) {
+func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, meta traceMeta) {
 	const msg = "build cancelled by operator"
+	meta.errMsg = msg
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobCancelled, ""); err != nil {
 		m.logger.Error("mark cancelled failed", "job_id", job.ID, "err", err)
 	}
@@ -914,7 +925,7 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, costUSD 
 		Kind:      domain.WSError,
 		Phase:     string(domain.JobCancelled),
 		Text:      msg,
-		CostUSD:   costUSD,
+		CostUSD:   meta.cost,
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
@@ -924,7 +935,7 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, costUSD 
 	m.notify(ctx, job.ID, domain.EventBuildCancelled, cancelledPayload(msg))
 	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", msg, nil)
 
-	m.saveTrace(ctx, job, traceMeta{cost: costUSD, errMsg: msg})
+	m.saveTrace(ctx, job, meta)
 	m.closeSubscribers(job.ID)
 }
 
