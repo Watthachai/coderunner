@@ -256,10 +256,14 @@ func BuildImage(ctx context.Context, dir, dockerfile, tag string, logger *slog.L
 	// "Dockerfile" would match THAT instead of the workspace's — build the wrong
 	// image. Always pass the context-absolute path.
 	//
-	// --provenance/--sbom off: BuildKit otherwise attaches attestations, which wraps
-	// the result in an OCI index instead of a plain manifest. A customer needs an
-	// image they can pull, not a signed supply-chain record, and the extra manifest
-	// is what PushImage has to race against (see there).
+	// --provenance/--sbom off is load-bearing, not tidiness. BuildKit otherwise
+	// attaches attestations, which wraps the result in an OCI index instead of a
+	// plain manifest — and the index is what races its own child on push, which
+	// is how two 30-minute builds died before this landed (see PushImage).
+	//
+	// Measured against the delivery registry with identical image content: as an
+	// index it failed every push; as a single manifest it pushed first try. A
+	// customer needs an image it can pull, not a supply-chain record.
 	return runDocker(ctx, logger, "build", "--platform", imagePlatform,
 		"--provenance=false", "--sbom=false",
 		"-f", filepath.Join(dir, dockerfile), "-t", tag, dir)
@@ -277,14 +281,20 @@ var pushBackoff = 3 * time.Second
 // credentials — like git uses ambient git credentials — rather than handling auth
 // itself).
 //
-// The retry is not defensive padding. Docker 29 pushes an image index and the
-// manifests it references CONCURRENTLY, so the registry can validate the index
-// before the child manifest it points at has committed — and reject the whole
-// push with MANIFEST_BLOB_UNKNOWN naming a manifest that lands milliseconds
-// later. Observed against GitLab registry v4.39.0: the index PUT failed at
-// .041 while its child succeeded at .053. The child stays committed, so the next
-// attempt finds it and succeeds. Without this, a 30-minute build fails on a 12ms
-// ordering accident.
+// The retry is a net, not the fix — BuildImage is the fix.
+//
+// Docker 29 pushes an image index and the manifests it references CONCURRENTLY,
+// so the registry can validate the index before its child has committed and
+// reject the whole push with MANIFEST_BLOB_UNKNOWN. Whether pushing again helps
+// depends on how that race landed, and it lands both ways: one build's child
+// committed anyway and the retry succeeded, the next build's did not and every
+// retry failed identically — the client re-sends the index, never the child it
+// is missing. So this cannot be relied on to rescue the race; not producing an
+// index in the first place is what does.
+//
+// It stays because it still earns its place: a genuine multi-platform build has
+// an index legitimately, and a 200MB+ upload can fail partway for reasons that
+// are simply transient.
 func PushImage(ctx context.Context, tag string, logger *slog.Logger) error {
 	var err error
 	for attempt := 1; attempt <= pushAttempts; attempt++ {

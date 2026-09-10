@@ -41,10 +41,10 @@ func attempts(t *testing.T, argsFile string) int {
 	return len(strings.Split(strings.TrimSpace(string(raw)), "\n"))
 }
 
-// A customer needs an image it can pull, not a supply-chain attestation. Leaving
-// BuildKit's default on wraps the result in an OCI index, which is the extra
-// manifest PushImage then has to race — so the flags are part of the fix, not a
-// preference.
+// These flags are the fix for the push race, not a preference: BuildKit's
+// default wraps the image in an OCI index, and the index is what fails to push.
+// Verified against the delivery registry — identical content pushes first try as
+// a single manifest and fails repeatedly as an index.
 func TestBuildImageDisablesAttestations(t *testing.T) {
 	argsFile := stubDocker(t, "exit 0")
 	if err := BuildImage(context.Background(), t.TempDir(), "Dockerfile", "demo:v1", discardLogger()); err != nil {
@@ -58,11 +58,12 @@ func TestBuildImageDisablesAttestations(t *testing.T) {
 	}
 }
 
-// Docker 29 pushes an image index concurrently with the manifests it references,
-// so the registry can reject the index for naming a child that commits
-// milliseconds later. The child stays committed, so the retry succeeds — without
-// it a 30-minute build dies on an ordering accident.
-func TestPushImageRetriesTheIndexRace(t *testing.T) {
+// A push that fails once and would succeed on a second attempt must not sink the
+// build. This is the recoverable half of the index race — the child manifest did
+// commit, so pushing again finds it. The unrecoverable half (child never
+// committed, every retry fails the same way) is why BuildImage stops producing
+// an index at all; no retry count fixes that one.
+func TestPushImageRetriesARecoverableFailure(t *testing.T) {
 	restore := pushBackoff
 	pushBackoff = time.Millisecond
 	t.Cleanup(func() { pushBackoff = restore })
