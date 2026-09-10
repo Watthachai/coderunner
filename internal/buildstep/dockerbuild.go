@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // dockerbuild.go builds the compiled Next.js application plus the production
@@ -254,14 +255,53 @@ func BuildImage(ctx context.Context, dir, dockerfile, tag string, logger *slog.L
 	// runs from its own repo root (which has a Go server Dockerfile), so a bare
 	// "Dockerfile" would match THAT instead of the workspace's — build the wrong
 	// image. Always pass the context-absolute path.
-	return runDocker(ctx, logger, "build", "--platform", imagePlatform, "-f", filepath.Join(dir, dockerfile), "-t", tag, dir)
+	//
+	// --provenance/--sbom off: BuildKit otherwise attaches attestations, which wraps
+	// the result in an OCI index instead of a plain manifest. A customer needs an
+	// image they can pull, not a signed supply-chain record, and the extra manifest
+	// is what PushImage has to race against (see there).
+	return runDocker(ctx, logger, "build", "--platform", imagePlatform,
+		"--provenance=false", "--sbom=false",
+		"-f", filepath.Join(dir, dockerfile), "-t", tag, dir)
 }
 
-// PushImage runs `docker push tag`. The host must already be `docker login`'d to
-// the registry (CRN uses ambient docker credentials — like git uses ambient git
-// credentials — rather than handling auth itself).
+// pushAttempts/pushBackoff bound the retry in PushImage. The race it exists for
+// resolves in milliseconds, so a second attempt is nearly always enough; the
+// third covers an ordinary network blip on a 200MB+ upload.
+const pushAttempts = 3
+
+var pushBackoff = 3 * time.Second
+
+// PushImage runs `docker push tag`, retrying a failure a couple of times. The
+// host must already be `docker login`'d to the registry (CRN uses ambient docker
+// credentials — like git uses ambient git credentials — rather than handling auth
+// itself).
+//
+// The retry is not defensive padding. Docker 29 pushes an image index and the
+// manifests it references CONCURRENTLY, so the registry can validate the index
+// before the child manifest it points at has committed — and reject the whole
+// push with MANIFEST_BLOB_UNKNOWN naming a manifest that lands milliseconds
+// later. Observed against GitLab registry v4.39.0: the index PUT failed at
+// .041 while its child succeeded at .053. The child stays committed, so the next
+// attempt finds it and succeeds. Without this, a 30-minute build fails on a 12ms
+// ordering accident.
 func PushImage(ctx context.Context, tag string, logger *slog.Logger) error {
-	return runDocker(ctx, logger, "push", tag)
+	var err error
+	for attempt := 1; attempt <= pushAttempts; attempt++ {
+		if err = runDocker(ctx, logger, "push", tag); err == nil {
+			return nil
+		}
+		if attempt == pushAttempts || ctx.Err() != nil {
+			break
+		}
+		logger.Warn("docker push failed; retrying", "tag", tag, "attempt", attempt, "err", err)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(pushBackoff):
+		}
+	}
+	return err
 }
 
 // SaveImages writes a `docker save` tarball of images to outPath — an air-gap
