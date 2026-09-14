@@ -4,6 +4,8 @@
 > repo: CRN `fitt-coderunner` · branch `dev` · ครอบคลุม `5769793` → `3cc732c`
 > **ธีมของสัปดาห์:** เปลี่ยน CRN จาก "โรงงานปั้น demo" เป็น "โรงงานส่งมอบของจริงให้ลูกค้า"
 
+> **ลงใน Fittcore แล้ว:** [DIG-2332 … DIG-2347](http://172.168.1.222:3100/DIG/projects/code-runner/issues) — 16 งาน, Done 15 + Todo 1 (`[SEC]` ที่ยังไม่ได้แก้)
+
 ## งานลงวันไหนบ้าง
 
 | วัน | ทำอะไร | หลักฐาน |
@@ -20,7 +22,7 @@
 
 # จันทร์ 7 ก.ย. — สร้างประตูตรวจก่อนส่งมอบ
 
-## [CRN] ประตูตรวจก่อนส่งมอบ — ให้ CRN รัน release checker เอง
+## [CRN] ประตูตรวจก่อนส่งมอบ — ให้ CRN รัน release checker เอง  `DIG-2332`
 **Type:** Story · **Status:** Done (`d1a7376`)
 
 **ปัญหา:** เดิมเราสั่งให้ AI ตรวจงานตัวเองแล้วรายงานผลกลับมา ซึ่งแปลว่า **"รายงาน" กลายเป็นของส่งมอบ** แทนที่จะเป็น "แอปที่ใช้งานได้" — run ที่ข้าม test ไป กับ run ที่เขียนไฟล์ผลลัพธ์ขึ้นมาเองโดยไม่ได้รันอะไรเลย แยกจากกันไม่ออก
@@ -37,7 +39,7 @@
 
 ---
 
-## [CRN] Migration ที่ส่งไปแล้ว ห้ามถูกแก้ย้อนหลัง
+## [CRN] Migration ที่ส่งไปแล้ว ห้ามถูกแก้ย้อนหลัง  `DIG-2333`
 **Type:** Task · **Status:** Done (`53166d1`)
 
 **ปัญหา:** เวลาสั่งแก้แอปที่ส่งไปแล้ว (edit build) AI จะ resume session เดิมและมีสิทธิ์แก้ไฟล์ทุกไฟล์ รวมถึง `prisma/migrations/` ถ้ามันไปเปลี่ยนชื่อหรือแก้ migration ที่ฐานข้อมูลลูกค้า **apply ไปแล้ว** ทั้งสองฝั่งจะไม่ตรงกัน — `migrate deploy` จะไม่ยอมรัน หรือแย่กว่านั้นคือ replay ทับข้อมูลจริง
@@ -52,7 +54,7 @@
 
 ---
 
-## [CRN] Bootstrap admin ครั้งเดียวต่อฐานข้อมูล — เลิกใช้รหัสร่วมกัน
+## [CRN] Bootstrap admin ครั้งเดียวต่อฐานข้อมูล — เลิกใช้รหัสร่วมกัน  `DIG-2334`
 **Type:** Story · **Status:** Done (`021efa3`)
 
 **ปัญหา:** ทุก build ที่ส่งออกไปใช้ **บัญชีเดียว รหัสเดียวกัน** จาก env `DEV_EMAIL`/`DEV_PASSWORD` ซึ่งติดไปกับไฟล์ compose ด้วย ใครอ่านไฟล์ได้ก็เข้าระบบลูกค้าได้ทุกราย
@@ -71,7 +73,7 @@
 
 ---
 
-## [CRN] รัน validation ทั้งชุด + เขียนเอกสารระบุขอบเขตที่ยังไม่ครอบคลุม
+## [CRN] รัน validation ทั้งชุด + เขียนเอกสารระบุขอบเขตที่ยังไม่ครอบคลุม  `DIG-2335`
 **Type:** Task · **Status:** Done (`c6ee952`)
 
 **ปัญหา:** งานชุดนี้แตะ runtime ของลูกค้าโดยตรง ถ้าไม่มีหลักฐานว่าทดสอบอะไรไปบ้าง คนที่รับช่วงต่อจะไม่รู้ว่าเชื่อได้แค่ไหน
@@ -89,7 +91,7 @@
 
 # อังคาร 8 ก.ย. — commit ของวันจันทร์ + ทำให้ระบบบอกสถานะตัวเองได้
 
-## [CRN] Runtime ลูกค้า — เลิก `db push` เปลี่ยนเป็น migration ที่ commit ไว้
+## [CRN] Runtime ลูกค้า — เลิก `db push` เปลี่ยนเป็น migration ที่ commit ไว้  `DIG-2336`
 **Type:** Story · **Status:** Done (`5769793`)
 
 **ปัญหา:** image ที่ส่งลูกค้ารัน `prisma db push` ทุกครั้งที่ start ซึ่งเป็นท่าสำหรับ demo ไม่ใช่ของที่อัปเกรดได้ — การเปลี่ยน schema แบบเพิ่มฟิลด์จะ apply เงียบๆ ส่วนแบบที่ทำข้อมูลหายจะ fail ตอน boot เท่านั้น
@@ -104,7 +106,7 @@
 
 ---
 
-## [CRN] เขียน fitt-build ใหม่ทั้งฉบับ — จาก demo เป็น customer deliverable
+## [CRN] เขียน fitt-build ใหม่ทั้งฉบับ — จาก demo เป็น customer deliverable  `DIG-2337`
 **Type:** Story · **Status:** Done (`021efa3`)
 
 **ปัญหา:** SKILL.md เดิมสั่งให้ AI "สร้าง demo ที่รันได้" โดยนิยามคำว่าเสร็จไว้แค่ "compile ผ่าน" ทุกอย่างที่มันผลิตออกมาจึงถูกต้องตามมาตรฐานของตัวเอง และใช้งานจริงไม่ได้
@@ -119,7 +121,7 @@
 
 ---
 
-## [CRN] ต่อประตูตรวจเข้า job lifecycle — ปล่อยของเมื่อตรวจผ่าน ไม่ใช่เมื่อ AI บอกว่าผ่าน
+## [CRN] ต่อประตูตรวจเข้า job lifecycle — ปล่อยของเมื่อตรวจผ่าน ไม่ใช่เมื่อ AI บอกว่าผ่าน  `DIG-2338`
 **Type:** Story · **Status:** Done (`48bb615`)
 
 **ปัญหา:** ของที่สร้างวันจันทร์ยังไม่ถูกเรียกใช้จริงใน pipeline
@@ -139,7 +141,7 @@
 
 ---
 
-## [CRN] role-gated-ui — ตัด role switcher ฝั่ง client ออก ใช้ permission ฝั่ง server จริง
+## [CRN] role-gated-ui — ตัด role switcher ฝั่ง client ออก ใช้ permission ฝั่ง server จริง  `DIG-2339`
 **Type:** Task · **Status:** Done (`7245697`)
 
 **ปัญหา:** skill นี้เขียนขึ้นตอนที่ระบบมี login เดียว จึงต้องสอนวิธี port ตัวสลับ role ฝั่ง client มาจาก prototype เพื่อให้ demo role ได้ พอเปลี่ยนเป็นบัญชีจริงที่มี role ใน database แล้ว **ตัวสลับนั้นกลายเป็นช่องข้ามสิทธิ์**
@@ -154,7 +156,7 @@
 
 ---
 
-## [CRN] ตรวจจับ skill drift — เตือนเมื่อ skill ใน repo ไม่ตรงกับที่ CRN ใช้จริง
+## [CRN] ตรวจจับ skill drift — เตือนเมื่อ skill ใน repo ไม่ตรงกับที่ CRN ใช้จริง  `DIG-2340`
 **Type:** Story · **Status:** Done (`58599c2`)
 
 **ปัญหา:** `fitt-build` seed ตัวเองจาก binary ทุกครั้งที่ restart แต่ **companion skill 9 ตัวใน `skills/` ต้องอัปมือ** — แก้ในrepo แล้ว `git pull` + restart ไม่มีผลอะไรเลย ฐานข้อมูลยังจ่ายเนื้อหาเก่าให้ทุก build อย่างเงียบๆ แปลว่า build หนึ่งผ่าน gate ครบทุกด่านได้ทั้งที่ใช้ harness ที่ไม่มีใคร review
@@ -170,7 +172,7 @@
 
 ---
 
-## [CRN] Dashboard — บอกว่า daemon รัน commit ไหน และ skill ตัวไหนไม่ตรง
+## [CRN] Dashboard — บอกว่า daemon รัน commit ไหน และ skill ตัวไหนไม่ตรง  `DIG-2341`
 **Type:** Task · **Status:** Done (`6f8ae59`)
 
 **ปัญหา:** console ตอบคำถาม "เครื่องนี้รันอะไรอยู่" ไม่ได้ — repo ไม่มี release tag, version ใน `package.json` เป็นค่า default ของ npm ที่ไม่เคยขยับ, ส่วน VCS stamp ที่ Go ฝังให้มีอยู่ใน `/healthz` แต่ไม่มีใครแสดง **การยืนยันว่า deploy ลงแล้วจึงต้อง ssh เข้าไปดู**
@@ -187,7 +189,7 @@
 
 # พฤหัส 10 ก.ย. — deploy ขึ้นเครื่องจริง แล้วเจอบั๊กหน้างาน 3 ตัว
 
-## [OPS] Node 26 บน Runner ทำให้ทุก build ตกด่านตรวจ — ติดตั้ง Node 24 LTS
+## [OPS] Node 26 บน Runner ทำให้ทุก build ตกด่านตรวจ — ติดตั้ง Node 24 LTS  `DIG-2342`
 **Type:** Bug · **Status:** Done (ไม่มี commit — แก้ที่ config ของเครื่อง)
 
 **ปัญหา:** build #5 รัน AI จนจบ **30 นาที** แล้วไปตายที่ด่านตรวจด้วยข้อความ `Delivery verification requires Node 22 or 24 LTS` — เครื่อง Runner มี Node 26.5.0 ตัวเดียว ไม่มี version manager ให้สลับ
@@ -203,7 +205,7 @@
 
 ---
 
-## [OPS] อัป companion skill 5 ตัวที่ค้างไม่เคยขึ้น CRN
+## [OPS] อัป companion skill 5 ตัวที่ค้างไม่เคยขึ้น CRN  `DIG-2343`
 **Type:** Task · **Status:** Done
 
 **ปัญหา:** พอเปิด drift detection ที่ทำวันอังคาร ระบบรายงานทันทีว่ามี 5 ตัวไม่ตรง — 4 ตัว (`barcode-scanning`, `calendar-scheduling`, `explainable-scoring`, `role-gated-ui`) ขึ้นสถานะ **`missing` แปลว่าไม่เคยถูกอัปเลยตั้งแต่ commit `fc8bbdb`** ทุก build ที่ผ่านมาไม่เคยได้รับ skill เหล่านี้ ส่วน `charts` เป็น `stale` เพราะ description ที่พังยังค้างอยู่ใน DB
@@ -216,7 +218,7 @@
 
 ---
 
-## [CRN] `docker push` ล้มเพราะ OCI index แข่งกับ manifest ลูกตัวเอง
+## [CRN] `docker push` ล้มเพราะ OCI index แข่งกับ manifest ลูกตัวเอง  `DIG-2344`
 **Type:** Bug · **Status:** Done (`eb34a19`, `b783347`)
 
 **ปัญหา:** build #6 และ #7 **ผ่านทุกด่าน push git สำเร็จ แล้วมาตายที่ `docker push`** รวมเสียไป 2 รอบ ~30 นาที และ ~$20 ค่า agent ข้อความคือ `blob unknown to registry`
@@ -243,7 +245,7 @@
 
 ---
 
-## [CRN] build ที่ล้มเหลวลืม commit ที่ push ขึ้นไปแล้ว
+## [CRN] build ที่ล้มเหลวลืม commit ที่ push ขึ้นไปแล้ว  `DIG-2345`
 **Type:** Bug · **Status:** Done (`3cc732c`)
 
 **ปัญหา:** build #7 push commit `3f67520` ขึ้น repo ลูกค้าสำเร็จ แล้วตายที่ `docker push` — แต่ trace บันทึกว่า `commit=""`, `branch=""`, `remote=""` หน้าจอจึงแสดงว่า **"no commit"** คนอ่านสรุปว่าโค้ดไม่เคยขึ้น ทั้งที่มันอยู่บน GitHub แล้ว และเสียเวลาอีก 20 นาทีไปกับการพิสูจน์ว่ามันขึ้นไปแล้วจริง
@@ -260,7 +262,7 @@
 
 ---
 
-## [OPS] กู้รหัส GitLab root + ตั้ง SSH เข้าถึงเครื่อง registry
+## [OPS] กู้รหัส GitLab root + ตั้ง SSH เข้าถึงเครื่อง registry  `DIG-2346`
 **Type:** Task · **Status:** Done
 
 **ปัญหา:** ระหว่างไล่บั๊ก docker push ต้องอ่าน log ของ registry แต่เข้า GitLab ไม่ได้ (ลืมรหัส) และเครื่อง dev ไม่เคยมี SSH ไปที่กล่องนั้น
@@ -273,7 +275,7 @@
 
 ---
 
-## [SEC] พบ container registry เปิดออกอินเทอร์เน็ต — ยังไม่ได้ปิด
+## [SEC] พบ container registry เปิดออกอินเทอร์เน็ต — ยังไม่ได้ปิด  `DIG-2347`
 **Type:** Bug · **Status:** **Open — ยังไม่แก้**
 
 **ปัญหา:** ระหว่างอ่าน log ของ registry พบ request ที่ `host` เป็น **public IP `58.136.159.74:5050`** ไม่ใช่ LAN IP และมี bot สแกนหาช่องโหว่ยิงเข้ามา (`/rest/applinks/1.0/manifest`, `/administrator/manifests/files/joomla.xml`)
