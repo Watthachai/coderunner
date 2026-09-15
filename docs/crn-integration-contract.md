@@ -1,6 +1,6 @@
 # CRN Integration Contract — สำหรับ FBD / Gateway / FTC DV
 
-> อัปเดต **2026-07-15** · ตรวจทีละบรรทัดกับโค้ดจริง `fitt-coderunner`
+> อัปเดต **2026-09-15** · ตรวจทีละบรรทัดกับโค้ดจริง `fitt-coderunner` (`3cc732c`)
 > เอกสารนี้บอก **สิ่งที่ CRN รับ/ส่งจริง ณ ตอนนี้** (ไม่ใช่ดีไซน์เป้าหมาย) เพื่อให้ฝั่ง FBD / Gateway / FTC DV ต่อกับ CRN ได้
 
 ---
@@ -12,6 +12,15 @@ CRN **ต่อกับฝั่งดีไซน์ได้แล้ว** (�
 - **รับผล:** ได้ทั้ง **`build_events`** (เขียนลง DB กลางเสมอ) และ **HTTP callback ไป FTC DV** (เปิดด้วย env `CRN_FTC_DV_CALLBACK_URL`)
 
 ทำตาม §1–§3 ได้เลย.
+
+> ### ⚠️ เปลี่ยนจากฉบับ 2026-07-15 — consumer ต้องแก้ตาม
+> **runtime env ของ image เปลี่ยน** — `DEV_EMAIL`/`DEV_PASSWORD` ถูกเลิกใช้แล้ว ตัวที่ต้องส่งจริงคือ
+> `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`, `AUTH_SECRET` (ดู §3 `env`).
+> ถ้ายัง inject ตามฉบับเก่า **แอปลูกค้าจะ bootstrap ไม่ขึ้น** เพราะไม่มีบัญชีแรกและไม่มี session secret
+>
+> **image ไม่ `db push` แล้ว** — ใช้ `db:deploy` กับ migration ที่ commit ไว้ ทำให้ลูกค้าอัปเกรดได้โดยข้อมูลไม่หาย
+>
+> **เพิ่ม phase `verify`** คั่นระหว่าง agent กับ git push — เป็นขั้นที่นานที่สุดของ build (ดู §2)
 
 ---
 
@@ -111,6 +120,12 @@ UPDATE build_events SET notified_ftcdv = true WHERE id = $1;
 >
 > **การันตี image-only (เปิด `CRN_BUILD_IMAGE`)** — เมื่อเปิด image pipeline, `build_done` จะมี `image_ref` เป็น **image จริงที่ pull ได้เสมอ**. ถ้า build/push image ไม่สำเร็จ CRN จะ **fail build** (ยิง `build_failed`) ไม่ปล่อย `build_done` ที่ image ใช้ไม่ได้ → **consumer `docker pull image_ref` ได้เลย ไม่ต้อง clone git** (image ทึบ ไม่มี source). ค่า `branch:<name>` โผล่เฉพาะตอน **ปิด** image pipeline (git-mode legacy) เท่านั้น
 
+> **ระหว่าง `build_started` กับ `build_done` มี phase อะไรบ้าง** — `build_events` มีแค่ 4 event ข้างบน แต่ live log WS (`/internal/projects/{id}/jobs/{build_no}/logs`) ส่ง phase marker ตามลำดับนี้ ใช้ทำ progress ได้:
+>
+> `repo` → `materialize` (edit build ใช้ `pull` แทน) → `claude` → **`verify`** → `git` → `push` → `docker`
+>
+> **`verify` เป็นขั้นที่นานที่สุด** — locked install → typecheck → unit tests → production build → build customer image จริง → รัน migration + seed ในคอนเทนเนอร์นั้น → ยิง browser test ใส่ image ที่รันอยู่ ถ้าขั้นนี้ไม่ผ่าน build จบเป็น `build_failed` **ก่อน** อะไรจะออกจากเครื่อง (ไม่มี git push ไม่มี image) · ถ้า UI ฝั่ง consumer แสดง progress ตาม phase อย่าลืมขั้นนี้ ไม่งั้นผู้ใช้จะเห็นค้างอยู่ที่ `claude` นานผิดปกติ
+
 > **`build_cancelled`** (เพิ่ม migration 0009) = operator กด cancel — build ถูกฆ่าจริง (SIGKILL). แยกจาก `build_failed` เพื่อให้ dashboard โชว์ "cancelled" ไม่ใช่ error. **consumer ควร map เป็น "ไม่สำเร็จ/หยุดแล้ว"** (ไม่ใช่ error ต้อง retry). ฝั่ง HTTP callback (§3) ยัง map เป็น `failed` เพราะ vocab มีแค่ building/released/failed.
 | `created_at`, `notified_fbd`, `notified_ftcdv` | เวลา + flag การส่งต่อ consumer |
 
@@ -137,15 +152,21 @@ Content-Type: application/json
     "DATABASE_URL": "postgresql://USER:PASSWORD@HOST:5432/DB?schema=public",
     "PORT": "3000",           // port ที่ app listen ใน container (fixed)
     "APP_PORT": "4123",       // host port แนะนำ → map ไป container 3000 (ต่อ-project)
-    "DEV_EMAIL": "dev@fitt.local",   // THE login credential (ถ้า app มี auth) — override ได้
-    "DEV_PASSWORD": "changeme",      // operator override; ไม่ใช่ secret จริง
+    "AUTH_SECRET": "",                    // บังคับ — secret ของ session ต้องสุ่มต่อ deployment
+    "BOOTSTRAP_ADMIN_EMAIL": "",          // บังคับตอนติดตั้งครั้งแรก (แอปที่มี login)
+    "BOOTSTRAP_ADMIN_PASSWORD": "",       // บังคับตอนติดตั้งครั้งแรก — ≥16 ตัวอักษร ห้ามซ้ำข้ามลูกค้า
+    "DEV_EMAIL": "",                 // deprecated — ส่งค่าว่างมาเพื่อ consumer รุ่นเก่า ไม่มีผลแล้ว
+    "DEV_PASSWORD": "",              // deprecated — เหมือนกัน
     "FITT_FEEDBACK_URL": "http://FEEDBACK_HOST:PORT/api/ingest/feedback"  // ปลายทาง feedback widget (ถ้ามี)
   },
   "message": "…" }           // ใส่มาเฉพาะตอน failed
 ```
 - แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
-- **`env` (เฉพาะ `released`)** = **example** runtime env ที่ image ต้องใช้ — operator inject ค่าจริงตอนรัน (ไม่มี bake ในภาพ). `DATABASE_URL` บังคับ — app image **self-migrate** (`prisma db push`) ยิงไป DB ภายนอกนี้ตอน start; app listen container port `3000`, host เปิด `APP_PORT` (ต่อ-project). ตรงกับ `docker-compose.customer.yml` ที่ CRN เขียน
-- **`DEV_EMAIL`/`DEV_PASSWORD`** = **THE login credential** ของทุก demo ที่มี auth. skill บังคับ login ทุกแอปให้เป็น email+password เช็คกับ 2 ตัวนี้ (env) เท่านั้น — ไม่ว่า prototype ทำ SSO/allowlist/mock มายังไง. seed รัน default → user นี้ถูกสร้างให้ตอน start → operator login UAT ได้ทันที (app ที่ไม่มี login เมิน 2 ตัวนี้)
+- **`env` (เฉพาะ `released`)** = **example** runtime env ที่ image ต้องใช้ — operator inject ค่าจริงตอนรัน (ไม่มี bake ในภาพ). `DATABASE_URL` บังคับ — image **apply migration ที่ commit ไว้** (`db:deploy` แล้วตามด้วย `db:seed`) ยิงไป DB ภายนอกนี้ตอน start **และ fail ให้เห็นถ้า migration ไม่ผ่าน** (ไม่ start ต่อ); app listen container port `3000`, host เปิด `APP_PORT` (ต่อ-project). ตรงกับ `docker-compose.customer.yml` ที่ CRN เขียน
+- **`AUTH_SECRET` + `BOOTSTRAP_ADMIN_EMAIL` + `BOOTSTRAP_ADMIN_PASSWORD`** = ตัวที่ต้องส่งจริง. บัญชีผู้ดูแลคนแรกถูกสร้าง **ครั้งเดียวต่อฐานข้อมูล** ผ่าน advisory lock + marker ถาวรในตาราง `SystemBootstrap` → รันพร้อมกันหลายตัวได้ admin คนเดียว · ฐานข้อมูลที่มี user อยู่แล้วจะไม่สร้างเพิ่ม · ลบ user ทิ้งแล้ว restart ไม่ฟื้นคืนมา · **ไม่มีรหัส fallback** ถ้าไม่ส่งมาก็ไม่มีใครเข้าระบบได้
+  - รหัสต้อง **ไม่ซ้ำข้ามลูกค้า** — ต่างจากฉบับเก่าที่ทุก demo ใช้รหัสเดียวกัน
+  - หลังติดตั้งเสร็จ ถอด `BOOTSTRAP_ADMIN_*` ออกจาก deployment ได้ ระบบไม่อ่านอีกเมื่อมี marker แล้ว
+- **`DEV_EMAIL`/`DEV_PASSWORD`** = **เลิกใช้แล้ว** ยังส่งมาเป็นค่าว่างเพื่อไม่ให้ consumer รุ่นเก่าพัง แอปไม่อ่าน 2 ตัวนี้อีกต่อไป
 - **`FITT_FEEDBACK_URL`** = ปลายทางที่ in-demo feedback widget POST ไป. widget อ่านจาก **runtime env** (`data-ingest` server-render จาก `process.env.FITT_FEEDBACK_URL`) → operator ชี้ receiver ของตัวเองได้ต่อ deployment ไม่ต้อง rebuild. ใส่ full URL รวม path เอง (เช่น `.../api/ingest/feedback`). เกี่ยวเฉพาะตอน widget ถูกฝัง (build ตั้ง `CRN_FEEDBACK_INGEST_URL`)
 - **โหมด image (`CRN_BUILD_IMAGE` เปิด — แนะนำ):** ใช้ `image_ref` → `docker pull` แล้วรันได้เลย **ไม่ต้อง clone git**. `image_ref` บน `released` เป็น image จริงที่ pull ได้เสมอ (build ล้มถ้า image สร้าง/push ไม่ได้)
 - **`git_remote`/`git_branch` ใส่มาเฉพาะตอน `released`** (โหมด git legacy — เมื่อ **ปิด** image pipeline) = repo/branch จริงที่ build push ไป (ถูกทั้งโหมด **shared** และ **owner**) → FTC DV clone จากค่านี้ ไม่ใช่ค่าใน `202` (โหมด owner ค่าใน 202 เป็น shared remote ซึ่งไม่ตรง). **เมื่อเปิด image pipeline ไม่ต้องใช้เส้นนี้**
