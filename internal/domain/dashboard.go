@@ -42,6 +42,9 @@ type BuildingJob struct {
 	BuildNo     int        `json:"build_no"`
 	Branch      string     `json:"branch"`
 	StartedAt   *time.Time `json:"started_at"`
+	// ClaudeModel / ClaudeEffort: empty until the build reaches its Claude run.
+	ClaudeModel  string `json:"claude_model"`
+	ClaudeEffort string `json:"claude_effort"`
 }
 
 // QueuedJob is one waiting build (job status='queued'), enriched with project

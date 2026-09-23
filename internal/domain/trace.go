@@ -35,6 +35,11 @@ type BuildTrace struct {
 	ToolCount int    `json:"tool_count"`
 	FileCount int    `json:"file_count"`
 	ErrorMsg  string `json:"error_msg"`
+	// ClaudeModel / ClaudeEffort are what the build's Claude run used. Empty
+	// for builds from before they were recorded and for builds that reused a
+	// cached image without invoking a model.
+	ClaudeModel  string `json:"claude_model"`
+	ClaudeEffort string `json:"claude_effort"`
 	// Events is the full normalized stream for replay (empty on list reads).
 	Events     []BuildEventMsg `json:"events"`
 	StartedAt  *time.Time      `json:"started_at"`

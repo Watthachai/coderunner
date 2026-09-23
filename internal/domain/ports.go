@@ -58,6 +58,9 @@ type Store interface {
 	SetJobSession(ctx context.Context, id uuid.UUID, sessionID string) error
 	// SetJobDockerTag persists the produced image tag.
 	SetJobDockerTag(ctx context.Context, id uuid.UUID, dockerTag string) error
+	// SetJobClaudeConfig records the model and effort a build's Claude run
+	// uses, so the dashboard can show them while it runs.
+	SetJobClaudeConfig(ctx context.Context, id uuid.UUID, model, effort string) error
 	// NextRunnableJob returns the oldest queued job that can start right now,
 	// across every org, or (nil, nil) if none can. A queued job is runnable only
 	// when its project has no build already in flight: two builds of one project
@@ -129,6 +132,12 @@ type Store interface {
 	RecordSkillVersion(ctx context.Context, name, note string) error
 	// ListSkillVersions returns a skill's version history, newest first.
 	ListSkillVersions(ctx context.Context, name string) ([]*SkillVersion, error)
+
+	// --- Build settings (dashboard-chosen Claude model/effort) ---
+	// GetBuildSettings returns the saved choice; ErrNotFound until the first save.
+	GetBuildSettings(ctx context.Context) (*BuildSettings, error)
+	// SaveBuildSettings upserts the single settings row and sets s.UpdatedAt.
+	SaveBuildSettings(ctx context.Context, s *BuildSettings) error
 
 	// --- Dashboard (operator console read model) ---
 	// DashboardSnapshot returns a single point-in-time read model for the

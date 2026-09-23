@@ -353,6 +353,19 @@ func (s *pgStore) SetJobDockerTag(ctx context.Context, id uuid.UUID, dockerTag s
 	return s.execOneJob(ctx, q, id, dockerTag, "store: set job docker tag")
 }
 
+// SetJobClaudeConfig records the model and effort the build's Claude run uses.
+func (s *pgStore) SetJobClaudeConfig(ctx context.Context, id uuid.UUID, model, effort string) error {
+	const q = `UPDATE project_jobs SET claude_model = $2, claude_effort = $3 WHERE id = $1`
+	tag, err := s.pool.Exec(ctx, q, id, model, effort)
+	if err != nil {
+		return mapErr(err, "store: set job claude config")
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: set job claude config: %w", domain.ErrNotFound)
+	}
+	return nil
+}
+
 // execOneJob runs a single-parameter UPDATE on one job and maps a zero-row
 // result to domain.ErrNotFound.
 func (s *pgStore) execOneJob(ctx context.Context, q string, id uuid.UUID, val, op string) error {
@@ -519,7 +532,8 @@ func (s *pgStore) dashboardVitals(ctx context.Context, v *domain.DashboardVitals
 func (s *pgStore) dashboardBuilding(ctx context.Context, snap *domain.DashboardSnapshot) error {
 	const q = `
 		SELECT j.id, j.project_id, p.name, o.name, j.build_no,
-		       COALESCE(j.docker_tag, ''), j.started_at
+		       COALESCE(j.docker_tag, ''), j.started_at,
+		       COALESCE(j.claude_model, ''), COALESCE(j.claude_effort, '')
 		FROM project_jobs j
 		JOIN projects p ON p.id = j.project_id
 		JOIN orgs o     ON o.id = j.org_id
@@ -536,7 +550,7 @@ func (s *pgStore) dashboardBuilding(ctx context.Context, snap *domain.DashboardS
 		var dockerTag string
 		if err := rows.Scan(
 			&b.JobID, &b.ProjectID, &b.ProjectName, &b.OrgName, &b.BuildNo,
-			&dockerTag, &b.StartedAt,
+			&dockerTag, &b.StartedAt, &b.ClaudeModel, &b.ClaudeEffort,
 		); err != nil {
 			return fmt.Errorf("store: dashboard building scan: %w", err)
 		}
@@ -662,13 +676,44 @@ func (s *pgStore) dashboardActivity(ctx context.Context, snap *domain.DashboardS
 	return nil
 }
 
+// --- Build settings -------------------------------------------------------------
+
+// GetBuildSettings returns the saved model/effort; ErrNotFound until the first save.
+func (s *pgStore) GetBuildSettings(ctx context.Context) (*domain.BuildSettings, error) {
+	const q = `SELECT claude_model, claude_effort, updated_at, updated_from
+		FROM build_settings WHERE id = 1`
+	bs := &domain.BuildSettings{}
+	if err := s.pool.QueryRow(ctx, q).Scan(&bs.Model, &bs.Effort, &bs.UpdatedAt, &bs.UpdatedFrom); err != nil {
+		return nil, mapErr(err, "store: get build settings")
+	}
+	return bs, nil
+}
+
+// SaveBuildSettings upserts the single settings row and reads back updated_at.
+func (s *pgStore) SaveBuildSettings(ctx context.Context, bs *domain.BuildSettings) error {
+	const q = `
+		INSERT INTO build_settings (id, claude_model, claude_effort, updated_at, updated_from)
+		VALUES (1, $1, $2, now(), $3)
+		ON CONFLICT (id) DO UPDATE SET
+			claude_model  = EXCLUDED.claude_model,
+			claude_effort = EXCLUDED.claude_effort,
+			updated_at    = EXCLUDED.updated_at,
+			updated_from  = EXCLUDED.updated_from
+		RETURNING updated_at`
+	if err := s.pool.QueryRow(ctx, q, bs.Model, bs.Effort, bs.UpdatedFrom).Scan(&bs.UpdatedAt); err != nil {
+		return fmt.Errorf("store: save build settings: %w", err)
+	}
+	return nil
+}
+
 // --- Build traces (durable per-build state history) -------------------------
 
 // traceListCols is the summary projection shared by the list reads (no events).
 const traceListCols = `
 	job_id, project_id, build_no, outcome, mode, commit_sha, branch, remote,
 	session_id, cost_usd, tool_count, file_count, error_msg,
-	started_at, finished_at, created_at`
+	started_at, finished_at, created_at,
+	COALESCE(claude_model, ''), COALESCE(claude_effort, '')`
 
 // SaveJobTrace upserts one build's trace (summary + full event stream) by
 // job_id. The events slice is stored as JSONB; a nil slice persists as '[]'.
@@ -685,26 +730,29 @@ func (s *pgStore) SaveJobTrace(ctx context.Context, t *domain.BuildTrace) error 
 		INSERT INTO job_traces (
 			job_id, project_id, build_no, outcome, mode, commit_sha, branch, remote,
 			session_id, cost_usd, tool_count, file_count, error_msg, events,
-			started_at, finished_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			started_at, finished_at, claude_model, claude_effort)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+			NULLIF($17, ''), NULLIF($18, ''))
 		ON CONFLICT (job_id) DO UPDATE SET
-			outcome     = EXCLUDED.outcome,
-			mode        = EXCLUDED.mode,
-			commit_sha  = EXCLUDED.commit_sha,
-			branch      = EXCLUDED.branch,
-			remote      = EXCLUDED.remote,
-			session_id  = EXCLUDED.session_id,
-			cost_usd    = EXCLUDED.cost_usd,
-			tool_count  = EXCLUDED.tool_count,
-			file_count  = EXCLUDED.file_count,
-			error_msg   = EXCLUDED.error_msg,
-			events      = EXCLUDED.events,
-			started_at  = EXCLUDED.started_at,
-			finished_at = EXCLUDED.finished_at`
+			outcome       = EXCLUDED.outcome,
+			mode          = EXCLUDED.mode,
+			commit_sha    = EXCLUDED.commit_sha,
+			branch        = EXCLUDED.branch,
+			remote        = EXCLUDED.remote,
+			session_id    = EXCLUDED.session_id,
+			cost_usd      = EXCLUDED.cost_usd,
+			tool_count    = EXCLUDED.tool_count,
+			file_count    = EXCLUDED.file_count,
+			error_msg     = EXCLUDED.error_msg,
+			events        = EXCLUDED.events,
+			started_at    = EXCLUDED.started_at,
+			finished_at   = EXCLUDED.finished_at,
+			claude_model  = EXCLUDED.claude_model,
+			claude_effort = EXCLUDED.claude_effort`
 	if _, err := s.pool.Exec(ctx, q,
 		t.JobID, t.ProjectID, t.BuildNo, t.Outcome, t.Mode, t.CommitSHA, t.Branch, t.Remote,
 		t.SessionID, t.CostUSD, t.ToolCount, t.FileCount, t.ErrorMsg, eventsJSON,
-		t.StartedAt, t.FinishedAt,
+		t.StartedAt, t.FinishedAt, t.ClaudeModel, t.ClaudeEffort,
 	); err != nil {
 		return fmt.Errorf("store: save job trace: %w", err)
 	}
@@ -783,6 +831,7 @@ func scanTraceSummaryRow(r scannable, t *domain.BuildTrace, eventsJSON *[]byte) 
 		&t.JobID, &t.ProjectID, &t.BuildNo, &t.Outcome, &t.Mode, &t.CommitSHA, &t.Branch, &t.Remote,
 		&t.SessionID, &t.CostUSD, &t.ToolCount, &t.FileCount, &t.ErrorMsg,
 		&t.StartedAt, &t.FinishedAt, &t.CreatedAt,
+		&t.ClaudeModel, &t.ClaudeEffort,
 	}
 	if eventsJSON != nil {
 		dest = append(dest, eventsJSON)
