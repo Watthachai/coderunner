@@ -145,6 +145,33 @@ func NewRunner(binPath, projectsDir, model string, logger *slog.Logger) domain.C
 	}
 }
 
+// runArgs builds the `claude` command line for one build. The model is the
+// build's snapshot, else the runner's own; --effort is added whenever the
+// snapshot has one. The job manager always fills both, so neither is left to
+// the CLI's defaults.
+func runArgs(spec domain.RunSpec, fallbackModel string) []string {
+	args := []string{
+		"-p", spec.Prompt,
+		"--output-format", "stream-json",
+		"--verbose", // required for stream-json to emit intermediate events
+		"--dangerously-skip-permissions",
+	}
+	if spec.ResumeSessionID != "" {
+		args = append(args, "--resume", spec.ResumeSessionID)
+	}
+	model := spec.Model
+	if model == "" {
+		model = fallbackModel
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if spec.Effort != "" {
+		args = append(args, "--effort", spec.Effort)
+	}
+	return args
+}
+
 // Run launches Claude Code for one job and streams decoded events to emit.
 //
 // emit is invoked sequentially (never concurrently). The first non-nil error
@@ -155,18 +182,7 @@ func (r *runner) Run(ctx context.Context, spec domain.RunSpec, emit func(domain.
 		workDir = filepath.Join(r.projectsDir, spec.ProjectID.String())
 	}
 
-	args := []string{
-		"-p", spec.Prompt,
-		"--output-format", "stream-json",
-		"--verbose", // required for stream-json to emit intermediate events
-		"--dangerously-skip-permissions",
-	}
-	if spec.ResumeSessionID != "" {
-		args = append(args, "--resume", spec.ResumeSessionID)
-	}
-	if r.model != "" {
-		args = append(args, "--model", r.model)
-	}
+	args := runArgs(spec, r.model)
 
 	log := r.logger.With(
 		"job_id", spec.JobID,

@@ -211,6 +211,10 @@ type RunSpec struct {
 	WorkDir         string // /projects/{project_id}
 	Prompt          string // change description / requirement handed to Claude
 	ResumeSessionID string // empty for a fresh session
+	// Model / Effort are this build's snapshot of the model and effort
+	// (internal/buildsettings), passed as --model / --effort.
+	Model  string
+	Effort string
 }
 
 // RunResult is the terminal outcome of a Claude Code run.
