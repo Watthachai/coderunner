@@ -32,3 +32,7 @@ yarn-error.log*
 /projects/
 .crn-workspaces/
 *.local
+
+# ---- agent scratch (git worktrees, plan-execution ledgers) ----
+.claude/worktrees/
+.superpowers/
