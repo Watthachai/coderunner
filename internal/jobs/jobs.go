@@ -52,6 +52,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
 	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 	"github.com/Watthachai/fitt-coderunner/internal/github"
@@ -104,6 +105,10 @@ type manager struct {
 	imageRegistry string
 	artifactDir   string
 
+	// claudeDefaults is the environment's model/effort, used until an operator
+	// saves a choice on the dashboard (internal/buildsettings).
+	claudeDefaults buildsettings.Defaults
+
 	// slots bounds how many builds run at once, server-wide. Every build ends in
 	// a CPU-heavy docker build (cross-compiled to linux/amd64 under emulation on
 	// macOS hosts), so unbounded fan-out would thrash the box instead of going
@@ -151,6 +156,7 @@ func NewManager(
 	imageRegistry string,
 	artifactDir string,
 	maxConcurrent int,
+	claudeDefaults buildsettings.Defaults,
 ) domain.JobManager {
 	if logger == nil {
 		logger = slog.Default()
@@ -175,6 +181,7 @@ func NewManager(
 		buildImage:         buildImage,
 		imageRegistry:      imageRegistry,
 		artifactDir:        artifactDir,
+		claudeDefaults:     claudeDefaults,
 		slots:              make(chan struct{}, maxConcurrent),
 		subs:               make(map[uuid.UUID][]*subscriber),
 		cancels:            make(map[uuid.UUID]context.CancelFunc),
@@ -579,12 +586,18 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			return
 		}
 
+		claudeCfg := m.claudeConfigFor(ctx, job.ID, log)
+		meta.model, meta.effort = claudeCfg.Model, claudeCfg.Effort
+		log.Info("claude config", "model", claudeCfg.Model, "effort", claudeCfg.Effort, "source", claudeCfg.Source)
+
 		runSpec := domain.RunSpec{
 			JobID:           job.ID,
 			ProjectID:       job.ProjectID,
 			WorkDir:         workDir,
 			Prompt:          claudePrompt,
 			ResumeSessionID: resumeSession,
+			Model:           claudeCfg.Model,
+			Effort:          claudeCfg.Effort,
 		}
 
 		emit := func(ev domain.ClaudeEvent) error {
@@ -1200,6 +1213,24 @@ type traceMeta struct {
 	remote string
 	cost   float64
 	errMsg string
+
+	// model/effort are what the Claude run used. Left empty on paths that
+	// never invoke Claude, so the trace never names a model that did not run.
+	model  string
+	effort string
+}
+
+// claudeConfigFor settles the model and effort this build's Claude run uses and
+// records them on the job, so the dashboard can show them while it runs. It is
+// called once, right before the run: a change on the dashboard reaches the
+// next build to get here, never one already running. Recording is best-effort
+// — a failure costs the dashboard its label, not the build.
+func (m *manager) claudeConfigFor(ctx context.Context, jobID uuid.UUID, log *slog.Logger) buildsettings.Resolved {
+	res := buildsettings.Resolve(ctx, m.store, m.claudeDefaults, log)
+	if err := m.store.SetJobClaudeConfig(ctx, jobID, res.Model, res.Effort); err != nil {
+		log.Warn("record claude config on job failed", "err", err, "model", res.Model, "effort", res.Effort)
+	}
+	return res
 }
 
 // saveTrace snapshots the job's in-memory live event buffer plus derived
@@ -1231,22 +1262,24 @@ func (m *manager) saveTrace(ctx context.Context, job *domain.Job, meta traceMeta
 	}
 
 	tr := &domain.BuildTrace{
-		JobID:      job.ID,
-		ProjectID:  job.ProjectID,
-		BuildNo:    job.BuildNo,
-		Outcome:    string(job.Status),
-		Mode:       meta.mode,
-		CommitSHA:  meta.commit,
-		Branch:     meta.branch,
-		Remote:     meta.remote,
-		SessionID:  job.SessionID,
-		CostUSD:    meta.cost,
-		ToolCount:  toolCount,
-		FileCount:  len(files),
-		ErrorMsg:   meta.errMsg,
-		Events:     events,
-		StartedAt:  startedAt,
-		FinishedAt: finishedAt,
+		JobID:        job.ID,
+		ProjectID:    job.ProjectID,
+		BuildNo:      job.BuildNo,
+		Outcome:      string(job.Status),
+		Mode:         meta.mode,
+		CommitSHA:    meta.commit,
+		Branch:       meta.branch,
+		Remote:       meta.remote,
+		SessionID:    job.SessionID,
+		CostUSD:      meta.cost,
+		ToolCount:    toolCount,
+		FileCount:    len(files),
+		ErrorMsg:     meta.errMsg,
+		ClaudeModel:  meta.model,
+		ClaudeEffort: meta.effort,
+		Events:       events,
+		StartedAt:    startedAt,
+		FinishedAt:   finishedAt,
 	}
 	if err := m.store.SaveJobTrace(ctx, tr); err != nil {
 		m.logger.Error("save job trace failed", "job_id", job.ID, "err", err)

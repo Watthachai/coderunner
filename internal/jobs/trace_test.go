@@ -59,6 +59,8 @@ func TestFailedBuildKeepsWhatItAlreadyAchieved(t *testing.T) {
 		branch: "main",
 		remote: "https://github.com/acme/crn-demo.git",
 		cost:   13.36,
+		model:  "claude-opus-5-5",
+		effort: "xhigh",
 	})
 
 	tr := store.saved
@@ -71,6 +73,8 @@ func TestFailedBuildKeepsWhatItAlreadyAchieved(t *testing.T) {
 		{"remote", tr.Remote, "https://github.com/acme/crn-demo.git"},
 		{"mode", tr.Mode, "build"},
 		{"error", tr.ErrorMsg, "docker push (app) failed"},
+		{"claude_model", tr.ClaudeModel, "claude-opus-5-5"},
+		{"claude_effort", tr.ClaudeEffort, "xhigh"},
 	} {
 		if c.got != c.want {
 			t.Errorf("trace lost %s: got %q, want %q", c.field, c.got, c.want)
@@ -97,6 +101,8 @@ func TestCancelledBuildKeepsWhatItAlreadyAchieved(t *testing.T) {
 		branch: "main",
 		remote: "https://github.com/acme/crn-demo.git",
 		cost:   4.20,
+		model:  "claude-sonnet-5",
+		effort: "high",
 	})
 
 	tr := store.saved
@@ -111,6 +117,9 @@ func TestCancelledBuildKeepsWhatItAlreadyAchieved(t *testing.T) {
 	}
 	if tr.ErrorMsg == "" {
 		t.Error("a cancelled trace should say it was cancelled")
+	}
+	if tr.ClaudeModel != "claude-sonnet-5" || tr.ClaudeEffort != "high" {
+		t.Errorf("trace lost the model: %q/%q", tr.ClaudeModel, tr.ClaudeEffort)
 	}
 }
 

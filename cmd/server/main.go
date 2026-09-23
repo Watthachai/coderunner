@@ -15,6 +15,7 @@ import (
 
 	"github.com/Watthachai/fitt-coderunner/internal/api"
 	"github.com/Watthachai/fitt-coderunner/internal/buildinfo"
+	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/config"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
@@ -41,7 +42,7 @@ func run() error {
 	slog.SetDefault(logger)
 	build := buildinfo.Read()
 	logger.Info("starting CRN", "env", cfg.Environment, "addr", cfg.ListenAddr,
-		"run_claude", cfg.RunClaude, "claude_model", cfg.ClaudeModel,
+		"run_claude", cfg.RunClaude, "claude_model", cfg.ClaudeModel, "claude_effort", cfg.ClaudeEffort,
 		"git_remote", cfg.GitRemote, "github_owner", cfg.GithubOwner,
 		"revision", build.Revision, "built", build.Time, "modified", build.Modified)
 
@@ -94,7 +95,10 @@ func run() error {
 	// --- Job manager (queue + lifecycle + per-project advisory lock) ---
 	// jobs.NewManager composes store + runner + notifier and the build-step
 	// config (projects dir, git remote, run-Claude toggle, build concurrency).
-	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry, cfg.ArtifactDir, cfg.MaxConcurrentBuilds)
+	// The environment's model/effort. The dashboard can save a different
+	// choice (build_settings); these apply until it does.
+	claudeDefaults := buildsettings.Defaults{Model: cfg.ClaudeModel, Effort: cfg.ClaudeEffort}
+	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry, cfg.ArtifactDir, cfg.MaxConcurrentBuilds, claudeDefaults)
 	logger.Info("build concurrency", "max_concurrent_builds", cfg.MaxConcurrentBuilds)
 
 	// Reconcile ghost builds: any job still 'building' at boot was orphaned by a
