@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
 )
 
 // Config is the fully-resolved runtime configuration.
@@ -35,6 +37,12 @@ type Config struct {
 	// unset), so a build never silently inherits whatever model the host
 	// account happens to default to.
 	ClaudeModel string
+
+	// ClaudeEffort is the default passed as --effort (CRN_CLAUDE_EFFORT,
+	// default buildsettings.DefaultEffort). Checked at load: a bad value would
+	// fail every build, so it stops the server instead. The dashboard can
+	// override ClaudeModel and ClaudeEffort; these are the fallback.
+	ClaudeEffort string
 
 	// DockerRegistryUser is the Docker Hub user image tags are pushed under:
 	// {DockerRegistryUser}/{project_id}:v{build_no}.
@@ -149,6 +157,7 @@ const defaultClaudeModel = "claude-opus-5"
 //	CRN_ENV                ("development")
 //	CRN_TERMINAL_SHELL     ("" — falls back to $SHELL, then /bin/zsh/bash/sh)
 //	CRN_CLAUDE_MODEL       (defaultClaudeModel — the latest Opus)
+//	CRN_CLAUDE_EFFORT      (buildsettings.DefaultEffort — "xhigh"; must be low|medium|high|xhigh|max)
 func Load() (*Config, error) {
 	cfg := &Config{
 		ListenAddr:         getEnv("CRN_LISTEN_ADDR", ":8080"),
@@ -157,6 +166,7 @@ func Load() (*Config, error) {
 		MongoURL:           getEnv("CRN_MONGO_URL", "mongodb://localhost:27017"),
 		ClaudeBinPath:      os.Getenv("CRN_CLAUDE_BIN"),
 		ClaudeModel:        getEnv("CRN_CLAUDE_MODEL", defaultClaudeModel),
+		ClaudeEffort:       getEnv("CRN_CLAUDE_EFFORT", buildsettings.DefaultEffort),
 		DockerRegistryUser: os.Getenv("CRN_DOCKER_USER"),
 		ProjectsDir:        getEnv("CRN_PROJECTS_DIR", "/projects"),
 		GitRemote:          os.Getenv("CRN_GIT_REMOTE"),
@@ -199,6 +209,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: CRN_MAX_CONCURRENT_BUILDS must be >= 1, got %d", maxBuilds)
 	}
 	cfg.MaxConcurrentBuilds = maxBuilds
+
+	if !buildsettings.ValidEffort(cfg.ClaudeEffort) {
+		return nil, fmt.Errorf("config: CRN_CLAUDE_EFFORT must be one of %s, got %q",
+			strings.Join(buildsettings.Efforts, ", "), cfg.ClaudeEffort)
+	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
