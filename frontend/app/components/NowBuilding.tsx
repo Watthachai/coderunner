@@ -6,6 +6,7 @@ import { jobCancelUrl } from "../lib/config";
 import { useJobStream } from "../lib/useJobStream";
 import { useTick } from "../lib/useTick";
 import { formatElapsed, formatDuration, formatRelative } from "../lib/format";
+import { claudeLabel } from "../lib/modelLabel";
 import { PhasePipeline, phaseRank } from "./PhaseTrack";
 import { BuildConsole } from "./BuildConsole";
 import { SpanGraph, traceNodeStates } from "./TraceSpanGraph";
@@ -117,6 +118,11 @@ function BuildingCard({ job, nowMs }: { job: BuildingJob; nowMs: number }) {
           <span className="bc-org">{job.org_name || "—"}</span>
         </div>
         <div className="bc-head-right">
+          {job.claude_model ? (
+            <span className="bc-build" title="Claude model · effort this build runs with">
+              {claudeLabel(job.claude_model, job.claude_effort)}
+            </span>
+          ) : null}
           <span className="bc-build">build #{job.build_no}</span>
           <button
             type="button"

@@ -13,6 +13,7 @@ import { useState } from "react";
 import type { BuildTrace, FeedEvent } from "../lib/types";
 import { fetchTrace } from "../lib/useTraces";
 import { formatDuration, formatRelative } from "../lib/format";
+import { claudeLabel } from "../lib/modelLabel";
 import { useTick } from "../lib/useTick";
 import { EventFeed } from "./EventFeed";
 
@@ -181,6 +182,12 @@ export function TraceSpanGraph({ trace }: { trace: BuildTrace }) {
           <span className="hud-label">cost</span>
           <span className="hud-num">
             {trace.cost_usd > 0 ? `$${trace.cost_usd.toFixed(2)}` : "—"}
+          </span>
+        </div>
+        <div className="hud-cell">
+          <span className="hud-label">model</span>
+          <span className="hud-num hud-num--text">
+            {claudeLabel(trace.claude_model, trace.claude_effort) || "—"}
           </span>
         </div>
         <div className="hud-cell">

@@ -2970,10 +2970,18 @@ body {
   font-size: 0.62rem;
 }
 
-/* --- per-build telemetry, four equal cells (overrides .hud's template) --- */
+/* --- per-build telemetry, five equal cells (overrides .hud's template) --- */
 .trace-hud {
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   margin-bottom: 0.9rem;
+}
+
+/* A word-valued hud cell (the model): numbers stay big, words must fit. */
+.hud-num--text {
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* --- commit / branch / remote chips + replay toggle --- */
