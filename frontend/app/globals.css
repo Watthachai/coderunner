@@ -2976,6 +2976,12 @@ body {
   margin-bottom: 0.9rem;
 }
 
+@media (max-width: 620px) {
+  .trace-hud {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 /* A word-valued hud cell (the model): numbers stay big, words must fit. */
 .hud-num--text {
   font-size: 0.95rem;

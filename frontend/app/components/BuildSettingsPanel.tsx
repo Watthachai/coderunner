@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useBuildSettings } from "../lib/useBuildSettings";
 import { modelLabel } from "../lib/modelLabel";
 import { formatRelative } from "../lib/format";
@@ -12,16 +12,11 @@ import { useTick } from "../lib/useTick";
 export function BuildSettingsPanel() {
   const { data, error, saving, save } = useBuildSettings();
   const nowMs = useTick(30_000);
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
+  // Per-field draft: only a field the operator has actually touched is held
+  // here. An untouched field keeps following the server's value, so a
+  // background re-load can't be saved over with a stale copy of it.
+  const [draft, setDraft] = useState<{ model?: string; effort?: string }>({});
   const [justSaved, setJustSaved] = useState(false);
-
-  // Follow the server's value when it loads and after each save.
-  useEffect(() => {
-    if (!data) return;
-    setModel(data.model);
-    setEffort(data.effort);
-  }, [data]);
 
   if (!data) {
     return (
@@ -36,6 +31,8 @@ export function BuildSettingsPanel() {
     );
   }
 
+  const model = draft.model ?? data.model;
+  const effort = draft.effort ?? data.effort;
   const isListed = (id: string) => data.options.models.some((m) => m.id === id);
   const dirty = model !== data.model || effort !== data.effort;
   // An env alias ("opus") is shown but can't be saved — the server would refuse it.
@@ -49,7 +46,11 @@ export function BuildSettingsPanel() {
 
   async function onSave() {
     setJustSaved(false);
-    setJustSaved(await save(model, effort));
+    // Send the drafted value for a touched field, and the latest server
+    // value for an untouched one — never a copy made stale by a re-load.
+    const ok = await save(model, effort);
+    if (ok) setDraft({});
+    setJustSaved(ok);
   }
 
   return (
@@ -69,12 +70,14 @@ export function BuildSettingsPanel() {
             value={model}
             disabled={saving}
             onChange={(e) => {
-              setModel(e.target.value);
+              setDraft((d) => ({ ...d, model: e.target.value }));
               setJustSaved(false);
             }}
           >
             {isListed(data.model) ? null : (
-              <option value={data.model}>{data.model} (from env)</option>
+              <option value={data.model}>
+                {data.model} {data.source === "saved" ? "(saved)" : "(from env)"}
+              </option>
             )}
             {data.options.models.map((m) => (
               <option key={m.id} value={m.id}>
@@ -91,7 +94,7 @@ export function BuildSettingsPanel() {
             value={effort}
             disabled={saving}
             onChange={(e) => {
-              setEffort(e.target.value);
+              setDraft((d) => ({ ...d, effort: e.target.value }));
               setJustSaved(false);
             }}
           >
