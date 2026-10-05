@@ -17,6 +17,7 @@ import { ActivityFeed } from "./components/ActivityFeed";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { FeedbackBell } from "./components/FeedbackBell";
 import { BuildStamp } from "./components/BuildStamp";
+import { BuildSettingsPanel } from "./components/BuildSettingsPanel";
 
 export default function Home() {
   const { data, error, loading } = useDashboard(2500);
@@ -60,6 +61,10 @@ export default function Home() {
       ) : null}
 
       <VitalsRail vitals={data?.vitals ?? null} />
+
+      <div className="row">
+        <BuildSettingsPanel />
+      </div>
 
       <div className="row row--two">
         <NowBuilding

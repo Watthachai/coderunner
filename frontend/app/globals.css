@@ -3690,3 +3690,26 @@ body {
   color: var(--error);
   border-color: var(--error);
 }
+
+/* --- build model panel: the Claude model/effort builds run with --- */
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.85rem;
+}
+
+.settings-row .field {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.settings-row .field--narrow {
+  flex: 0 1 150px;
+}
+
+.settings-note {
+  margin: 0.65rem 0 0;
+  font-size: 0.72rem;
+  color: var(--fg-dim);
+}
