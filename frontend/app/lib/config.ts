@@ -182,6 +182,15 @@ export function skillVersionsUrl(name: string): string {
   return `${API_BASE}/internal/skills/${encodeURIComponent(name)}/versions`;
 }
 
+// The Claude model and effort builds run with (no auth).
+//   GET /internal/settings/build             -> BuildSettings
+//   PUT /internal/settings/build {model, effort} -> BuildSettings · 400 off-list
+// A change applies to the next build that reaches its Claude run; a running
+// build keeps what it started with.
+export function buildSettingsUrl(): string {
+  return `${API_BASE}/internal/settings/build`;
+}
+
 // Liveness plus the daemon's VCS build stamp (no auth) — how the console shows
 // which commit this box is running.
 //   GET /healthz

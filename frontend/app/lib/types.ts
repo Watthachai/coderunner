@@ -75,6 +75,9 @@ export interface BuildingJob {
   build_no: number;
   branch: string;
   started_at: string | null;
+  // What this build's Claude run uses; "" (or absent) until it gets there.
+  claude_model?: string;
+  claude_effort?: string;
 }
 
 export interface QueuedJob {
@@ -149,6 +152,10 @@ export interface BuildTrace {
   tool_count: number;
   file_count: number;
   error_msg: string;
+  // What the build's Claude run used; "" for builds before this was recorded
+  // and for builds that reused a cached image.
+  claude_model?: string;
+  claude_effort?: string;
   events: BuildEventMsg[]; // full stream on detail read; [] on list reads
   started_at: string | null;
   finished_at: string | null;
@@ -267,4 +274,24 @@ export interface SkillDrift {
   name: string;
   status: "missing" | "stale";
   detail: string; // what differs, e.g. "SKILL.md differs"
+}
+
+// GET/PUT /internal/settings/build — the Claude model/effort builds run with.
+export interface ModelOption {
+  id: string;
+  label: string;
+  input_usd_per_mtok: number;
+  output_usd_per_mtok: number;
+}
+
+export interface BuildSettings {
+  model: string;
+  effort: string;
+  source: "env" | "saved";
+  updated_at: string | null;
+  updated_from: string;
+  options: {
+    models: ModelOption[];
+    efforts: string[];
+  };
 }
