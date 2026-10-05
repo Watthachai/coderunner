@@ -34,3 +34,11 @@ func TestRunArgsKeepResume(t *testing.T) {
 		t.Errorf("runArgs =\n  %q\nwant\n  %q", got, want)
 	}
 }
+
+func TestImproveArgsPassModelAndEffort(t *testing.T) {
+	got := improveArgs("improve this", "claude-opus-5-5", "xhigh")
+	want := []string{"-p", "improve this", "--dangerously-skip-permissions", "--model", "claude-opus-5-5", "--effort", "xhigh"}
+	if !slices.Equal(got, want) {
+		t.Errorf("improveArgs =\n  %q\nwant\n  %q", got, want)
+	}
+}

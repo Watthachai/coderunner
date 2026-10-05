@@ -58,12 +58,25 @@ Current SKILL.md:
 
 %s`
 
+// improveArgs builds the one-shot `claude` command line for Improve.
+func improveArgs(prompt, model, effort string) []string {
+	args := []string{"-p", prompt, "--dangerously-skip-permissions"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if effort != "" {
+		args = append(args, "--effort", effort)
+	}
+	return args
+}
+
 // Improve runs a one-shot `claude` invocation to improve and expand a Claude
 // Agent Skill SKILL.md. Unlike Run it does NOT stream stream-json — it captures
 // plain stdout with `claude -p <prompt> --dangerously-skip-permissions
-// [--model model]`, bounded by improveTimeout. It returns the trimmed stdout
-// (the improved SKILL.md). A non-zero exit or empty output is an error.
-func Improve(ctx context.Context, binPath, model, skillBody string, logger *slog.Logger) (string, error) {
+// [--model model] [--effort effort]`, bounded by improveTimeout. It returns
+// the trimmed stdout (the improved SKILL.md). A non-zero exit or empty output
+// is an error.
+func Improve(ctx context.Context, binPath, model, effort, skillBody string, logger *slog.Logger) (string, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -78,10 +91,7 @@ func Improve(ctx context.Context, binPath, model, skillBody string, logger *slog
 	defer cancel()
 
 	prompt := fmt.Sprintf(improvePromptTemplate, skillBody)
-	args := []string{"-p", prompt, "--dangerously-skip-permissions"}
-	if model != "" {
-		args = append(args, "--model", model)
-	}
+	args := improveArgs(prompt, model, effort)
 
 	cmd := exec.CommandContext(runCtx, binPath, args...)
 	// New process group so a cancel/timeout signals the whole tree, matching Run.

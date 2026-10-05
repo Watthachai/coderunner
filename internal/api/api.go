@@ -49,6 +49,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/Watthachai/fitt-coderunner/internal/buildinfo"
+	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 	"github.com/Watthachai/fitt-coderunner/internal/feedback"
@@ -81,9 +82,11 @@ type server struct {
 
 	// claudeBin is the path to the `claude` CLI used by the improve-skill endpoint.
 	claudeBin string
-	// claudeModel optionally pins the model for the improve-skill run (empty = CLI
-	// default).
-	claudeModel string
+	// claudeDefaults is the environment's model/effort. Both the settings
+	// endpoints and the improve-skill run resolve against it
+	// (internal/buildsettings), so every Claude call made here names a model
+	// and an effort explicitly.
+	claudeDefaults buildsettings.Defaults
 }
 
 // defaultOrgID is the org an ingest call is attributed to when the body carries
@@ -97,17 +100,17 @@ var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
 // + issues endpoints). projectsDir is the per-project working-dir root used by
 // the interactive terminal WS, and terminalShell is the optional shell override
 // for that terminal.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell, claudeBin, claudeModel string) http.Handler {
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell, claudeBin string, claudeDefaults buildsettings.Defaults) http.Handler {
 	s := &server{
-		logger:        logger,
-		store:         store,
-		jm:            jm,
-		gitRemote:     gitRemote,
-		githubOwner:   githubOwner,
-		projectsDir:   projectsDir,
-		terminalShell: terminalShell,
-		claudeBin:     claudeBin,
-		claudeModel:   claudeModel,
+		logger:         logger,
+		store:          store,
+		jm:             jm,
+		gitRemote:      gitRemote,
+		githubOwner:    githubOwner,
+		projectsDir:    projectsDir,
+		terminalShell:  terminalShell,
+		claudeBin:      claudeBin,
+		claudeDefaults: claudeDefaults,
 	}
 
 	r := chi.NewRouter()
@@ -170,6 +173,11 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	// AI "improve skill": runs Claude to improve/expand a SKILL.md body and returns
 	// the improved markdown for the operator to review (does NOT save it).
 	r.Post("/internal/skills/{name}/improve", s.handleImproveSkill)
+
+	// The Claude model/effort builds run with (no auth; operator console). A
+	// change applies to the next build that reaches its Claude run.
+	r.Get("/internal/settings/build", s.handleGetBuildSettings)
+	r.Put("/internal/settings/build", s.handlePutBuildSettings)
 
 	// No-auth internal edit-build trigger: creates an EDIT build for an existing
 	// project — Claude edits the project's existing repo instead of rebuilding
@@ -566,7 +574,8 @@ func (s *server) handleImproveSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	improved, err := claude.Improve(r.Context(), s.claudeBin, s.claudeModel, body.Body, s.logger)
+	cfg := buildsettings.Resolve(r.Context(), s.store, s.claudeDefaults, s.logger)
+	improved, err := claude.Improve(r.Context(), s.claudeBin, cfg.Model, cfg.Effort, body.Body, s.logger)
 	if err != nil {
 		s.logger.Error("improve skill failed", "err", err, "name", chi.URLParam(r, "name"),
 			"request_id", middleware.GetReqID(r.Context()))
