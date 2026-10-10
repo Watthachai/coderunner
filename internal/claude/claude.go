@@ -94,6 +94,7 @@ func Improve(ctx context.Context, binPath, model, effort, skillBody string, logg
 	args := improveArgs(prompt, model, effort)
 
 	cmd := exec.CommandContext(runCtx, binPath, args...)
+	cmd.Env = claudeEnv()
 	// New process group so a cancel/timeout signals the whole tree, matching Run.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -203,6 +204,8 @@ func (r *runner) Run(ctx context.Context, spec domain.RunSpec, emit func(domain.
 
 	cmd := exec.CommandContext(ctx, r.binPath, args...)
 	cmd.Dir = workDir
+	// Never the Runner's own environment: see childEnv.
+	cmd.Env = claudeEnv()
 	// New process group so we can signal the whole tree on cancel and never
 	// leak orphan children (claude spawns subprocesses). Setpgid puts the child
 	// in its own group whose pgid == child pid.
