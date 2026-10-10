@@ -163,7 +163,9 @@ Content-Type: application/json
 ```
 - แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
 - **`env` (เฉพาะ `released`)** = **example** runtime env ที่ image ต้องใช้ — operator inject ค่าจริงตอนรัน (ไม่มี bake ในภาพ). `DATABASE_URL` บังคับ — image **apply migration ที่ commit ไว้** (`db:deploy` แล้วตามด้วย `db:seed`) ยิงไป DB ภายนอกนี้ตอน start **และ fail ให้เห็นถ้า migration ไม่ผ่าน** (ไม่ start ต่อ); app listen container port `3000`, host เปิด `APP_PORT` (ต่อ-project). ตรงกับ `docker-compose.customer.yml` ที่ CRN เขียน
-- **`AUTH_SECRET` + `BOOTSTRAP_ADMIN_EMAIL` + `BOOTSTRAP_ADMIN_PASSWORD`** = ตัวที่ต้องส่งจริง. บัญชีผู้ดูแลคนแรกถูกสร้าง **ครั้งเดียวต่อฐานข้อมูล** ผ่าน advisory lock + marker ถาวรในตาราง `SystemBootstrap` → รันพร้อมกันหลายตัวได้ admin คนเดียว · ฐานข้อมูลที่มี user อยู่แล้วจะไม่สร้างเพิ่ม · ลบ user ทิ้งแล้ว restart ไม่ฟื้นคืนมา · **ไม่มีรหัส fallback** ถ้าไม่ส่งมาก็ไม่มีใครเข้าระบบได้
+- **`AUTH_SECRET` + `BOOTSTRAP_ADMIN_EMAIL` + `BOOTSTRAP_ADMIN_PASSWORD`** = ตัวที่ต้องส่งจริง. บัญชีผู้ดูแลคนแรกถูกสร้าง **ครั้งเดียวต่อฐานข้อมูล** ผ่าน advisory lock + marker ถาวรในตาราง `SystemBootstrap` → รันพร้อมกันหลายตัวได้ admin คนเดียว · ฐานข้อมูลที่มี user อยู่แล้วจะไม่สร้างเพิ่ม · ลบ user ทิ้งแล้ว restart ไม่ฟื้นคืนมา · **ไม่มีรหัส fallback**
+  - ติดตั้งครั้งแรกโดยไม่ส่ง (หรืออีเมลผิดรูปแบบ / รหัสสั้นกว่า 16 ตัวอักษร) → `db:seed` ล้ม และ **container ไม่ start** (ถ้าตั้ง restart ไว้จะวน restart) — ไม่ใช่ start ขึ้นมาแบบไม่มี admin
+  - ระบบตั้งค่าว่าควรเปลี่ยนรหัสครั้งแรก **แต่ยังไม่บังคับ** ตอนล็อกอิน
   - รหัสต้อง **ไม่ซ้ำข้ามลูกค้า** — ต่างจากฉบับเก่าที่ทุก demo ใช้รหัสเดียวกัน
   - หลังติดตั้งเสร็จ ถอด `BOOTSTRAP_ADMIN_*` ออกจาก deployment ได้ ระบบไม่อ่านอีกเมื่อมี marker แล้ว
 - **`DEV_EMAIL`/`DEV_PASSWORD`** = **เลิกใช้แล้ว** ยังส่งมาเป็นค่าว่างเพื่อไม่ให้ consumer รุ่นเก่าพัง แอปไม่อ่าน 2 ตัวนี้อีกต่อไป
@@ -205,6 +207,8 @@ Content-Type: application/json
 
 **Callback — ✅ เหมือน build ปกติ:** edit build วิ่งผ่าน runJob เดียวกัน → ยิง `build_events` (`build_started`/`build_done`) + HTTP callback (§3) `building` → `released` พร้อม **`image_ref` ใหม่** (`:v<build_no>`) + `git_remote`/`git_branch`/`env`. poll ด้วย `job_id` ที่ได้จาก `202`
 
+> ⚠️ **ตอนนี้ใช้จริงไม่ได้** — ระบบยังไม่มีทางออก API key ให้ใช้ ให้ใช้ `/internal/projects/{id}/edit` ข้างบน
+>
 > **ทางเลือก (tenant API, API-key auth):** `POST /api/v1/projects/{id}/edit-request` body `{requester, diff_request, priority}` — `diff_request` เป็น raw JSON ที่ต้องมี `{"mode":"edit","change":"…"}` เอง. ใช้เมื่อผ่าน per-org API key แทน trusted network. response `202 {edit_request_id, job_id, build_no, status}`. **แนะนำใช้ `/internal/.../edit` ถ้าเพื่อนต่อผ่าน `INGEST_CRN_URL` อยู่แล้ว** (ง่ายกว่า, body แค่ `change`)
 
 ---
