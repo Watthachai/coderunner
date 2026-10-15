@@ -98,6 +98,11 @@ type Config struct {
 	// "registry.gitlab.local/fitt". Empty -> build the image locally only (no
 	// push). The full tag is "<registry>/crn-demo-<slug>:v<build_no>".
 	ImageRegistry string
+	// MirrorRegistry, when set (with ImageRegistry), receives a digest-identical
+	// copy of every pushed image, e.g. "asia-southeast1-docker.pkg.dev/<project>/<repo>"
+	// for the GCP deploy path. The host must be logged in to it (gcloud
+	// auth configure-docker). Empty -> no mirror.
+	MirrorRegistry string
 	// ArtifactDir, when set, is where each build's air-gap bundle is written:
 	// <ArtifactDir>/<repo>-v<n>/ with images.tar (docker save of app+migrate),
 	// docker-compose.customer.yml, and INSTALL.md — for customers who cannot pull
@@ -178,6 +183,7 @@ func Load() (*Config, error) {
 		FTCDVCallbackToken: os.Getenv("CRN_FTC_DV_CALLBACK_TOKEN"),
 		BuildImage:         getEnvBool("CRN_BUILD_IMAGE", false),
 		ImageRegistry:      strings.TrimRight(os.Getenv("CRN_IMAGE_REGISTRY"), "/"),
+		MirrorRegistry:     strings.TrimRight(os.Getenv("CRN_MIRROR_REGISTRY"), "/"),
 		ArtifactDir:        os.Getenv("CRN_ARTIFACT_DIR"),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),

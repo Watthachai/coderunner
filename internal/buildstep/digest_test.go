@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-const digestA = "sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682"
-
 // FTC DV pulls by digest only, so the released callback carries the digest the
 // delivery registry gave the push. That registry speaks plain HTTP, which buildx
 // imagetools refuses, so the digest comes from the local image's RepoDigests.

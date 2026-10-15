@@ -104,6 +104,9 @@ type manager struct {
 	buildImage    bool
 	imageRegistry string
 	artifactDir   string
+	// mirrorRegistry, when set, receives a digest-identical copy of every pushed
+	// image (Google Artifact Registry for the GCP deploy path).
+	mirrorRegistry string
 
 	// claudeDefaults is the environment's model/effort, used until an operator
 	// saves a choice on the dashboard (internal/buildsettings).
@@ -154,6 +157,7 @@ func NewManager(
 	ftcdvCallbackToken string,
 	buildImage bool,
 	imageRegistry string,
+	mirrorRegistry string,
 	artifactDir string,
 	maxConcurrent int,
 	claudeDefaults buildsettings.Defaults,
@@ -180,6 +184,7 @@ func NewManager(
 		ftcdvCallbackToken: ftcdvCallbackToken,
 		buildImage:         buildImage,
 		imageRegistry:      imageRegistry,
+		mirrorRegistry:     mirrorRegistry,
 		artifactDir:        artifactDir,
 		claudeDefaults:     claudeDefaults,
 		slots:              make(chan struct{}, maxConcurrent),
@@ -1042,6 +1047,26 @@ func (m *manager) writeImageBundle(workDir string, spec payloadSpec, job *domain
 	}
 }
 
+// mirrorImage copies the pushed image to the mirror registry with its digest
+// unchanged (buildstep.MirrorImage). Best effort: the delivery registry already
+// holds the image the customer pulls, so a failed mirror is reported in the
+// build's stream and the build carries on.
+func (m *manager) mirrorImage(ctx context.Context, appTag string, job *domain.Job, log *slog.Logger) {
+	if m.mirrorRegistry == "" || m.imageRegistry == "" {
+		return
+	}
+	dest := buildstep.MirrorTag(m.imageRegistry, m.mirrorRegistry, appTag)
+	text := ""
+	if digest, err := buildstep.MirrorImage(ctx, appTag, dest, log); err != nil {
+		log.Warn("image mirror failed", "dest", dest, "err", err)
+		text = fmt.Sprintf("⚠ mirror to %s failed (the delivered image is unaffected): %s", dest, err.Error())
+	} else {
+		log.Info("image mirrored", "dest", dest, "digest", digest)
+		text = fmt.Sprintf("✓ mirrored → %s@%s (digest unchanged)", dest, digest)
+	}
+	m.publish(job.ID, domain.BuildEventMsg{Kind: domain.WSAssistantText, Text: text, JobID: job.ID.String(), Timestamp: time.Now().UTC()})
+}
+
 // buildAndPushImage builds + pushes the opaque, self-migrating APP image (its
 // Dockerfile was written by writeImageBundle before the git push). Sets
 // job.DockerTag to the app image tag. Returns nil on success — or as a no-op when
@@ -1087,6 +1112,8 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		}
 		digest = d
 	}
+
+	m.mirrorImage(ctx, appTag, job, log)
 
 	// Air-gap bundle (docker save tarball + compose + INSTALL) when configured.
 	m.writeArtifactBundle(ctx, workDir, appTag, log)
