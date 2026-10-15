@@ -10,8 +10,9 @@
 #   - Pub/Sub topic "gcr"                         (Artifact Registry announces images on it)
 #   - service accounts, each with only what it needs:
 #       crn-pusher        writes images to REPO (used by the Code Runner build machine)
-#       crn-uat-deployer  runs the trigger: deploys UAT services as crn-uat-runtime
-#       crn-uat-runtime   what UAT apps run as: Cloud SQL client; secrets granted per project
+#       crn-uat-deployer  runs the trigger: deploys UAT services (new-uat.sh lets it act
+#                         as each project's own runtime account, crn-uat-<id8>)
+#     There is no shared runtime account: one per project keeps each app to its own secrets.
 #   - Cloud SQL for PostgreSQL 16 instance SQL_INSTANCE, shared by UAT projects (one
 #     database each). It runs all month — see the cost estimate before creating it.
 #   - the Cloud Build Pub/Sub trigger crn-uat-deploy running cloudbuild-uat.yaml
@@ -41,22 +42,15 @@ keep gcloud pubsub topics create gcr
 
 keep gcloud iam service-accounts create crn-pusher --display-name="Code Runner image pusher"
 keep gcloud iam service-accounts create crn-uat-deployer --display-name="Code Runner UAT deployer (Cloud Build)"
-keep gcloud iam service-accounts create crn-uat-runtime --display-name="Code Runner UAT apps"
 
 run gcloud artifacts repositories add-iam-policy-binding "${REPO}" --location="${REGION}" \
   --member="serviceAccount:$(sa crn-pusher)" --role=roles/artifactregistry.writer
 run gcloud artifacts repositories add-iam-policy-binding "${REPO}" --location="${REGION}" \
   --member="serviceAccount:$(sa crn-uat-deployer)" --role=roles/artifactregistry.reader
-run gcloud artifacts repositories add-iam-policy-binding "${REPO}" --location="${REGION}" \
-  --member="serviceAccount:$(sa crn-uat-runtime)" --role=roles/artifactregistry.reader
-run gcloud projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
-  --member="serviceAccount:$(sa crn-uat-runtime)" --role=roles/cloudsql.client
 for role in roles/run.admin roles/secretmanager.viewer roles/logging.logWriter; do
   run gcloud projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
     --member="serviceAccount:$(sa crn-uat-deployer)" --role="${role}"
 done
-run gcloud iam service-accounts add-iam-policy-binding "$(sa crn-uat-runtime)" \
-  --member="serviceAccount:$(sa crn-uat-deployer)" --role=roles/iam.serviceAccountUser
 
 keep gcloud sql instances create "${SQL_INSTANCE}" --database-version=POSTGRES_16 --edition=ENTERPRISE \
   --tier="${SQL_TIER}" --region="${REGION}" --storage-type=SSD --storage-size=10 \

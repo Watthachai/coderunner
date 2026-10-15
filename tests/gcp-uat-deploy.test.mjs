@@ -41,7 +41,8 @@ test('an enrolled project is deployed to its UAT service at the exact digest', a
     '--region asia-southeast3',
     '--port 3000',
     '--add-cloudsql-instances fitt-proj:asia-southeast3:crn-uat',
-    '--service-account crn-uat-runtime@fitt-proj.iam.gserviceaccount.com',
+    // Each project runs as its own account, so one app can never read another's secrets.
+    '--service-account crn-uat-cc0b6195@fitt-proj.iam.gserviceaccount.com',
     'DATABASE_URL=uat-shop-cc0b6195-database-url:latest',
     'AUTH_SECRET=uat-shop-cc0b6195-auth-secret:latest',
     'FITT_STATUS_URL=https://fitt-builder.fittbsa.com/v1/service-status',
@@ -124,6 +125,8 @@ test('setup in dry run prints every step, runs nothing, and never issues a key',
   const pusher = plan.split('\n').filter(l => l.includes('crn-pusher@'));
   assert.ok(pusher.length >= 1 && pusher.every(l => l.includes('repositories add-iam-policy-binding') && l.includes('roles/artifactregistry.writer')), pusher.join('\n'));
   assert.doesNotMatch(plan, /keys create/);
+  // No shared runtime account: new-uat.sh creates one per project.
+  assert.doesNotMatch(plan, /crn-uat-runtime/);
   assert.doesNotMatch(plan, /roles\/(owner|editor)\b/);
 });
 
@@ -137,7 +140,16 @@ test('enrolling a project keeps every secret value off the command line', async 
   assert.deepEqual(created, ['uat-shop-cc0b6195-database-url', 'uat-shop-cc0b6195-auth-secret', 'uat-shop-cc0b6195-bootstrap-admin-email', 'uat-shop-cc0b6195-bootstrap-admin-password']);
   const accessors = calls.filter(l => /secrets add-iam-policy-binding/.test(l));
   assert.equal(accessors.length, created.length);
-  assert.ok(accessors.every(l => l.includes('crn-uat-runtime@fitt-proj.iam.gserviceaccount.com') && l.includes('roles/secretmanager.secretAccessor')));
+  assert.ok(accessors.every(l => l.includes('serviceAccount:crn-uat-cc0b6195@fitt-proj.iam.gserviceaccount.com') && l.includes('roles/secretmanager.secretAccessor')), accessors.join('\n'));
+  // Its own runtime account, which the deployer may act as, and which may reach Cloud SQL.
+  assert.match(args, /iam service-accounts create crn-uat-cc0b6195 /);
+  assert.match(args, /iam service-accounts add-iam-policy-binding crn-uat-cc0b6195@fitt-proj\.iam\.gserviceaccount\.com .*serviceAccount:crn-uat-deployer@fitt-proj\.iam\.gserviceaccount\.com.*roles\/iam\.serviceAccountUser/);
+  assert.match(args, /projects add-iam-policy-binding fitt-proj .*serviceAccount:crn-uat-cc0b6195@fitt-proj\.iam\.gserviceaccount\.com.*roles\/cloudsql\.client/);
+  assert.doesNotMatch(args, /crn-uat-runtime/);
+  // The database is closed to every other UAT project's user.
+  // (Verified on Postgres 16 with Cloud SQL-shaped roles: owner first, then PUBLIC
+  // loses CONNECT; the app still creates its tables, another project's user is refused.)
+  for (const sql of ['ALTER DATABASE uat_shop_cc0b6195 OWNER TO uat_shop_cc0b6195;', 'REVOKE CONNECT, TEMPORARY ON DATABASE uat_shop_cc0b6195 FROM PUBLIC;']) assert.ok(res.stdout.includes(sql), sql);
   // Values arrive on stdin only.
   const values = calls.filter(l => l.startsWith('STDIN ')).map(l => l.slice(6));
   const url = values.find(v => v.startsWith('postgresql://'));

@@ -37,8 +37,8 @@ service account ที่สร้าง มีสิทธิ์เท่าท
 | service account | ใช้ทำอะไร | สิทธิ์ |
 |---|---|---|
 | `crn-pusher` | เครื่อง build ส่ง image | เขียนได้เฉพาะ repository `crn` |
-| `crn-uat-deployer` | trigger deploy UAT | deploy Cloud Run, ดูชื่อ secret, เขียน log, อ่าน image, ทำงานในนาม `crn-uat-runtime` |
-| `crn-uat-runtime` | แอป UAT ทำงานในนามนี้ | ต่อ Cloud SQL · อ่าน secret ของโปรเจกต์ตัวเอง (ให้ทีละ secret ตอนลงทะเบียน) |
+| `crn-uat-deployer` | trigger deploy UAT | deploy Cloud Run, ดูชื่อ secret, เขียน log, อ่าน image, ทำงานในนาม runtime account ของแต่ละโปรเจกต์ |
+| `crn-uat-<id8>` (สร้างตอนลงทะเบียน) | แอป UAT ของโปรเจกต์นั้นทำงานในนามนี้ | ต่อ Cloud SQL · อ่านได้เฉพาะ secret ของโปรเจกต์ตัวเอง |
 
 ## 2. เครื่อง build (เจ้าของเครื่อง)
 
@@ -54,7 +54,9 @@ service account ที่สร้าง มีสิทธิ์เท่าท
 PROJECT_ID=<project> BOOTSTRAP_ADMIN_EMAIL=<ผู้ดูแลคนแรก> ./deploy/gcp/new-uat.sh crn-demo-<slug>-<id8>
 ```
 
-สร้างฐานข้อมูลและผู้ใช้บน `crn-uat` และ secret `uat-<slug>-<id8>-database-url`, `-auth-secret`, `-bootstrap-admin-email`, `-bootstrap-admin-password` (และ `-license-key` ถ้าพิมพ์ใส่ตอนถาม) · ค่าลับส่งเข้า Secret Manager ทาง stdin ไม่อยู่ใน argument · รหัสผ่านผู้ดูแลคนแรกแสดงครั้งเดียวใน Terminal ของคนที่รัน ส่งต่อทางช่องทางลับ
+สร้าง service account ของโปรเจกต์นั้นเอง (`crn-uat-<id8>`) ที่อ่านได้เฉพาะ secret ของตัวเอง สร้างฐานข้อมูลและผู้ใช้บน `crn-uat` และ secret `uat-<slug>-<id8>-database-url`, `-auth-secret`, `-bootstrap-admin-email`, `-bootstrap-admin-password` (และ `-license-key` ถ้าพิมพ์ใส่ตอนถาม) · ค่าลับส่งเข้า Secret Manager ทาง stdin ไม่อยู่ใน argument · รหัสผ่านผู้ดูแลคนแรกแสดงครั้งเดียวใน Terminal ของคนที่รัน ส่งต่อทางช่องทางลับ
+
+**ก่อน deploy ครั้งแรกต้องปิดฐานข้อมูลจากโปรเจกต์อื่น** สคริปต์แสดงคำสั่ง SQL 2 บรรทัดให้รันเป็น `postgres` ใน Cloud SQL Studio (โอนความเป็นเจ้าของให้ผู้ใช้ของโปรเจกต์ แล้วถอนสิทธิ์ CONNECT จาก PUBLIC) แล้วลองเชื่อมต่อด้วยผู้ใช้ของอีกโปรเจกต์ ต้องถูกปฏิเสธ · ทดสอบลำดับคำสั่งนี้กับ PostgreSQL 16 ที่จำลองสิทธิ์แบบ Cloud SQL แล้ว แต่ยังไม่ได้ลองบน Cloud SQL จริง · ถ้า UAT ใช้ข้อมูลจริงของลูกค้า พิจารณาแยก Cloud SQL ต่อลูกค้า
 
 หลังลงทะเบียน image ถัดไปของโปรเจกต์นี้ที่ไปถึง Artifact Registry จะขึ้น UAT เอง · โปรเจกต์ที่ไม่ได้ลงทะเบียน trigger จะข้าม ไม่ error
 

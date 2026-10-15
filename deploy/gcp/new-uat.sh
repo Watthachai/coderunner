@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Enrols one Code Runner project in UAT on GCP: a database and user on the shared
-# UAT instance, and the secrets its Cloud Run service reads. After this, the next
-# image of the project that reaches Artifact Registry deploys itself (uat-deploy.sh).
+# Enrols one Code Runner project in UAT on GCP: its own runtime service account, a
+# database and user on the shared UAT instance, and the secrets its Cloud Run service
+# reads — readable by that account only. After this, the next image of the project
+# that reaches Artifact Registry deploys itself (uat-deploy.sh).
 #
 #   PROJECT_ID=<project> BOOTSTRAP_ADMIN_EMAIL=<first admin> ./deploy/gcp/new-uat.sh crn-demo-<slug>-<id8>
 #
@@ -18,11 +19,11 @@ REPO="${REPO:-crn}"
 SQL_INSTANCE="${SQL_INSTANCE:-crn-uat}"
 here="$(cd "$(dirname "$0")" && pwd)"
 
-service="$(PRINT_SERVICE=1 _ACTION=INSERT _TAG=enrol \
+read -r service runtime_id <<<"$(PRINT_SERVICE=1 _ACTION=INSERT _TAG=enrol \
   _DIGEST="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${image_name}@sha256:$(printf '0%.0s' {1..64})" \
   bash "${here}/uat-deploy.sh")"
 db="$(printf '%s' "${service}" | tr '-' '_')"
-runtime="crn-uat-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
+runtime="${runtime_id}@${PROJECT_ID}.iam.gserviceaccount.com"
 connection="${PROJECT_ID}:${REGION}:${SQL_INSTANCE}"
 echo "enrolling ${image_name} as ${service} (database ${db} on ${connection})"
 
@@ -32,6 +33,12 @@ put_secret() { # name, value on stdin
   gcloud secrets add-iam-policy-binding "${service}-$1" --project="${PROJECT_ID}" \
     --member="serviceAccount:${runtime}" --role=roles/secretmanager.secretAccessor >/dev/null
 }
+
+gcloud iam service-accounts create "${runtime_id}" --project="${PROJECT_ID}" --display-name="UAT app ${service}"
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
+  --member="serviceAccount:${runtime}" --role=roles/cloudsql.client >/dev/null
+gcloud iam service-accounts add-iam-policy-binding "${runtime}" --project="${PROJECT_ID}" \
+  --member="serviceAccount:crn-uat-deployer@${PROJECT_ID}.iam.gserviceaccount.com" --role=roles/iam.serviceAccountUser >/dev/null
 
 db_password="$(random 24)"
 gcloud sql databases create "${db}" --instance="${SQL_INSTANCE}" --project="${PROJECT_ID}"
@@ -48,6 +55,18 @@ if [ -t 0 ]; then read -r -s -p "License key from FITT Billing (Enter to skip): 
 if [ -n "${license}" ]; then printf '%s' "${license}" | put_secret license-key; fi
 
 echo
-echo "Enrolled ${service}. Its next image in Artifact Registry deploys to UAT by itself."
+echo "Enrolled ${service} (runs as ${runtime})."
+echo
+echo "REQUIRED before the first deploy — close this database to the other UAT projects."
+echo "gcloud creates the database owned by cloudsqlsuperuser, and every gcloud-created user"
+echo "is a member, so any of them could connect to it. Run as postgres (Cloud SQL Studio):"
+echo
+echo "  ALTER DATABASE ${db} OWNER TO ${db};"
+echo "  REVOKE CONNECT, TEMPORARY ON DATABASE ${db} FROM PUBLIC;"
+echo
+echo "Then check: logged in as another project's UAT user, connecting to ${db} must fail"
+echo "with \"User does not have CONNECT privilege\"."
+echo
+echo "Its next image in Artifact Registry then deploys to UAT by itself."
 echo "First administrator: ${BOOTSTRAP_ADMIN_EMAIL}"
 echo "Initial password (shown once, hand it over through the secret channel): ${admin_password}"
