@@ -29,6 +29,22 @@ export function assertTestResults(kind, result) {
   if (!s || !(s.expected > 0) || s.unexpected || s.flaky || s.skipped || result.errors?.length) throw new Error('Browser tests must exist and all pass without skips or flaky retries');
   return s.expected;
 }
+// The suspension switch (FITT Billing, references/service-status.md): the customer image
+// runs against this fake status server — started from the same image under node — and
+// must answer 503 on / while suspended, keep /api/health reachable, and work normally
+// while active.
+export const SWITCH_TEST_KEY = 'fbl_crn-verify-switch';
+export const SWITCH_TEST_MESSAGE = 'CRN verify: service suspended';
+export const FAKE_STATUS_SERVER = `require('http').createServer((q,s)=>{const ok=q.headers.authorization==='Bearer ${SWITCH_TEST_KEY}';const st=q.url==='/suspended'?'suspended':'active';s.writeHead(ok?200:401,{'content-type':'application/json'});s.end(JSON.stringify(ok?{status:st,message:st==='suspended'?'${SWITCH_TEST_MESSAGE}':'',checkedAt:new Date().toISOString()}:{code:'unauthorized'}));}).listen(Number(process.env.PORT||8080));`;
+export function switchVerdict(wanted, { homeStatus, homeBody, healthStatus }) {
+  if (wanted === 'suspended') {
+    if (homeStatus !== 503) return `A suspended app must answer 503 on / (got ${homeStatus}); wire assets/service-status.mjs into the request proxy`;
+    if (!homeBody.includes(SWITCH_TEST_MESSAGE)) return 'The suspension page must show the message from the status server';
+    if (healthStatus === 503) return '/api/health must stay reachable while the app is suspended';
+    return null;
+  }
+  return homeStatus >= 500 ? `An active app must work normally (got ${homeStatus} on /)` : null;
+}
 export function isolatedEnvironment(source) {
   // CLI/browser runtime settings only. Never inherit host application credentials.
   const allowed = ['PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'PLAYWRIGHT_BROWSERS_PATH'];
@@ -37,7 +53,7 @@ export function isolatedEnvironment(source) {
 export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new URL('../assets/Dockerfile', import.meta.url))) {
   const receipt = { schema_version: 1, status: 'failed', checks: [], started_at: new Date().toISOString() };
   const children = new Set();
-  let stopped = false, dbName, appName, operationName, networkName, imageName, scratch;
+  let stopped = false, dbName, appName, operationName, networkName, imageName, scratch, statusName, switchName;
   const stop = () => { stopped = true; for (const child of children) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } };
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
   const timeout = setTimeout(stop, 15 * 60_000);
@@ -138,13 +154,35 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     if (!ready) throw new Error(`Customer image did not become ready: ${redact((await run('startup logs', 'docker', ['logs', '--tail', '30', appName])).slice(-3500))}`);
     const browser = await npm('browser smoke tests', 'test:smoke', ['--reporter=json', '--workers=1', '--retries=0']);
     receipt.browser_tests = assertTestResults('browser', JSON.parse(browser));
+    statusName = `crn-verify-status-${suffix}`;
+    await run('start fake status server', 'docker', ['run', '-d', '--name', statusName, '--network', networkName, '--network-alias', 'fitt-status', '--entrypoint', 'node', imageName, '-e', FAKE_STATUS_SERVER]);
+    for (const wanted of ['suspended', 'active']) {
+      switchName = `crn-verify-switch-${suffix}`;
+      await run(`start customer image while ${wanted}`, 'docker', ['run', '-d', '--name', switchName, '--network', networkName, '-p', '127.0.0.1::3000', ...runtimeEnv, '-e', `FITT_STATUS_URL=http://fitt-status:8080/${wanted}`, '-e', `FITT_LICENSE_KEY=${SWITCH_TEST_KEY}`, imageName], { DATABASE_URL: runtimeDatabaseURL });
+      const switchBase = `http://127.0.0.1:${(await run('switch application port', 'docker', ['port', switchName, '3000/tcp'])).trim().split(':').pop()}`;
+      let verdict = `The customer image did not answer while ${wanted}`;
+      for (let i = 0; i < 60 && !stopped; i++) {
+        try {
+          const home = await fetch(switchBase, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+          const homeBody = await home.text();
+          const health = await fetch(`${switchBase}/api/health`, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+          verdict = switchVerdict(wanted, { homeStatus: home.status, homeBody, healthStatus: health.status });
+          if (!verdict) break;
+        } catch {}
+        await new Promise(r => setTimeout(r, 500));
+      }
+      receipt.checks.push({ name: `suspension switch while ${wanted}`, passed: !verdict });
+      if (verdict) throw new Error(verdict);
+      await run(`stop customer image while ${wanted}`, 'docker', ['rm', '-f', switchName]);
+      switchName = undefined;
+    }
     if (stopped) throw new Error('Verification cancelled or timed out');
     receipt.status = 'passed';
   } catch (error) { receipt.error = redact(error.message); }
   finally {
     stop(); clearTimeout(timeout); process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
     const cleanup = args => new Promise(resolve => { const c = spawn('docker', args, { env: isolatedEnvironment(process.env), stdio: 'ignore', timeout: 8000, killSignal: 'SIGKILL' }); c.on('error', resolve); c.on('close', resolve); });
-    const containers = [appName, operationName, dbName].filter(Boolean);
+    const containers = [appName, switchName, statusName, operationName, dbName].filter(Boolean);
     if (containers.length) await cleanup(['rm', '-f', ...containers]);
     await Promise.all([networkName && cleanup(['network', 'rm', networkName]), imageName && cleanup(['image', 'rm', '-f', imageName])]);
     if (scratch) await fs.rm(scratch, { recursive: true, force: true });

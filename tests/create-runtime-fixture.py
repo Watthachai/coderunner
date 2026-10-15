@@ -73,9 +73,18 @@ import {PrismaClient} from '@prisma/client';
 import {scryptSync} from 'node:crypto';
 test('first account survives changed and absent bootstrap inputs',async()=>{const db=new PrismaClient();try{const users=await db.user.findMany();expect(users).toHaveLength(1);expect(users[0].email).toBe(process.env.CRN_TEST_ADMIN_EMAIL);const [salt,hash]=users[0].passwordHash.split(':');expect(scryptSync(process.env.CRN_TEST_ADMIN_PASSWORD!,salt,32).toString('hex')).toBe(hash);expect(users[0].mustChangePassword).toBe(true);expect(await db.systemBootstrap.count()).toBe(1);}finally{await db.$disconnect();}});
 test('customer image persists input across reload and deletes committed records',async({page,request})=>{await page.goto('/');await expect(page.getByRole('heading')).toHaveText('Runtime verification');expect((await request.post('/api/items',{data:{name:''}})).status()).toBe(400);await page.getByLabel('Item name').fill('Customer record');await page.getByRole('button',{name:'Create'}).click();await expect(page.getByRole('listitem')).toContainText('Customer record');await page.reload();await expect(page.getByRole('listitem')).toContainText('Customer record');await page.getByRole('button',{name:'Delete'}).click();await expect(page.getByRole('listitem')).toHaveCount(0);});''',
+ 'proxy.ts': '''import {NextResponse,type NextRequest} from 'next/server';
+import {serviceStatusResponse} from './lib/service-status.mjs';
+export async function proxy(request:NextRequest){const suspended=await serviceStatusResponse(request);if(suspended)return suspended;return NextResponse.next();}
+export const config={matcher:['/((?!_next/static|_next/image|favicon.ico).*)']};
+''',
+ 'app/api/health/route.ts':'''export const dynamic='force-dynamic';
+export function GET(){return Response.json({ok:true});}
+''',
  'tsconfig.json': json.dumps({'compilerOptions':{'target':'ES2017','lib':['dom','dom.iterable','esnext'],'allowJs':True,'skipLibCheck':True,'strict':True,'noEmit':True,'esModuleInterop':True,'module':'esnext','moduleResolution':'bundler','resolveJsonModule':True,'isolatedModules':True,'jsx':'preserve','plugins':[{'name':'next'}]},'include':['next-env.d.ts','**/*.ts','**/*.tsx','.next/types/**/*.ts'],'exclude':['node_modules']})
 }
 for f,s in files.items():
  q=p/f;q.parent.mkdir(parents=True,exist_ok=True);q.write_text(s)
 shutil.copy(root/'cmd/server/skillassets/assets/bootstrap-once.mjs',p/'prisma/bootstrap-once.mjs')
+shutil.copy(root/'cmd/server/skillassets/assets/service-status.mjs',p/'lib/service-status.mjs')
 print(p)

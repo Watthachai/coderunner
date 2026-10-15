@@ -1,6 +1,7 @@
 package buildstep
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,5 +123,37 @@ func writePkg(t *testing.T, dir, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The suspension switch (FITT Billing) is configured per deployment: the bundle
+// declares both variables empty, says how to fill them, and never ships a key.
+func TestCustomerBundleDeclaresSuspensionSwitch(t *testing.T) {
+	dir := t.TempDir()
+	writePkg(t, dir, `{"dependencies":{"next":"16"}}`)
+	if _, err := WriteImageBundle(dir, "reg/app:v1", "reg", 4123, nil); err != nil {
+		t.Fatal(err)
+	}
+	compose := readFile(t, filepath.Join(dir, "docker-compose.customer.yml"))
+	for _, want := range []string{`FITT_STATUS_URL: "${FITT_STATUS_URL:-}"`, `FITT_LICENSE_KEY: "${FITT_LICENSE_KEY:-}"`} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("customer compose missing %q", want)
+		}
+	}
+	install := readFile(t, filepath.Join(dir, "INSTALL.md"))
+	for _, want := range []string{"FITT_STATUS_URL", "FITT_LICENSE_KEY", "https://fitt-builder.fittbsa.com/v1/service-status"} {
+		if !strings.Contains(install, want) {
+			t.Errorf("INSTALL.md missing %q", want)
+		}
+	}
+	env := NewDemoEnvExample(4123)
+	if env.StatusURL != "https://fitt-builder.fittbsa.com/v1/service-status" || env.LicenseKey != "" {
+		t.Errorf("env example: status URL %q, license key %q (must be empty)", env.StatusURL, env.LicenseKey)
+	}
+	raw, _ := json.Marshal(env)
+	for _, key := range []string{`"FITT_STATUS_URL"`, `"FITT_LICENSE_KEY"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("env example JSON missing %s", key)
+		}
 	}
 }

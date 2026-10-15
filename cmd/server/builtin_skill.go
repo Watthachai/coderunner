@@ -55,6 +55,12 @@ var refDeliveryChecks string
 //go:embed skillassets/assets/bootstrap-once.mjs
 var assetBootstrap string
 
+//go:embed skillassets/references/service-status.md
+var refServiceStatus string
+
+//go:embed skillassets/assets/service-status.mjs
+var assetServiceStatus string
+
 //go:embed skillassets/scripts/verify-delivery.mjs
 var deliveryVerifier string
 
@@ -62,6 +68,8 @@ var builtinSkillFiles = map[string]string{
 	"references/auth-and-bootstrap.md": refAuthBootstrap,
 	"references/delivery-checks.md":    refDeliveryChecks,
 	"assets/bootstrap-once.mjs":        assetBootstrap,
+	"references/service-status.md":     refServiceStatus,
+	"assets/service-status.mjs":        assetServiceStatus,
 	"scripts/verify-delivery.mjs":      deliveryVerifier,
 	"references/nextjs-conversion.md":  refNextjsConversion,
 	"references/prisma-setup.md":       refPrismaSetup,

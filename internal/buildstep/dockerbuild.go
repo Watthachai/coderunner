@@ -79,6 +79,8 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: "${BOOTSTRAP_ADMIN_EMAIL:-}"
       BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
       FITT_FEEDBACK_URL: "${FITT_FEEDBACK_URL:-}"
+      FITT_STATUS_URL: "${FITT_STATUS_URL:-}"
+      FITT_LICENSE_KEY: "${FITT_LICENSE_KEY:-}"
     ports:
       - "${APP_PORT:-{{PORT}}}:3000"
     restart: unless-stopped
@@ -108,6 +110,11 @@ type DemoEnvExample struct {
 	BootstrapEmail    string `json:"BOOTSTRAP_ADMIN_EMAIL"`
 	BootstrapPassword string `json:"BOOTSTRAP_ADMIN_PASSWORD"`
 	AuthSecret        string `json:"AUTH_SECRET"`
+	// StatusURL and LicenseKey turn on the suspension switch (FITT Billing): the app
+	// asks StatusURL with the project's key, read at RUNTIME. Both empty = switch off.
+	// The key is issued per project by FITT Billing; it never ships in the example.
+	StatusURL  string `json:"FITT_STATUS_URL"`
+	LicenseKey string `json:"FITT_LICENSE_KEY"`
 }
 
 // NewDemoEnvExample builds the env contract for a demo whose per-project host port
@@ -120,6 +127,7 @@ func NewDemoEnvExample(port int) DemoEnvExample {
 		DevEmail:    "",
 		DevPassword: "",
 		FeedbackURL: "http://FEEDBACK_HOST:PORT/api/ingest/feedback",
+		StatusURL:   "https://fitt-builder.fittbsa.com/v1/service-status",
 	}
 }
 
@@ -129,6 +137,9 @@ The image contains compiled application output plus database tooling. Supply you
 
 ## First installation
 For a local-account application, supply a unique BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD (at least 16 characters), plus a strong AUTH_SECRET through deployment secrets. No shared password ships. The bootstrap transaction creates the first administrator and a durable completion marker. Existing users are adopted without creation. Change the initial password at first login, then remove the bootstrap variables from deployment.
+
+## Suspension switch (FITT Billing)
+The app can be suspended and reactivated by FITT Billing. To turn this on, set FITT_STATUS_URL to https://fitt-builder.fittbsa.com/v1/service-status and FITT_LICENSE_KEY to the project's license key, which FITT Billing issues per project and hands over through a secret channel. Leave both empty to turn it off. The app asks at its first request and then at most every 5 minutes; when it cannot reach the address it keeps its last known status and does not stop on its own. While suspended every page answers a 503 suspension notice except /api/health; no data is changed. A newly issued key replaces the old one at once, so update the deployment when FITT Billing issues a new key.
 
 ## Restarts and issue builds
 Use the SAME customer database and preserve the authentication secret. Migrations retain their history; completed bootstrap ignores absent or changed bootstrap credentials. Accounts, password hashes and business records are not reseeded. A deleted initial account is not recreated. Account recovery uses the application's documented recovery process.
