@@ -76,6 +76,21 @@ test('keeps the last known status when the server is down, refuses the key or an
   }
 });
 
+test('a failed check is retried after retryMs, not a whole interval later', async () => {
+  const c = clock();
+  const { fetchImpl, calls } = fakeFetch([new Error('ECONNREFUSED'), answer('suspended', 'ค้างชำระ')]);
+  const s = createServiceStatus({ url: URL_, key: KEY, fetchImpl, now: c.now, intervalMs: 300_000, retryMs: 30_000 });
+  assert.equal((await s.current()).status, 'active');
+  c.advance(29_000);
+  await s.current();
+  assert.equal(calls.length, 1);
+  c.advance(1_000);
+  await s.current();
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal((await s.current()).status, 'suspended');
+  assert.equal(calls.length, 2);
+});
+
 test('with no answer yet, an unreachable server leaves the app running', async () => {
   const { fetchImpl } = fakeFetch([new Error('ENOTFOUND')]);
   const s = createServiceStatus({ url: URL_, key: KEY, fetchImpl });

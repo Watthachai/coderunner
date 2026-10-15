@@ -32,10 +32,10 @@ export function assertTestResults(kind, result) {
 // The suspension switch (FITT Billing, references/service-status.md): the customer image
 // runs against this fake status server — started from the same image under node — and
 // must answer 503 on / while suspended, keep /api/health reachable, and work normally
-// while active.
+// while active. It listens on 8080 — not PORT, which the image sets to 3000 for Next.js.
 export const SWITCH_TEST_KEY = 'fbl_crn-verify-switch';
 export const SWITCH_TEST_MESSAGE = 'CRN verify: service suspended';
-export const FAKE_STATUS_SERVER = `require('http').createServer((q,s)=>{const ok=q.headers.authorization==='Bearer ${SWITCH_TEST_KEY}';const st=q.url==='/suspended'?'suspended':'active';s.writeHead(ok?200:401,{'content-type':'application/json'});s.end(JSON.stringify(ok?{status:st,message:st==='suspended'?'${SWITCH_TEST_MESSAGE}':'',checkedAt:new Date().toISOString()}:{code:'unauthorized'}));}).listen(Number(process.env.PORT||8080));`;
+export const FAKE_STATUS_SERVER = `require('http').createServer((q,s)=>{const ok=q.headers.authorization==='Bearer ${SWITCH_TEST_KEY}';const st=q.url==='/suspended'?'suspended':'active';s.writeHead(ok?200:401,{'content-type':'application/json'});s.end(JSON.stringify(ok?{status:st,message:st==='suspended'?'${SWITCH_TEST_MESSAGE}':'',checkedAt:new Date().toISOString()}:{code:'unauthorized'}));}).listen(Number(process.env.CRN_FAKE_STATUS_PORT||8080));`;
 export function switchVerdict(wanted, { homeStatus, homeBody, healthStatus }) {
   if (wanted === 'suspended') {
     if (homeStatus !== 503) return `A suspended app must answer 503 on / (got ${homeStatus}); wire assets/service-status.mjs into the request proxy`;

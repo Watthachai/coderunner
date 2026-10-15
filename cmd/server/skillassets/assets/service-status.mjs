@@ -7,21 +7,23 @@
 //   FITT_LICENSE_KEY  the project's key (fbl_…), issued by FITT Billing
 //
 // Both unset (or either one) = switch off: the app runs normally and asks nobody.
-// It asks when the first request arrives and then at most every 5 minutes, waiting
-// at most 2 seconds for the very first answer. When it can't get an answer it keeps
-// the last status it knew — it never makes the app slower or brings it down. While
-// suspended, every route answers a 503 suspension page except the health paths;
-// customer data is never touched. Uses only fetch, so it runs on any Next.js runtime.
+// It asks when the first request arrives and then at most every 5 minutes (30 seconds
+// after a failed check), waiting at most 2 seconds for the very first answer. When it
+// can't get an answer it keeps the last status it knew — it never makes the app
+// slower or brings it down. While suspended, every route answers a 503 suspension
+// page except the health paths; customer data is never touched. Uses only fetch, so
+// it runs on any Next.js runtime.
 
 export const EXEMPT_PATHS = ['/api/health', '/healthz'];
 const DEFAULT_MESSAGE = 'บริการถูกระงับชั่วคราว กรุณาติดต่อผู้ให้บริการ';
 
-export function createServiceStatus({ url, key, intervalMs = 300_000, firstWaitMs = 2_000, timeoutMs = 5_000, fetchImpl = globalThis.fetch, now = Date.now }) {
+export function createServiceStatus({ url, key, intervalMs = 300_000, retryMs = 30_000, firstWaitMs = 2_000, timeoutMs = 5_000, fetchImpl = globalThis.fetch, now = Date.now }) {
   let status = null;
   let message = '';
-  let checkedAt = -Infinity;
+  let dueAt = -Infinity;
   let inflight = null;
   async function check() {
+    let answered = false;
     try {
       const res = await fetchImpl(url, { headers: { authorization: `Bearer ${key}` }, cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) return;
@@ -29,16 +31,19 @@ export function createServiceStatus({ url, key, intervalMs = 300_000, firstWaitM
       if (body?.status !== 'active' && body?.status !== 'suspended') return;
       status = body.status;
       message = typeof body.message === 'string' ? body.message : '';
+      answered = true;
     } catch {
       // Unreachable, timed out or not JSON: keep the last known status.
     } finally {
-      checkedAt = now();
+      // A failed check is retried sooner, so an app that started while FITT
+      // Builder was out of reach doesn't wait a whole interval to learn its status.
+      dueAt = now() + (answered ? intervalMs : Math.min(retryMs, intervalMs));
       inflight = null;
     }
   }
   return {
     async current() {
-      if (!inflight && now() - checkedAt >= intervalMs) inflight = check();
+      if (!inflight && now() >= dueAt) inflight = check();
       if (status === null && inflight) {
         let timer;
         await Promise.race([inflight, new Promise(r => { timer = setTimeout(r, firstWaitMs); })]);

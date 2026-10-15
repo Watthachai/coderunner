@@ -40,7 +40,8 @@ import { spawn as spawnChild } from 'node:child_process';
 import { FAKE_STATUS_SERVER, SWITCH_TEST_KEY, SWITCH_TEST_MESSAGE, switchVerdict } from '../internal/buildstep/verify-delivery.mjs';
 test('the fake status server answers like FITT Builder, and only to the test key', async () => {
   const port = String(20000 + Math.floor(Math.random() * 20000));
-  const child = spawnChild(process.execPath, ['-e', FAKE_STATUS_SERVER], { env: { PATH: process.env.PATH, PORT: port }, stdio: 'ignore' });
+  // The customer image sets PORT=3000 for Next.js; the fake server must not take it.
+  const child = spawnChild(process.execPath, ['-e', FAKE_STATUS_SERVER], { env: { PATH: process.env.PATH, PORT: '3000', CRN_FAKE_STATUS_PORT: port }, stdio: 'ignore' });
   try {
     const ask = async (p, key = SWITCH_TEST_KEY) => {
       for (let i = 0; i < 50; i++) {
