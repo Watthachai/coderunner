@@ -99,7 +99,7 @@ New local-account apps bootstrap the initial administrator **once per customer d
 
 To activate a source update, build and restart the backend after existing jobs finish. Startup refreshes the built-in skill while preserving its enabled state. Companion skills under `skills/` are uploaded separately; updating files on disk does not change already uploaded skill records. Verify enabled skills in the dashboard before starting the next customer build.
 
-Regression checks: `go test ./...` and `node --test tests/delivery.test.mjs tests/service-status.test.mjs`. The PostgreSQL integration suite `tests/bootstrap-postgres.test.mjs` additionally needs `CRN_BOOTSTRAP_TEST_DATABASE_URL` pointing to a disposable loopback database named `crn_test`, and `CRN_TEST_PRISMA_MODULE` pointing to a matching generated Prisma client. It refuses other database destinations.
+Regression checks: `go test ./...` and `node --test tests/delivery.test.mjs tests/service-status.test.mjs tests/gcp-uat-deploy.test.mjs`. GCP UAT deploy: deploy/gcp/README.md. The PostgreSQL integration suite `tests/bootstrap-postgres.test.mjs` additionally needs `CRN_BOOTSTRAP_TEST_DATABASE_URL` pointing to a disposable loopback database named `crn_test`, and `CRN_TEST_PRISMA_MODULE` pointing to a matching generated Prisma client. It refuses other database destinations.
 
 ## Frontend
 

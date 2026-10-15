@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Deploys a newly mirrored Code Runner image to its project's UAT Cloud Run service.
+# Runs in Cloud Build — deploy/gcp/cloudbuild-uat.yaml embeds this file verbatim —
+# when Artifact Registry announces an image on the "gcr" Pub/Sub topic. It never
+# builds anything: it deploys the exact digest Code Runner tested and reported.
+#
+# Env (substitutions, automapped): _ACTION, _DIGEST, _TAG from the event; _REGION,
+# _SQL_INSTANCE, _STATUS_URL from the trigger. PROJECT_ID is Cloud Build's own.
+#
+# A project is enrolled in UAT once deploy/gcp/new-uat.sh has created its secrets.
+# Every other image is skipped, so all images in the repository share one trigger.
+set -euo pipefail
+
+if [ "${_ACTION:-}" != "INSERT" ] || [ -z "${_TAG:-}" ]; then
+  echo "skip: not a newly tagged image (action=${_ACTION:-none} tag=${_TAG:-none})"
+  exit 0
+fi
+if ! [[ "${_DIGEST:-}" =~ ^([a-z0-9.-]+-docker\.pkg\.dev/[^@]+)@(sha256:[a-f0-9]{64})$ ]]; then
+  echo "skip: the event carries no image digest (${_DIGEST:-none})"
+  exit 0
+fi
+image="${BASH_REMATCH[1]}"
+digest="${BASH_REMATCH[2]}"
+
+# crn-demo-<slug>-<id8> -> uat-<slug>-<id8>, at most 49 characters (Cloud Run's
+# limit), keeping the project id suffix so two projects never share a service.
+name="${image##*/}"
+name="${name#crn-demo-}"
+name="$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-')"
+if [[ "$name" == *-* ]]; then
+  id="${name##*-}"
+  base="uat-${name%-*}"
+  base="${base:0:$((48 - ${#id}))}"
+  while [[ "$base" == *- ]]; do base="${base%-}"; done
+  service="${base}-${id}"
+else
+  id="$name"
+  service="uat-${name}"
+  service="${service:0:49}"
+fi
+# new-uat.sh asks this script for the service name, so the two never disagree.
+if [ -n "${PRINT_SERVICE:-}" ]; then echo "${service}"; exit 0; fi
+echo "checking ${service} for ${image}@${digest}"
+
+has_secret() { gcloud secrets describe "${service}-$1" --project "${PROJECT_ID}" >/dev/null 2>&1; }
+if ! has_secret database-url || ! has_secret auth-secret; then
+  echo "skip: ${service} is not enrolled in UAT (run deploy/gcp/new-uat.sh for it)"
+  exit 0
+fi
+secrets="DATABASE_URL=${service}-database-url:latest,AUTH_SECRET=${service}-auth-secret:latest"
+if has_secret bootstrap-admin-email; then secrets+=",BOOTSTRAP_ADMIN_EMAIL=${service}-bootstrap-admin-email:latest"; fi
+if has_secret bootstrap-admin-password; then secrets+=",BOOTSTRAP_ADMIN_PASSWORD=${service}-bootstrap-admin-password:latest"; fi
+if has_secret license-key; then secrets+=",FITT_LICENSE_KEY=${service}-license-key:latest"; fi
+
+gcloud run deploy "${service}" \
+  --project "${PROJECT_ID}" \
+  --image "${image}@${digest}" \
+  --region "${_REGION}" \
+  --port 3000 \
+  --service-account "crn-uat-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --add-cloudsql-instances "${_SQL_INSTANCE}" \
+  --set-secrets "${secrets}" \
+  --set-env-vars "FITT_STATUS_URL=${_STATUS_URL}" \
+  --allow-unauthenticated \
+  --min-instances 0 --max-instances 3 --cpu 1 --memory 1Gi \
+  --labels "crn-project=${id},crn-stage=uat" \
+  --quiet
+url="$(gcloud run services describe "${service}" --project "${PROJECT_ID}" --region "${_REGION}" --format 'value(status.url)')"
+echo "UAT ready: ${url} (${image}@${digest})"
