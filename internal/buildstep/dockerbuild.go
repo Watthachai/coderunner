@@ -41,6 +41,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-cert
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+# The entrypoint's npm and Prisma CLI runs call nobody: no npm update check, no Prisma telemetry.
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+ENV CHECKPOINT_DISABLE=1
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static

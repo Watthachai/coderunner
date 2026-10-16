@@ -157,3 +157,15 @@ func TestCustomerBundleDeclaresSuspensionSwitch(t *testing.T) {
 		}
 	}
 }
+
+// A customer image calls nobody on its own: the entrypoint's npm and Prisma CLI runs
+// would otherwise ask registry.npmjs.org for updates and send Prisma telemetry at
+// every start, which a customer's network team sees and an offline site can't answer.
+func TestCustomerImageMakesNoCallsAtStart(t *testing.T) {
+	runner := productionDockerfile[strings.Index(productionDockerfile, "AS runner"):]
+	for _, want := range []string{"ENV NEXT_TELEMETRY_DISABLED=1", "ENV NPM_CONFIG_UPDATE_NOTIFIER=false", "ENV CHECKPOINT_DISABLE=1"} {
+		if !strings.Contains(runner, want) {
+			t.Errorf("runtime stage missing %q", want)
+		}
+	}
+}
