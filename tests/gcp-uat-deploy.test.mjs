@@ -42,6 +42,7 @@ test('a cloud project is registered, deployed and reported on its first image', 
     /projects add-iam-policy-binding fitt-proj .*serviceAccount:crn-uat-cc0b6195@fitt-proj\.iam\.gserviceaccount\.com.*roles\/cloudsql\.client/,
     /iam service-accounts add-iam-policy-binding crn-uat-cc0b6195@fitt-proj\.iam\.gserviceaccount\.com .*serviceAccount:crn-uat-deployer@fitt-proj\.iam\.gserviceaccount\.com.*roles\/iam\.serviceAccountUser/,
     /sql databases create uat_shop_cc0b6195 --instance=crn-uat/,
+    /sql users create uat_shop_cc0b6195 .*--password=/,
     /storage buckets create gs:\/\/fitt-proj-uat-cc0b6195-uploads .*--location=asia-southeast1/,
     /storage buckets add-iam-policy-binding gs:\/\/fitt-proj-uat-cc0b6195-uploads .*roles\/storage\.objectAdmin/,
   ]) assert.match(all, want);
@@ -51,22 +52,20 @@ test('a cloud project is registered, deployed and reported on its first image', 
   const st = await w.state();
   assert.equal(st.secrets[`${SVC}-bootstrap-admin-email`].value, 'admin@customer.test');
   assert.match(st.secrets[`${SVC}-database-url`].value, /^postgresql:\/\/uat_shop_cc0b6195:[a-f0-9]{48}@localhost\/uat_shop_cc0b6195\?host=\/cloudsql\/fitt-proj:asia-southeast1:crn-uat$/);
-  // Secret values travel on stdin or the environment, never a command line —
-  // the database user is made in SQL, so not even its password is a flag.
+  // Secret values travel on stdin or the environment. The one documented
+  // exception: gcloud takes a SQL user's password only as a flag.
   const dbPassword = /:([a-f0-9]{48})@/.exec(st.secrets[`${SVC}-database-url`].value)[1];
   for (const n of ['auth-secret', 'cron-secret', 'bootstrap-admin-password']) assert.ok(!all.includes(st.secrets[`${SVC}-${n}`].value), `${n} on a command line`);
-  assert.ok(!(await w.calls()).some(c => !c.startsWith('STDIN ') && c.includes(dbPassword)), 'database password on a command line');
-  assert.ok(!g.some(c => c.startsWith('sql users')), 'Cloud SQL\'s own users cannot be handed a database by postgres');
-  // postgres makes the user itself (so it may hand it the database: PostgreSQL 16
-  // requires SET ROLE on the new owner), then closes the database to every other project.
+  assert.equal((await w.calls()).filter(c => !c.startsWith('STDIN ') && c.includes(dbPassword)).length, 1);
+  // The app's own user takes its database and closes it to every other project:
+  // it is a member of cloudsqlsuperuser (the owner gcloud gives the database) and may
+  // SET ROLE to itself — postgres may not, on real Cloud SQL (found on the first run).
   const sql = await w.sql();
-  assert.match(sql, /SET createrole_self_grant = 'set, inherit';/);
-  assert.match(sql, /\\getenv pw NEWPW/);
-  assert.match(sql, /CREATE ROLE :"db" LOGIN PASSWORD :'pw';/);
   assert.match(sql, /ALTER DATABASE :"db" OWNER TO :"db";/);
   assert.match(sql, /REVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;/);
-  assert.ok(sql.indexOf('CREATE ROLE') < sql.indexOf('ALTER DATABASE'), 'the user exists before it gets the database');
-  assert.ok((await w.calls()).some(c => c.startsWith('PSQL ') && c.includes('-v db=uat_shop_cc0b6195') && c.includes('-U postgres')));
+  assert.doesNotMatch(sql, /CREATE ROLE|createrole_self_grant/);
+  const psql = (await w.calls()).filter(c => c.startsWith('PSQL ') && c.includes('-f -'));
+  assert.ok(psql.length === 1 && psql[0].includes('-U uat_shop_cc0b6195') && psql[0].includes('-v db=uat_shop_cc0b6195'), psql.join('\n'));
   assert.equal(st.secrets[`${SVC}-database-url`].labels.closed, 'yes');
   const deploy = g.find(c => c.startsWith(`run deploy ${SVC} `));
   for (const want of [`--image ${REPO}/${SHOP}@${DIGEST}`, '--region asia-southeast1', '--port 3000', '--execution-environment gen2',
@@ -88,7 +87,7 @@ test('a cloud project is registered, deployed and reported on its first image', 
 test('registration resumes after a partial run', async () => {
   const w = await world(seed({
     labels: { [SHOP]: labelsFor() }, projects: cloud(), sas: ['crn-uat-cc0b6195'], dbs: ['uat_shop_cc0b6195'], sqlusers: ['uat_shop_cc0b6195'],
-    secrets: { ...seed().secrets, [`${SVC}-database-url`]: { value: 'postgresql://x', labels: {} }, [`${SVC}-auth-secret`]: { value: 'a', labels: {} } },
+    secrets: { ...seed().secrets, [`${SVC}-database-url`]: { value: 'postgresql://uat_shop_cc0b6195:seedpw@localhost/uat_shop_cc0b6195?host=/cloudsql/x', labels: {} }, [`${SVC}-auth-secret`]: { value: 'a', labels: {} } },
   }));
   const r = w.run(SCRIPT, insert(SHOP));
   assert.equal(r.code, 0, r.out);
@@ -96,20 +95,17 @@ test('registration resumes after a partial run', async () => {
   assert.ok(!g.some(c => /^(iam service-accounts create|sql users|sql databases create)/.test(c)), g.join('\n'));
   assert.ok(!g.some(c => c.startsWith(`secrets create ${SVC}-database-url `) || c.startsWith(`secrets create ${SVC}-auth-secret `)));
   assert.ok(g.some(c => c.startsWith(`secrets create ${SVC}-cron-secret `)));
-  const sql = await w.sql();
-  assert.match(sql, /REVOKE CONNECT/);
-  assert.doesNotMatch(sql, /CREATE ROLE|ALTER ROLE/, 'the user and its secret exist already');
+  assert.match(await w.sql(), /REVOKE CONNECT/);
   assert.ok(g.some(c => c.startsWith('storage buckets create gs://fitt-proj-uat-cc0b6195-uploads')));
   assert.deepEqual(stages(await w.events()), ['deploying', 'ready']);
 });
 
-test('a database user left from a run that died gets a new password, not a duplicate', async () => {
+test('a database user without its secret gets a new password, not a duplicate user', async () => {
   const w = await world(seed({ labels: { [SHOP]: labelsFor() }, projects: cloud(), sqlusers: ['uat_shop_cc0b6195'] }));
   assert.equal(w.run(SCRIPT, insert(SHOP)).code, 0);
-  const sql = await w.sql();
-  // psql decides at run time: CREATE when the role is new, ALTER when it exists.
-  assert.match(sql, /SELECT NOT EXISTS \(SELECT 1 FROM pg_roles WHERE rolname = :'db'\) AS new_role \\gset/);
-  assert.match(sql, /\\if :new_role\nCREATE ROLE :"db" LOGIN PASSWORD :'pw';\n\\else\nALTER ROLE :"db" WITH LOGIN PASSWORD :'pw';\n\\endif/);
+  const g = await w.gcloud();
+  assert.ok(g.some(c => c.startsWith('sql users set-password uat_shop_cc0b6195 ')));
+  assert.ok(!g.some(c => c.startsWith('sql users create')));
 });
 
 test('a new image moves traffic only after the candidate is healthy', async () => {
