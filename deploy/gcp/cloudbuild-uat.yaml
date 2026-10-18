@@ -139,18 +139,26 @@ steps:
 
       # Each app's database user is made by postgres in SQL, never with gcloud: a gcloud
       # user stays a member of cloudsqlsuperuser, which would give every app that role's
-      # powers on the shared instance. The user may create databases; it creates its own
-      # and closes it to PUBLIC, so nothing ever changes owner (Cloud SQL's postgres may
-      # not hand a database to another role — found on the first real run). The password
-      # reaches psql through the environment (\getenv), never a command line.
+      # powers on the shared instance. It gets no CREATEDB, so no app can create a database
+      # under another project's name before that project registers. postgres creates and
+      # owns each database (Cloud SQL's postgres may not hand one to another role — found
+      # on the first real run), refuses one it does not own, closes it to PUBLIC and gives
+      # the app connect, create and the public schema. The password reaches psql through
+      # the environment (\getenv), never a command line.
       ROLE_SQL="\\getenv pw NEWPW
-      CREATE ROLE :\"db\" LOGIN CREATEDB PASSWORD :'pw';
+      CREATE ROLE :\"db\" LOGIN PASSWORD :'pw';
       "
+      # The ownership check reads the row (datname), so PostgreSQL cannot fold the error
+      # branch into a constant and raise it when the owner is right.
       DB_SQL="SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') AS new_db \\gset
       \\if :new_db
       CREATE DATABASE :\"db\";
       \\endif
+      SELECT CASE WHEN pg_get_userbyid(datdba) = current_user THEN 'owner ok' ELSE (datname || ' is owned by another role, not by postgres')::int::text END FROM pg_database WHERE datname = :'db';
       REVOKE CONNECT, TEMPORARY ON DATABASE :\"db\" FROM PUBLIC;
+      GRANT CONNECT, TEMPORARY, CREATE ON DATABASE :\"db\" TO :\"db\";
+      \\connect :\"db\"
+      GRANT USAGE, CREATE ON SCHEMA public TO :\"db\";
       "
 
       # sql_as USER PASSWORD: runs the SQL on stdin as USER through the Cloud SQL Auth
@@ -199,8 +207,8 @@ steps:
             --member="serviceAccount:${DEPLOYER}" --role=roles/iam.serviceAccountUser >/dev/null
         fi
 
-        step="ผู้ใช้ฐานข้อมูล"
-        local pw=""
+        step="ผู้ใช้และฐานข้อมูล"
+        local pw="" sql="" closed=""
         if ! has_secret database-url; then
           pw="$(random_hex 24)"
           if [ -n "$(gcloud sql users list --instance="${sql_instance}" --project="${PROJECT_ID}" --filter="name=${db}" --format='value(name)')" ]; then
@@ -209,17 +217,17 @@ steps:
             # in Secret Manager.)
             gcloud sql users set-password "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" --password="${pw}" >/dev/null
           else
-            printf '%s' "${ROLE_SQL}" | NEWPW="${pw}" sql_as postgres "$(gcloud secrets versions access latest --secret="${postgres_secret}" --project="${PROJECT_ID}")"
+            sql+="${ROLE_SQL}"
           fi
+        fi
+        if [ "$(secret_label database-url closed)" = yes ]; then closed=1; else sql+="${DB_SQL}"; fi
+        if [ -n "${sql}" ]; then
+          printf '%s' "${sql}" | NEWPW="${pw}" sql_as postgres "$(gcloud secrets versions access latest --secret="${postgres_secret}" --project="${PROJECT_ID}")"
+        fi
+        if [ -n "${pw}" ]; then
           printf 'postgresql://%s:%s@localhost/%s?host=/cloudsql/%s' "${db}" "${pw}" "${db}" "${connection}" | put_secret database-url
         fi
-        if [ "$(secret_label database-url closed)" != yes ]; then
-          step="ฐานข้อมูลของโปรเจกต์ และปิดจากโปรเจกต์อื่น"
-          if [ -z "${pw}" ]; then
-            pw="$(read_secret database-url | python3 -c 'import sys, urllib.parse
-      print(urllib.parse.urlparse(sys.stdin.read().strip()).password or "")')"
-          fi
-          printf '%s' "${DB_SQL}" | sql_as "${db}" "${pw}"
+        if [ -z "${closed}" ]; then
           gcloud secrets update "${service}-database-url" --project="${PROJECT_ID}" --update-labels=closed=yes >/dev/null
         fi
 
