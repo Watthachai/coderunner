@@ -29,6 +29,8 @@ test('promote takes the digest UAT serves to a new production with its own datab
   assert.ok(st.secrets[`${PROD}-postgres-password`], 'the instance\'s postgres password is kept');
   assert.ok(!g.some(c => c.startsWith(`secrets add-iam-policy-binding ${PROD}-postgres-password`)), 'the app never reads its instance\'s admin password');
   assert.ok((await w.calls()).some(c => c.startsWith('PROXY ') && c.includes('fitt-proj:asia-southeast1:crn-prod-cc0b6195')));
+  // Production moves only on a person's command: the automatic deployer may not act as its account.
+  assert.ok(!g.some(c => c.startsWith('iam service-accounts add-iam-policy-binding crn-prod-') && c.includes('crn-uat-deployer')), 'deployer must not act as production');
   const deploy = g.find(c => c.startsWith(`run deploy ${PROD} `));
   // The revision serving UAT, not the newest one (it may be a candidate that failed).
   assert.ok(deploy.includes(`--image ${good} `), deploy);

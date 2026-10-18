@@ -65,7 +65,7 @@ if (tool === 'gcloud') {
   }
   if (has('run', 'services', 'list')) { const id8 = (/crn-project=([a-z0-9]+)/.exec(flag('filter') || '') || [])[1]; for (const n of Object.keys(st.services)) if (n.startsWith('uat-') && n.endsWith('-' + id8)) out(n); return; }
   if (has('run', 'revisions', 'describe')) { for (const svc of Object.values(st.services)) if (svc.images && svc.images[a[3]]) return out(svc.images[a[3]]); process.exit(1); }
-  if (has('run', 'services', 'update-traffic')) { st.services[a[3]].serving = (flag('to-revisions') || '').split('=')[0]; return save(); }
+  if (has('run', 'services', 'update-traffic')) { if (st.trafficFails) process.exit(1); st.services[a[3]].serving = (flag('to-revisions') || '').split('=')[0]; return save(); }
   if (has('logging', 'read')) return out('app log line one\napp log line two');
   if (has('scheduler', 'jobs', 'describe')) return st.jobs.includes(a[3]) ? out('ok') : process.exit(1);
   if (has('scheduler', 'jobs', 'create') || has('scheduler', 'jobs', 'update')) { if (!st.jobs.includes(a[4])) st.jobs.push(a[4]); return save(); }
@@ -114,7 +114,7 @@ if (!outFile && res) process.stdout.write(res);
 
 export function seed(overrides = {}) {
   return {
-    fb: FB, fbToken: FB_TOKEN, fbDown: false, refuseStages: [], health: 200, deployFails: false,
+    fb: FB, fbToken: FB_TOKEN, fbDown: false, refuseStages: [], health: 200, deployFails: false, trafficFails: false,
     secrets: { 'crn-deploy-fb-token': { value: FB_TOKEN, labels: {} }, 'crn-uat-postgres-password': { value: 'pg-admin-pw', labels: {} } },
     sas: [], dbs: [], sqlusers: [], buckets: [], instances: ['crn-uat'], services: {}, jobs: [],
     labels: {}, projects: {}, pending: [], artifacts: [],

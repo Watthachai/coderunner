@@ -116,7 +116,7 @@ keep gcloud builds triggers create pubsub --name=crn-uat-sweep \
   --topic="projects/${PROJECT_ID}/topics/crn-sweep" \
   --inline-config="${here}/cloudbuild-uat.yaml" \
   --service-account="projects/${PROJECT_ID}/serviceAccounts/${deployer}" \
-  --substitutions="_ACTION=SWEEP,_DIGEST=,_TAG=,${common_subs}"
+  --substitutions="_ACTION=SWEEP,${common_subs}"
 keep gcloud scheduler jobs create pubsub crn-sweep --location="${REGION}" --schedule="*/5 * * * *" \
   --topic=crn-sweep --message-body='{}'
 
