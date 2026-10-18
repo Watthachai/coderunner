@@ -14,7 +14,7 @@ set -euo pipefail
 : "${PROJECT_ID:?set PROJECT_ID}"
 : "${BOOTSTRAP_ADMIN_EMAIL:?set BOOTSTRAP_ADMIN_EMAIL (the first administrator)}"
 image_name="${1:?usage: new-uat.sh crn-demo-<slug>-<id8>}"
-REGION="${REGION:-asia-southeast3}"
+REGION="${REGION:-asia-southeast1}"
 REPO="${REPO:-crn}"
 SQL_INSTANCE="${SQL_INSTANCE:-crn-uat}"
 here="$(cd "$(dirname "$0")" && pwd)"

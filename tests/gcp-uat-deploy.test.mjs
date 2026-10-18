@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 // and ignore every other event. A fake gcloud records what it was asked to do.
 const script = path.resolve('deploy/gcp/uat-deploy.sh');
 const DIGEST = 'sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682';
-const REPO = 'asia-southeast3-docker.pkg.dev/fitt-proj/crn';
+const REPO = 'asia-southeast1-docker.pkg.dev/fitt-proj/crn';
 
 async function run(env, { secrets = [] } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'crn-uat-'));
@@ -23,7 +23,7 @@ case "$*" in
 esac
 exit 0
 `, { mode: 0o755 });
-  const res = spawnSync('bash', [script], { env: { PATH: `${dir}:${process.env.PATH}`, PROJECT_ID: 'fitt-proj', _REGION: 'asia-southeast3', _SQL_INSTANCE: 'fitt-proj:asia-southeast3:crn-uat', _STATUS_URL: 'https://fitt-builder.fittbsa.com/v1/service-status', ...env }, encoding: 'utf8' });
+  const res = spawnSync('bash', [script], { env: { PATH: `${dir}:${process.env.PATH}`, PROJECT_ID: 'fitt-proj', _REGION: 'asia-southeast1', _SQL_INSTANCE: 'fitt-proj:asia-southeast1:crn-uat', _STATUS_URL: 'https://fitt-builder.fittbsa.com/v1/service-status', ...env }, encoding: 'utf8' });
   const calls = (await fs.readFile(log, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
   return { code: res.status, out: res.stdout + res.stderr, calls };
 }
@@ -38,9 +38,9 @@ test('an enrolled project is deployed to its UAT service at the exact digest', a
   for (const want of [
     'run deploy uat-shop-cc0b6195',
     `--image ${REPO}/crn-demo-shop-cc0b6195@${DIGEST}`,
-    '--region asia-southeast3',
+    '--region asia-southeast1',
     '--port 3000',
-    '--add-cloudsql-instances fitt-proj:asia-southeast3:crn-uat',
+    '--add-cloudsql-instances fitt-proj:asia-southeast1:crn-uat',
     // Each project runs as its own account, so one app can never read another's secrets.
     '--service-account crn-uat-cc0b6195@fitt-proj.iam.gserviceaccount.com',
     'DATABASE_URL=uat-shop-cc0b6195-database-url:latest',
@@ -117,7 +117,7 @@ test('setup in dry run prints every step, runs nothing, and never issues a key',
   assert.equal(res.status, 0, res.stderr);
   assert.deepEqual(await g.read(), []);
   const plan = res.stdout;
-  assert.match(plan, /artifacts repositories create crn --repository-format=docker --location=asia-southeast3/);
+  assert.match(plan, /artifacts repositories create crn --repository-format=docker --location=asia-southeast1/);
   assert.match(plan, /pubsub topics create gcr/);
   assert.match(plan, /builds triggers create pubsub --name=crn-uat-deploy/);
   assert.match(plan, /--subscription-filter=_ACTION == "INSERT"/);
@@ -153,7 +153,7 @@ test('enrolling a project keeps every secret value off the command line', async 
   // Values arrive on stdin only.
   const values = calls.filter(l => l.startsWith('STDIN ')).map(l => l.slice(6));
   const url = values.find(v => v.startsWith('postgresql://'));
-  assert.match(url, /^postgresql:\/\/uat_shop_cc0b6195:[a-f0-9]{48}@localhost\/uat_shop_cc0b6195\?host=\/cloudsql\/fitt-proj:asia-southeast3:crn-uat$/);
+  assert.match(url, /^postgresql:\/\/uat_shop_cc0b6195:[a-f0-9]{48}@localhost\/uat_shop_cc0b6195\?host=\/cloudsql\/fitt-proj:asia-southeast1:crn-uat$/);
   const [, dbPassword] = /:([a-f0-9]{48})@/.exec(url);
   const adminPassword = values[3];
   for (const secret of [values[1], adminPassword]) assert.ok(!args.includes(secret), 'a secret value appeared in gcloud arguments');
@@ -162,4 +162,12 @@ test('enrolling a project keeps every secret value off the command line', async 
   assert.match(args, /sql users create uat_shop_cc0b6195 .*--password=/);
   // The first administrator's password is shown once to the operator.
   assert.equal(res.stdout.split(adminPassword).length - 1, 1);
+});
+
+test('setup defaults to Singapore', () => {
+  const res = spawnSync('bash', [path.resolve('deploy/gcp/setup.sh')], { env: { PATH: process.env.PATH, PROJECT_ID: 'fitt-proj', DRY_RUN: '1' }, encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /--location=asia-southeast1 /);
+  assert.match(res.stdout, /--region=asia-southeast1 /);
+  assert.doesNotMatch(res.stdout, /asia-southeast3/);
 });

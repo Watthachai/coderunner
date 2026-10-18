@@ -21,7 +21,7 @@
 # step (README.md, "Build machine").
 set -euo pipefail
 : "${PROJECT_ID:?set PROJECT_ID}"
-REGION="${REGION:-asia-southeast3}"
+REGION="${REGION:-asia-southeast1}"
 REPO="${REPO:-crn}"
 SQL_INSTANCE="${SQL_INSTANCE:-crn-uat}"
 SQL_TIER="${SQL_TIER:-db-custom-1-3840}"
