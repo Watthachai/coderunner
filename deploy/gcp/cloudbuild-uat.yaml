@@ -1,85 +1,400 @@
-# Deploy-only Cloud Build config for the UAT trigger (deploy/gcp/setup.sh creates it).
-# Fired by Artifact Registry's "gcr" Pub/Sub topic; never builds an image. The step
-# script is deploy/gcp/uat-deploy.sh verbatim — tests/gcp-uat-deploy.test.mjs keeps
-# the two identical. With a script step and automapSubstitutions, Cloud Build hands
-# the substitutions to the script as environment variables and leaves its $ alone.
+# Deploy-only Cloud Build config for CRN's deploy side (deploy/gcp/setup.sh creates two
+# triggers on it: crn-uat-deploy on the "gcr" topic and crn-uat-sweep on "crn-sweep").
+# It never builds an image. The step script is deploy/gcp/uat-deploy.sh verbatim —
+# tests/gcp-uat-deploy.test.mjs keeps the two identical. With a script step and
+# automapSubstitutions, Cloud Build hands the substitutions to the script as
+# environment variables and leaves its $ alone.
 steps:
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     script: |
       #!/usr/bin/env bash
-      # Deploys a newly mirrored Code Runner image to its project's UAT Cloud Run service.
-      # Runs in Cloud Build — deploy/gcp/cloudbuild-uat.yaml embeds this file verbatim —
-      # when Artifact Registry announces an image on the "gcr" Pub/Sub topic. It never
-      # builds anything: it deploys the exact digest Code Runner tested and reported.
+      # CRN's deploy side on GCP. Cloud Build runs it — deploy/gcp/cloudbuild-uat.yaml
+      # embeds this file verbatim — when Artifact Registry announces an image on the
+      # "gcr" topic (_ACTION=INSERT) and every five minutes from the "crn-sweep" topic
+      # (_ACTION=SWEEP). It never builds anything: it deploys the exact digest Code
+      # Runner tested.
+      #
+      # For each image it asks FITT Builder whether the project was sent as "cloud". A
+      # cloud project is registered on first use — its own runtime account, a database
+      # closed to every other project, secrets, an uploads bucket — then deployed; a new
+      # revision gets traffic only after /api/health answers. Every step is reported to
+      # FITT Builder, which shows it on the project. The sweep picks up projects that
+      # switched to cloud after their last build, and retries ones that failed.
       #
       # Env (substitutions, automapped): _ACTION, _DIGEST, _TAG from the event; _REGION,
-      # _SQL_INSTANCE, _STATUS_URL from the trigger. PROJECT_ID is Cloud Build's own.
-      #
-      # A project is enrolled in UAT once deploy/gcp/new-uat.sh has created its secrets.
-      # Every other image is skipped, so all images in the repository share one trigger.
-      set -euo pipefail
+      # _SQL_INSTANCE, _STATUS_URL, _FB_URL, _REPO from the trigger. PROJECT_ID is Cloud
+      # Build's own. promote.sh sources this file with CRN_DEPLOY_LIB=1 and STAGE=production.
+      set -eEuo pipefail
 
-      if [ "${_ACTION:-}" != "INSERT" ] || [ -z "${_TAG:-}" ]; then
-        echo "skip: not a newly tagged image (action=${_ACTION:-none} tag=${_TAG:-none})"
-        exit 0
-      fi
-      if ! [[ "${_DIGEST:-}" =~ ^([a-z0-9.-]+-docker\.pkg\.dev/[^@]+)@(sha256:[a-f0-9]{64})$ ]]; then
-        echo "skip: the event carries no image digest (${_DIGEST:-none})"
-        exit 0
-      fi
-      image="${BASH_REMATCH[1]}"
-      digest="${BASH_REMATCH[2]}"
+      STAGE="${STAGE:-uat}"
+      HEALTH_TRIES="${HEALTH_TRIES:-48}"
+      HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
+      PROXY_VERSION="${PROXY_VERSION:-v2.11.0}"
+      MIN_INSTANCES="${MIN_INSTANCES:-0}"
+      DEPLOYER="crn-uat-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
 
-      # crn-demo-<slug>-<id8> -> uat-<slug>-<id8>, at most 49 characters (Cloud Run's
-      # limit), keeping the project id suffix so two projects never share a service.
-      name="${image##*/}"
-      name="${name#crn-demo-}"
-      name="$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-')"
-      if [[ "$name" == *-* ]]; then
-        id="${name##*-}"
-        base="uat-${name%-*}"
-        base="${base:0:$((48 - ${#id}))}"
-        while [[ "$base" == *- ]]; do base="${base%-}"; done
-        service="${base}-${id}"
-      else
-        id="$name"
-        service="uat-${name}"
-        service="${service:0:49}"
-      fi
-      # Each project's app runs as its own service account (created by new-uat.sh), which
-      # may read only that project's secrets: one app can never read another's.
-      runtime="crn-uat-${id}"
-      runtime="${runtime:0:30}"
-      while [[ "${runtime}" == *- ]]; do runtime="${runtime%-}"; done
-      # new-uat.sh asks this script for both names, so the two never disagree.
-      if [ -n "${PRINT_SERVICE:-}" ]; then echo "${service} ${runtime}"; exit 0; fi
-      echo "checking ${service} for ${image}@${digest}"
+      # jget KEY...: the value at that path in the JSON document on stdin, "" when absent;
+      # objects and lists come back as JSON.
+      jget() { python3 -c 'import json, sys
+      v = json.load(sys.stdin)
+      for k in sys.argv[1:]:
+          v = v.get(k) if isinstance(v, dict) else None
+      print("" if v is None else (v if isinstance(v, str) else json.dumps(v)))' "$@"; }
 
-      has_secret() { gcloud secrets describe "${service}-$1" --project "${PROJECT_ID}" >/dev/null 2>&1; }
-      if ! has_secret database-url || ! has_secret auth-secret; then
-        echo "skip: ${service} is not enrolled in UAT (run deploy/gcp/new-uat.sh for it)"
-        exit 0
-      fi
-      secrets="DATABASE_URL=${service}-database-url:latest,AUTH_SECRET=${service}-auth-secret:latest"
-      if has_secret bootstrap-admin-email; then secrets+=",BOOTSTRAP_ADMIN_EMAIL=${service}-bootstrap-admin-email:latest"; fi
-      if has_secret bootstrap-admin-password; then secrets+=",BOOTSTRAP_ADMIN_PASSWORD=${service}-bootstrap-admin-password:latest"; fi
-      if has_secret license-key; then secrets+=",FITT_LICENSE_KEY=${service}-license-key:latest"; fi
+      # names IMAGE: the Cloud Run service, runtime account, database and bucket of the
+      # project an image belongs to. crn-demo-<slug>-<id8> -> uat-<slug>-<id8>, at most
+      # 49 characters (Cloud Run's limit), keeping the project id suffix so two projects
+      # never share anything.
+      names() {
+        local name prefix="uat" base
+        [ "${STAGE}" = production ] && prefix="prod"
+        name="${1##*/}"
+        name="${name#crn-demo-}"
+        name="$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-')"
+        if [[ "$name" == *-* ]]; then
+          id8="${name##*-}"
+          base="${prefix}-${name%-*}"
+          base="${base:0:$((48 - ${#id8}))}"
+          while [[ "$base" == *- ]]; do base="${base%-}"; done
+          service="${base}-${id8}"
+        else
+          id8="$name"
+          service="${prefix}-${name}"
+          service="${service:0:49}"
+        fi
+        runtime="crn-${prefix}-${id8}"
+        runtime="${runtime:0:30}"
+        while [[ "${runtime}" == *- ]]; do runtime="${runtime%-}"; done
+        runtime_email="${runtime}@${PROJECT_ID}.iam.gserviceaccount.com"
+        db="$(printf '%s' "${service}" | tr '-' '_')"
+        bucket="${PROJECT_ID}-${prefix}-${id8}-uploads"
+        bucket="${bucket:0:63}"
+        if [ "${STAGE}" = production ]; then
+          sql_instance="crn-prod-${id8}"
+          connection="${PROJECT_ID}:${_REGION}:${sql_instance}"
+          postgres_secret="${service}-postgres-password"
+        else
+          connection="${_SQL_INSTANCE}"
+          sql_instance="${_SQL_INSTANCE##*:}"
+          postgres_secret="crn-uat-postgres-password"
+        fi
+      }
 
-      gcloud run deploy "${service}" \
-        --project "${PROJECT_ID}" \
-        --image "${image}@${digest}" \
-        --region "${_REGION}" \
-        --port 3000 \
-        --service-account "${runtime}@${PROJECT_ID}.iam.gserviceaccount.com" \
-        --add-cloudsql-instances "${_SQL_INSTANCE}" \
-        --set-secrets "${secrets}" \
-        --set-env-vars "FITT_STATUS_URL=${_STATUS_URL}" \
-        --allow-unauthenticated \
-        --min-instances 0 --max-instances 3 --cpu 1 --memory 1Gi \
-        --labels "crn-project=${id},crn-stage=uat" \
-        --quiet
-      url="$(gcloud run services describe "${service}" --project "${PROJECT_ID}" --region "${_REGION}" --format 'value(status.url)')"
-      echo "UAT ready: ${url} (${image}@${digest})"
+      # image_labels IMAGE DIGEST: the image's labels (CRN writes them at build time) as
+      # JSON, read from the registry: manifest -> config blob -> config.Labels.
+      image_labels() {
+        local host="${1%%/*}" repo="${1#*/}" token manifest config
+        token="$(gcloud auth print-access-token)"
+        manifest="$(curl -fsS --max-time 20 -H "Authorization: Bearer ${token}" \
+          -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+          "https://${host}/v2/${repo}/manifests/$2")"
+        config="$(printf '%s' "$manifest" | jget config digest)"
+        local found
+        found="$(curl -fsSL --max-time 20 -H "Authorization: Bearer ${token}" "https://${host}/v2/${repo}/blobs/${config}" | jget config Labels)"
+        if [ -n "${found}" ]; then printf '%s' "${found}"; else printf '{}'; fi
+      }
+      label() { printf '%s' "$labels" | jget "$1"; }
+
+      # fb METHOD PATH: FITT Builder's deploy API (body on stdin for POST). Any answer
+      # other than 2xx is a failure.
+      fb() {
+        if [ -z "${FB_TOKEN:-}" ]; then
+          FB_TOKEN="$(gcloud secrets versions access latest --secret=crn-deploy-fb-token --project="${PROJECT_ID}")"
+        fi
+        if [ "$1" = POST ]; then
+          curl -fsS --max-time 20 -X POST -H "Authorization: Bearer ${FB_TOKEN}" -H 'content-type: application/json' \
+            --data-binary @- "${_FB_URL%/}/v1/integrations/deploy$2"
+        else
+          curl -fsS --max-time 20 -H "Authorization: Bearer ${FB_TOKEN}" "${_FB_URL%/}/v1/integrations/deploy$2"
+        fi
+      }
+
+      # event STAGE [MESSAGE]: report to FITT Builder. EV_BUILD, EV_DIGEST, EV_URL and
+      # EV_PASSWORD are added when set. The body is built by python, never by the shell.
+      event() {
+        EV_ENV="${STAGE}" EV_STAGE="$1" EV_MESSAGE="${2:-}" EV_BUILD="${EV_BUILD:-}" EV_DIGEST="${EV_DIGEST:-}" \
+        EV_URL="${EV_URL:-}" EV_PASSWORD="${EV_PASSWORD:-}" python3 -c 'import json, os
+      b = {"env": os.environ["EV_ENV"], "stage": os.environ["EV_STAGE"], "message": os.environ["EV_MESSAGE"][:2000]}
+      for var, key in (("EV_BUILD", "build_no"), ("EV_DIGEST", "digest"), ("EV_URL", "url"), ("EV_PASSWORD", "initial_admin_password")):
+          v = os.environ[var]
+          if v:
+              b[key] = int(v) if key == "build_no" else v
+      print(json.dumps(b))' | fb POST "/projects/${pid}/events" >/dev/null
+      }
+
+      has_secret() { gcloud secrets describe "${service}-$1" --project="${PROJECT_ID}" >/dev/null 2>&1; }
+      secret_label() { gcloud secrets describe "${service}-$1" --project="${PROJECT_ID}" --format="value(labels.$2)" 2>/dev/null || true; }
+      read_secret() { gcloud secrets versions access latest --secret="${service}-$1" --project="${PROJECT_ID}"; }
+      # put_secret NAME: value on stdin, readable by this project's runtime account only.
+      put_secret() {
+        gcloud secrets create "${service}-$1" --project="${PROJECT_ID}" --replication-policy=automatic --data-file=- >/dev/null
+        gcloud secrets add-iam-policy-binding "${service}-$1" --project="${PROJECT_ID}" \
+          --member="serviceAccount:${runtime_email}" --role=roles/secretmanager.secretAccessor >/dev/null
+      }
+      random_hex() { openssl rand -hex "$1" | tr -d '\n'; }
+
+      # close_database: owner first, then PUBLIC loses CONNECT. gcloud creates every
+      # database owned by cloudsqlsuperuser, of which every gcloud-created user is a
+      # member, so until this runs any project's user could connect to any database.
+      close_database() {
+        local proxy proxy_pid admin_pw ok="" rc=0
+        command -v psql >/dev/null 2>&1 || { apt-get update -qq >/dev/null && apt-get install -y -qq postgresql-client >/dev/null; }
+        proxy="$(command -v cloud-sql-proxy || true)"
+        if [ -z "$proxy" ]; then
+          proxy=/tmp/cloud-sql-proxy
+          curl -fsSL -o "$proxy" "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/${PROXY_VERSION}/cloud-sql-proxy.linux.amd64"
+          chmod +x "$proxy"
+        fi
+        "$proxy" --port 15432 "${connection}" >/tmp/cloud-sql-proxy.log 2>&1 &
+        proxy_pid=$!
+        admin_pw="$(gcloud secrets versions access latest --secret="${postgres_secret}" --project="${PROJECT_ID}")"
+        for _ in $(seq 1 30); do
+          if PGPASSWORD="$admin_pw" psql -h 127.0.0.1 -p 15432 -U postgres -d postgres -tAc 'select 1' >/dev/null 2>&1; then ok=1; break; fi
+          sleep 1
+        done
+        if [ -z "$ok" ]; then kill "$proxy_pid" 2>/dev/null || true; echo "Cloud SQL Auth Proxy did not connect" >&2; return 1; fi
+        PGPASSWORD="$admin_pw" psql -h 127.0.0.1 -p 15432 -U postgres -d postgres -v ON_ERROR_STOP=1 -v db="${db}" -f - <<'SQL' || rc=$?
+      ALTER DATABASE :"db" OWNER TO :"db";
+      REVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;
+      SQL
+        kill "$proxy_pid" 2>/dev/null || true
+        return "$rc"
+      }
+
+      # register: everything a project needs before its first deploy. Each step creates
+      # only what is missing, so a run that died half way is finished by the next one.
+      register() {
+        step="บัญชีของแอป"
+        gcloud iam service-accounts describe "${runtime_email}" --project="${PROJECT_ID}" >/dev/null 2>&1 \
+          || gcloud iam service-accounts create "${runtime}" --project="${PROJECT_ID}" --display-name="${STAGE} app ${service}" >/dev/null
+        gcloud projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
+          --member="serviceAccount:${runtime_email}" --role=roles/cloudsql.client >/dev/null
+        gcloud iam service-accounts add-iam-policy-binding "${runtime_email}" --project="${PROJECT_ID}" \
+          --member="serviceAccount:${DEPLOYER}" --role=roles/iam.serviceAccountUser >/dev/null
+
+        step="ฐานข้อมูล"
+        gcloud sql databases describe "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" >/dev/null 2>&1 \
+          || gcloud sql databases create "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" >/dev/null
+        if ! has_secret database-url; then
+          local pw
+          pw="$(random_hex 24)"
+          # gcloud takes a SQL user's password only as a flag; it is random, used once,
+          # and then lives only in Secret Manager.
+          if [ -n "$(gcloud sql users list --instance="${sql_instance}" --project="${PROJECT_ID}" --filter="name=${db}" --format='value(name)')" ]; then
+            gcloud sql users set-password "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" --password="${pw}" >/dev/null
+          else
+            gcloud sql users create "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" --password="${pw}" >/dev/null
+          fi
+          printf 'postgresql://%s:%s@localhost/%s?host=/cloudsql/%s' "${db}" "${pw}" "${db}" "${connection}" | put_secret database-url
+        fi
+
+        step="รหัสลับ"
+        has_secret auth-secret || random_hex 32 | put_secret auth-secret
+        has_secret cron-secret || random_hex 32 | put_secret cron-secret
+        has_secret bootstrap-admin-email || printf '%s' "${admin_email}" | put_secret bootstrap-admin-email
+        has_secret bootstrap-admin-password || random_hex 12 | put_secret bootstrap-admin-password
+
+        step="ปิดฐานข้อมูลจากโปรเจกต์อื่น"
+        if [ "$(secret_label database-url closed)" != yes ]; then
+          close_database
+          gcloud secrets update "${service}-database-url" --project="${PROJECT_ID}" --update-labels=closed=yes >/dev/null
+        fi
+
+        step="ที่เก็บไฟล์อัปโหลด"
+        gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" >/dev/null 2>&1 \
+          || gcloud storage buckets create "gs://${bucket}" --project="${PROJECT_ID}" --location="${_REGION}" --uniform-bucket-level-access >/dev/null
+        gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
+          --member="serviceAccount:${runtime_email}" --role=roles/storage.objectAdmin >/dev/null
+      }
+
+      # health URL: true once URL/api/health answers 200.
+      health() {
+        local code
+        for _ in $(seq 1 "${HEALTH_TRIES}"); do
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$1/api/health" || true)"
+          [ "$code" = 200 ] && return 0
+          sleep "${HEALTH_INTERVAL}"
+        done
+        return 1
+      }
+
+      recent_logs() {
+        gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=${service}" \
+          --project="${PROJECT_ID}" --limit=20 --freshness=15m --format='value(textPayload)' 2>/dev/null | tail -20 || true
+      }
+
+      # deploy_service IMAGE DIGEST: false when the new revision does not become healthy;
+      # traffic then stays on the revision that served before. Sets url.
+      deploy_service() {
+        local secrets="DATABASE_URL=${service}-database-url:latest,AUTH_SECRET=${service}-auth-secret:latest,CRON_SECRET=${service}-cron-secret:latest"
+        secrets+=",BOOTSTRAP_ADMIN_EMAIL=${service}-bootstrap-admin-email:latest,BOOTSTRAP_ADMIN_PASSWORD=${service}-bootstrap-admin-password:latest"
+        if has_secret license-key; then secrets+=",FITT_LICENSE_KEY=${service}-license-key:latest"; fi
+        local common=(--project "${PROJECT_ID}" --image "$1@$2" --region "${_REGION}" --port 3000
+          --service-account "${runtime_email}" --add-cloudsql-instances "${connection}" --set-secrets "${secrets}"
+          --set-env-vars "FITT_STATUS_URL=${_STATUS_URL},CRN_SCHEDULER=external" --allow-unauthenticated
+          --min-instances "${MIN_INSTANCES}" --max-instances 3 --cpu 1 --memory 1Gi
+          --labels "crn-project=${id8},crn-stage=${STAGE}" --quiet)
+        local where=(--project "${PROJECT_ID}" --region "${_REGION}")
+        if gcloud run services describe "${service}" "${where[@]}" >/dev/null 2>&1; then
+          gcloud run deploy "${service}" "${common[@]}" --no-traffic --tag candidate >/dev/null || return 1
+          local candidate revision
+          candidate="$(gcloud run services describe "${service}" "${where[@]}" --format=json | python3 -c 'import json, sys
+      print(next(t["url"] for t in json.load(sys.stdin)["status"]["traffic"] if t.get("tag") == "candidate"))')"
+          health "${candidate}" || return 1
+          revision="$(gcloud run services describe "${service}" "${where[@]}" --format='value(status.latestCreatedRevisionName)')"
+          gcloud run services update-traffic "${service}" "${where[@]}" --to-revisions "${revision}=100" --quiet >/dev/null
+        else
+          gcloud run deploy "${service}" "${common[@]}" --execution-environment gen2 \
+            --add-volume "name=uploads,type=cloud-storage,bucket=${bucket}" \
+            --add-volume-mount "volume=uploads,mount-path=/data/uploads" >/dev/null || return 1
+          health "$(gcloud run services describe "${service}" "${where[@]}" --format='value(status.url)')" || return 1
+        fi
+        url="$(gcloud run services describe "${service}" "${where[@]}" --format='value(status.url)')"
+      }
+
+      # sync_schedule SCHEDULE_JSON: one Cloud Scheduler job per entry of the app's
+      # crn.schedule.json, calling it with the project's CRON_SECRET; this service's
+      # jobs that the schedule no longer has are deleted.
+      sync_schedule() {
+        local secret want=" " name cron job args
+        local where=(--project "${PROJECT_ID}" --location "${_REGION}")
+        secret="$(read_secret cron-secret)"
+        while IFS=$'\t' read -r name cron; do
+          [ -n "$name" ] || continue
+          job="${service}-${name}"
+          want+="${job} "
+          args=("${where[@]}" --schedule "${cron}" --time-zone Asia/Bangkok --uri "${url}/api/cron/${name}" --http-method POST)
+          if gcloud scheduler jobs describe "${job}" "${where[@]}" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "${job}" "${args[@]}" --update-headers "x-cron-secret=${secret}" >/dev/null
+          else
+            gcloud scheduler jobs create http "${job}" "${args[@]}" --headers "x-cron-secret=${secret}" >/dev/null
+          fi
+        done < <(printf '%s' "$1" | python3 -c 'import json, sys
+      for e in json.load(sys.stdin):
+          if "every_minutes" in e:
+              n = e["every_minutes"]
+              cron = "0 * * * *" if n == 60 else "*/%d * * * *" % n
+          else:
+              h, m = e["daily_at"].split(":")
+              cron = "%d %d * * *" % (int(m), int(h))
+          print(e["name"] + "\t" + cron)')
+        for job in $(gcloud scheduler jobs list "${where[@]}" --filter="name~/jobs/${service}-" --format='value(name)'); do
+          job="${job##*/}"
+          [[ "${job}" == "${service}-"* ]] || continue
+          [[ "${want}" == *" ${job} "* ]] || gcloud scheduler jobs delete "${job}" "${where[@]}" --quiet >/dev/null
+        done
+      }
+
+      on_error() {
+        trap - ERR
+        if [ -n "${reporting:-}" ]; then
+          EV_DIGEST="" EV_URL="" EV_PASSWORD="" event failed "ขั้น${step:+ ${step}} ล้ม ดูรายละเอียดใน log ของ Cloud Build" || true
+        fi
+        exit 1
+      }
+
+      # deploy_one IMAGE DIGEST: everything for one image, from its labels to "ready".
+      deploy_one() {
+        local image="$1" digest="$2" target contract schedule
+        reporting="" step="อ่าน label ของ image"
+        trap on_error ERR
+        names "${image}"
+        labels="$(image_labels "${image}" "${digest}")"
+        pid="$(label fitt.crn.project_id)"
+        if [ -z "${pid}" ]; then echo "skip: ${image}@${digest} has no project label (built before CRN labelled images)"; return 0; fi
+
+        step="ถาม FITT Builder"
+        project="$(fb GET "/projects/${pid}")"
+        target="$(printf '%s' "$project" | jget target)"
+        if [ "${target}" != cloud ]; then echo "skip: project ${pid} is local"; return 0; fi
+        admin_email="$(printf '%s' "$project" | jget admin_email)"
+        reporting=1
+        EV_BUILD="$(label fitt.crn.build_no)"
+        EV_DIGEST="${digest}"
+        contract="$(label fitt.crn.contract)"
+        if [ "${contract:-0}" -lt 1 ] 2>/dev/null || [ -z "${contract}" ]; then
+          event failed "image รุ่นเก่า ต้อง build ใหม่หนึ่งครั้งก่อนขึ้น cloud (image นี้สร้างก่อน CRN มีกฎให้แอปรันได้ทุกที่)"
+          return 0
+        fi
+        echo "deploying ${image}@${digest} as ${service} (project ${pid})"
+
+        if ! has_secret database-url; then event registering; fi
+        register
+
+        step="ขึ้น ${STAGE}"
+        event deploying
+        if ! deploy_service "${image}" "${digest}"; then
+          event failed "build ใหม่ขึ้นไม่สำเร็จ ยังใช้ build ก่อนหน้า: /api/health ไม่ตอบ 200
+      $(recent_logs)"
+          return 0
+        fi
+
+        step="ตั้งเวลางาน"
+        schedule="$(label fitt.crn.schedule)"
+        sync_schedule "${schedule:-[]}"
+
+        step="แจ้ง FITT Builder"
+        local password=""
+        if [ "$(secret_label bootstrap-admin-password delivered)" != yes ]; then password="$(read_secret bootstrap-admin-password)"; fi
+        EV_URL="${url}" EV_PASSWORD="${password}" event ready
+        if [ -n "${password}" ]; then
+          gcloud secrets update "${service}-bootstrap-admin-password" --project="${PROJECT_ID}" --update-labels=delivered=yes >/dev/null
+        fi
+        echo "${STAGE} ready: ${url} (${image}@${digest})"
+      }
+
+      # sweep: every project FITT Builder says waits for cloud gets its newest image.
+      # Each runs in a subshell with errexit on (not in an || list, where bash would
+      # ignore it), so one project's failure stops only that project.
+      sweep() {
+        local pending failed=0 p found image digest
+        pending="$(fb GET /pending | python3 -c 'import json, sys
+      for x in json.load(sys.stdin)["projects"]:
+          print(x["project_id"])')"
+        for p in ${pending}; do
+          found="$(gcloud artifacts docker images list "${_REPO}" --include-tags --format=json | ID8="${p:0:8}" python3 -c 'import json, os, re, sys
+      best = None
+      for img in json.load(sys.stdin):
+          if not img["package"].endswith("-" + os.environ["ID8"]):
+              continue
+          tags = img.get("tags") or []
+          if isinstance(tags, str):
+              tags = [t.strip() for t in tags.split(",")]
+          for t in tags:
+              m = re.fullmatch(r"v(\d+)", t)
+              if m and (best is None or int(m.group(1)) > best[0]):
+                  best = (int(m.group(1)), img["package"], img["version"])
+      if best:
+          print(best[1] + " " + best[2])')"
+          if [ -z "${found}" ]; then
+            pid="$p" event waiting_image "ยังไม่มี image ของโปรเจกต์นี้ใน Artifact Registry จะขึ้นเองเมื่อ build เสร็จ" || failed=1
+            continue
+          fi
+          image="${found% *}" digest="${found#* }"
+          set +e
+          ( set -e; deploy_one "${image}" "${digest}" )
+          [ $? -eq 0 ] || failed=1
+          set -e
+        done
+        return "${failed}"
+      }
+
+      main() {
+        if [ "${_ACTION:-}" = SWEEP ]; then sweep; return; fi
+        if [ "${_ACTION:-}" != "INSERT" ] || [ -z "${_TAG:-}" ]; then
+          echo "skip: not a newly tagged image (action=${_ACTION:-none} tag=${_TAG:-none})"
+          return 0
+        fi
+        if ! [[ "${_DIGEST:-}" =~ ^([a-z0-9.-]+-docker\.pkg\.dev/[^@]+)@(sha256:[a-f0-9]{64})$ ]]; then
+          echo "skip: the event carries no image digest (${_DIGEST:-none})"
+          return 0
+        fi
+        local image="${BASH_REMATCH[1]}" digest="${BASH_REMATCH[2]}"
+        if [ -n "${PRINT_SERVICE:-}" ]; then names "${image}"; echo "${service} ${runtime}"; return 0; fi
+        deploy_one "${image}" "${digest}"
+      }
+
+      if [ -z "${CRN_DEPLOY_LIB:-}" ]; then main "$@"; fi
 options:
   automapSubstitutions: true
   logging: CLOUD_LOGGING_ONLY
