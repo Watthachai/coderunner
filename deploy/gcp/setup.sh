@@ -46,7 +46,7 @@ deployer="$(sa crn-uat-deployer)"
 run gcloud config set project "${PROJECT_ID}"
 run gcloud services enable artifactregistry.googleapis.com run.googleapis.com sqladmin.googleapis.com \
   secretmanager.googleapis.com cloudbuild.googleapis.com pubsub.googleapis.com iam.googleapis.com \
-  cloudscheduler.googleapis.com storage.googleapis.com logging.googleapis.com
+  cloudscheduler.googleapis.com storage.googleapis.com logging.googleapis.com cloudresourcemanager.googleapis.com
 keep gcloud artifacts repositories create "${REPO}" --repository-format=docker --location="${REGION}" \
   --description="Code Runner images, mirrored with their digests unchanged"
 cleanup="$(mktemp)"

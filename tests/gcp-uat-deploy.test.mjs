@@ -302,6 +302,8 @@ test('setup creates the sweep, its trigger, the secrets and the limited deployer
   ]) assert.match(plan, want);
   // An empty substitution value may be refused, and keep() would hide it as "already exists".
   assert.doesNotMatch(plan, /_[A-Z]+=,/);
+  // The deployer's gcloud projects add-iam-policy-binding needs Cloud Resource Manager (found on the first real run).
+  assert.match(plan.split('\n').find(l => l.includes('services enable')), /cloudresourcemanager\.googleapis\.com/);
 });
 
 test('setup defaults to Singapore', () => {
