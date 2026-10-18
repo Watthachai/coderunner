@@ -134,6 +134,25 @@ test('an unhealthy candidate keeps traffic where it was', async () => {
   assert.equal((await w.state()).services[SVC].serving, `${SVC}-00001-abc`);
 });
 
+test('a traffic move that fails is reported as failed, never ready', async () => {
+  const w = await world(seed({ labels: { [SHOP]: labelsFor() }, projects: cloud(), ...registered, secrets: withSecrets(), trafficFails: true,
+    services: { [SVC]: { rev: 1, serving: `${SVC}-00001-abc`, image: 'old' } } }));
+  assert.equal(w.run(SCRIPT, insert(SHOP)).code, 0);
+  const evs = await w.events();
+  assert.ok(!evs.some(e => e.stage === 'ready'), JSON.stringify(evs));
+  assert.equal(evs.at(-1).stage, 'failed');
+  assert.match(evs.at(-1).message, /ย้าย traffic/);
+  assert.ok(!(await w.gcloud()).some(c => c.startsWith('scheduler jobs create')));
+});
+
+test('every run grants the app its secrets again, so a binding that failed once is repaired', async () => {
+  const w = await world(seed({ labels: { [SHOP]: labelsFor() }, projects: cloud(), ...registered, secrets: withSecrets(),
+    services: { [SVC]: { rev: 1, serving: `${SVC}-00001-abc`, image: 'old' } } }));
+  assert.equal(w.run(SCRIPT, insert(SHOP)).code, 0);
+  const grants = (await w.gcloud()).filter(c => c.startsWith('secrets add-iam-policy-binding ')).map(c => c.split(' ')[2]);
+  assert.deepEqual(grants.sort(), ['auth-secret', 'bootstrap-admin-email', 'bootstrap-admin-password', 'cron-secret', 'database-url'].map(n => `${SVC}-${n}`));
+});
+
 test('a revision that never starts is reported, and nothing else changes', async () => {
   const w = await world(seed({ labels: { [SHOP]: labelsFor() }, projects: cloud(), ...registered, secrets: withSecrets(), deployFails: true,
     services: { [SVC]: { rev: 1, serving: `${SVC}-00001-abc`, image: 'old' } } }));
@@ -281,6 +300,8 @@ test('setup creates the sweep, its trigger, the secrets and the limited deployer
     /roles\/iam\.serviceAccountAdmin --condition=.*crn-uat-/,
     /artifacts repositories set-cleanup-policies crn/,
   ]) assert.match(plan, want);
+  // An empty substitution value may be refused, and keep() would hide it as "already exists".
+  assert.doesNotMatch(plan, /_[A-Z]+=,/);
 });
 
 test('setup defaults to Singapore', () => {

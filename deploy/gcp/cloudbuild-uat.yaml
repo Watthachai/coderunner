@@ -125,9 +125,13 @@ steps:
       has_secret() { gcloud secrets describe "${service}-$1" --project="${PROJECT_ID}" >/dev/null 2>&1; }
       secret_label() { gcloud secrets describe "${service}-$1" --project="${PROJECT_ID}" --format="value(labels.$2)" 2>/dev/null || true; }
       read_secret() { gcloud secrets versions access latest --secret="${service}-$1" --project="${PROJECT_ID}"; }
-      # put_secret NAME: value on stdin, readable by this project's runtime account only.
+      # put_secret NAME: value on stdin. register grants it to the app's account afterwards,
+      # on every run, so a grant that failed once (a new account is not visible to IAM at
+      # once) is repaired by the next run instead of breaking every deploy.
       put_secret() {
         gcloud secrets create "${service}-$1" --project="${PROJECT_ID}" --replication-policy=automatic --data-file=- >/dev/null
+      }
+      grant_secret() {
         gcloud secrets add-iam-policy-binding "${service}-$1" --project="${PROJECT_ID}" \
           --member="serviceAccount:${runtime_email}" --role=roles/secretmanager.secretAccessor >/dev/null
       }
@@ -175,8 +179,12 @@ steps:
           || gcloud iam service-accounts create "${runtime}" --project="${PROJECT_ID}" --display-name="${STAGE} app ${service}" >/dev/null
         gcloud projects add-iam-policy-binding "${PROJECT_ID}" --condition=None \
           --member="serviceAccount:${runtime_email}" --role=roles/cloudsql.client >/dev/null
-        gcloud iam service-accounts add-iam-policy-binding "${runtime_email}" --project="${PROJECT_ID}" \
-          --member="serviceAccount:${DEPLOYER}" --role=roles/iam.serviceAccountUser >/dev/null
+        # The automatic deployer may act as UAT accounts only: production moves on a
+        # person's command (promote.sh), never on an image or a sweep.
+        if [ "${STAGE}" != production ]; then
+          gcloud iam service-accounts add-iam-policy-binding "${runtime_email}" --project="${PROJECT_ID}" \
+            --member="serviceAccount:${DEPLOYER}" --role=roles/iam.serviceAccountUser >/dev/null
+        fi
 
         step="ฐานข้อมูล"
         gcloud sql databases describe "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" >/dev/null 2>&1 \
@@ -199,6 +207,7 @@ steps:
         has_secret cron-secret || random_hex 32 | put_secret cron-secret
         has_secret bootstrap-admin-email || printf '%s' "${admin_email}" | put_secret bootstrap-admin-email
         has_secret bootstrap-admin-password || random_hex 12 | put_secret bootstrap-admin-password
+        for name in database-url auth-secret cron-secret bootstrap-admin-email bootstrap-admin-password; do grant_secret "${name}"; done
 
         step="ปิดฐานข้อมูลจากโปรเจกต์อื่น"
         if [ "$(secret_label database-url closed)" != yes ]; then
@@ -229,8 +238,10 @@ steps:
           --project="${PROJECT_ID}" --limit=20 --freshness=15m --format='value(textPayload)' 2>/dev/null | tail -20 || true
       }
 
-      # deploy_service IMAGE DIGEST: false when the new revision does not become healthy;
-      # traffic then stays on the revision that served before. Sets url.
+      # deploy_service IMAGE DIGEST: false when the new revision does not start, is not
+      # healthy or does not get the traffic; traffic then stays on the revision that served
+      # before, and why says which. Sets url. It runs as an if condition, where bash
+      # ignores errexit, so every step that matters checks itself.
       deploy_service() {
         local secrets="DATABASE_URL=${service}-database-url:latest,AUTH_SECRET=${service}-auth-secret:latest,CRON_SECRET=${service}-cron-secret:latest"
         secrets+=",BOOTSTRAP_ADMIN_EMAIL=${service}-bootstrap-admin-email:latest,BOOTSTRAP_ADMIN_PASSWORD=${service}-bootstrap-admin-password:latest"
@@ -242,20 +253,25 @@ steps:
           --labels "crn-project=${id8},crn-stage=${STAGE}" --quiet)
         local where=(--project "${PROJECT_ID}" --region "${_REGION}")
         if gcloud run services describe "${service}" "${where[@]}" >/dev/null 2>&1; then
+          why="revision ใหม่ไม่ขึ้น"
           gcloud run deploy "${service}" "${common[@]}" --no-traffic --tag candidate >/dev/null || return 1
           local candidate revision
           candidate="$(gcloud run services describe "${service}" "${where[@]}" --format=json | python3 -c 'import json, sys
-      print(next(t["url"] for t in json.load(sys.stdin)["status"]["traffic"] if t.get("tag") == "candidate"))')"
+      print(next(t["url"] for t in json.load(sys.stdin)["status"]["traffic"] if t.get("tag") == "candidate"))')" || return 1
+          why="/api/health ไม่ตอบ 200"
           health "${candidate}" || return 1
-          revision="$(gcloud run services describe "${service}" "${where[@]}" --format='value(status.latestCreatedRevisionName)')"
-          gcloud run services update-traffic "${service}" "${where[@]}" --to-revisions "${revision}=100" --quiet >/dev/null
+          why="ย้าย traffic ไป revision ใหม่ไม่สำเร็จ"
+          revision="$(gcloud run services describe "${service}" "${where[@]}" --format='value(status.latestCreatedRevisionName)')" || return 1
+          gcloud run services update-traffic "${service}" "${where[@]}" --to-revisions "${revision}=100" --quiet >/dev/null || return 1
         else
+          why="revision แรกไม่ขึ้น"
           gcloud run deploy "${service}" "${common[@]}" --execution-environment gen2 \
             --add-volume "name=uploads,type=cloud-storage,bucket=${bucket}" \
             --add-volume-mount "volume=uploads,mount-path=/data/uploads" >/dev/null || return 1
+          why="/api/health ไม่ตอบ 200"
           health "$(gcloud run services describe "${service}" "${where[@]}" --format='value(status.url)')" || return 1
         fi
-        url="$(gcloud run services describe "${service}" "${where[@]}" --format='value(status.url)')"
+        url="$(gcloud run services describe "${service}" "${where[@]}" --format='value(status.url)')" || return 1
       }
 
       # sync_schedule SCHEDULE_JSON: one Cloud Scheduler job per entry of the app's
@@ -329,8 +345,9 @@ steps:
 
         step="ขึ้น ${STAGE}"
         event deploying
+        why=""
         if ! deploy_service "${image}" "${digest}"; then
-          event failed "build ใหม่ขึ้นไม่สำเร็จ ยังใช้ build ก่อนหน้า: /api/health ไม่ตอบ 200
+          event failed "build ใหม่ขึ้นไม่สำเร็จ ยังใช้ build ก่อนหน้า: ${why}
       $(recent_logs)"
           return 0
         fi
