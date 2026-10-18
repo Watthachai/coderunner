@@ -121,7 +121,7 @@ func TestMirrorImageAgainstRealRegistries(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "x.txt"), []byte(t.Name()), 0o644)
 	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\nCOPY x.txt /x.txt\n"), 0o644)
 	src, dest := "localhost:15011/fitt/crn-demo-test:v1", "localhost:15012/gcp/crn-demo-test:v1"
-	if err := BuildImage(ctx, dir, "Dockerfile", src, discardLogger()); err != nil {
+	if err := BuildImage(ctx, dir, "Dockerfile", src, nil, discardLogger()); err != nil {
 		t.Fatal(err)
 	}
 	if err := PushImage(ctx, src, discardLogger()); err != nil {

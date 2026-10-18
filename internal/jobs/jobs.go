@@ -789,7 +789,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// deliverable: if it can't be built/pushed, FAIL the build rather than
 	// releasing with a "branch:main" tag that would make a consumer fall back to
 	// git-cloning the source repo. (When image mode is off, this is a no-op.)
-	if err := m.buildAndPushImage(runCtx, workDir, spec, job, log); err != nil {
+	if err := m.buildAndPushImage(runCtx, workDir, spec, job, commitSHA, log); err != nil {
 		log.Error("image build failed; failing the build", "err", err)
 		if runCtx.Err() != nil && ctx.Err() == nil {
 			m.finishCancelled(ctx, job, meta)
@@ -1061,7 +1061,7 @@ func (m *manager) mirrorImage(ctx context.Context, appTag string, job *domain.Jo
 	m.publish(job.ID, domain.BuildEventMsg{Kind: domain.WSAssistantText, Text: text, JobID: job.ID.String(), Timestamp: time.Now().UTC()})
 }
 
-func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, log *slog.Logger) error {
+func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, commitSHA string, log *slog.Logger) error {
 	if !m.buildImage {
 		return nil
 	}
@@ -1071,9 +1071,17 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	}
 	m.publishPhase(job.ID, "docker")
 	appTag := m.imageTag(spec, job)
+	schedule, err := buildstep.ReadSchedule(workDir)
+	if err != nil {
+		return err
+	}
+	labels := buildstep.ImageLabels{
+		ProjectID: job.ProjectID.String(), JobID: job.ID.String(), Commit: commitSHA,
+		BuildNo: job.BuildNo, Schedule: schedule,
+	}.Map()
 
 	// App image (opaque, self-migrating) — REQUIRED. Build failure fails the build.
-	if err := buildstep.BuildImage(ctx, workDir, "Dockerfile", appTag, log); err != nil {
+	if err := buildstep.BuildImage(ctx, workDir, "Dockerfile", appTag, labels, log); err != nil {
 		m.publish(job.ID, domain.BuildEventMsg{
 			Kind: domain.WSError, Text: "docker build (app) failed: " + err.Error(),
 			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
