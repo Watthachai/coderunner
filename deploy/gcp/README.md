@@ -68,6 +68,7 @@ PROJECT_ID=<project> ./deploy/gcp/promote.sh <project_id ของ FITT Builder>
 
 - **ยังไม่ได้รันกับ GCP จริง** สคริปต์ทดสอบกับ gcloud และ FITT Builder จำลองเท่านั้น (`node --test tests/gcp-*.test.mjs`) รอบแรกให้รัน `DRY_RUN=1` ก่อนแล้วดูผลทีละขั้น
 - ต้องยืนยันตอนรันจริง: การผูก Cloud Storage เป็น volume ของ Cloud Run (`--add-volume type=cloud-storage`, gen2) · เงื่อนไข IAM ที่จำกัดสิทธิ์ของ `crn-uat-deployer` (`modifiedGrantsByRole`, `resource.name.extract`) · Cloud Build ต่อ Cloud SQL ผ่าน Auth Proxy (`PROXY_VERSION` ค่าเริ่มต้น `v2.11.0`)
+- **สิทธิ์ของ `crn-uat-deployer` กว้าง:** `secretmanager.admin`, `cloudsql.admin` และ `storage.admin` ทั้งโปรเจกต์ (ลบฐานข้อมูลหรือ bucket ได้) จึงต้องใช้โปรเจกต์ GCP แยกสำหรับ Code Runner เท่านั้น · บัญชีนี้ใช้ได้เฉพาะผ่าน trigger ที่ config ฝังสคริปต์ไว้ คนที่แก้ trigger ได้คือ owner ของโปรเจกต์ · หลังรันจริงครั้งแรก ให้ลองจำกัด secret และ bucket ด้วยเงื่อนไขชื่อ (`uat-`, `prod-`, `crn-`) แล้วรันทดสอบซ้ำ
 - UAT เปิดให้เข้าได้โดยไม่ต้องล็อกอิน Google (`--allow-unauthenticated`) เพราะแอปมีระบบล็อกอินของตัวเอง ถ้า organization policy ห้าม allUsers คำสั่ง deploy จะไม่ผ่าน
 - ช่วงแรกใช้ URL `*.run.app` · การผูกโดเมนของลูกค้าทำทีหลัง
 - แอปเริ่มแต่ละครั้งรัน migration และ bootstrap ก่อนรับ request ครั้งแรกหลังหลับจึงช้ากว่าปกติ
