@@ -47,7 +47,7 @@ func attempts(t *testing.T, argsFile string) int {
 // a single manifest and fails repeatedly as an index.
 func TestBuildImageDisablesAttestations(t *testing.T) {
 	argsFile := stubDocker(t, "exit 0")
-	if err := BuildImage(context.Background(), t.TempDir(), "Dockerfile", "demo:v1", discardLogger()); err != nil {
+	if err := BuildImage(context.Background(), t.TempDir(), "Dockerfile", "demo:v1", nil, discardLogger()); err != nil {
 		t.Fatal(err)
 	}
 	got := readFile(t, argsFile)

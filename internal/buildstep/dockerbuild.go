@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -269,7 +270,7 @@ const imagePlatform = "linux/amd64"
 // BuildImage runs `docker build --platform linux/amd64 -f <dockerfile> -t <tag>
 // <dir>`, streaming combined output to the logger. Requires a Docker daemon +
 // buildx on the host.
-func BuildImage(ctx context.Context, dir, dockerfile, tag string, logger *slog.Logger) error {
+func BuildImage(ctx context.Context, dir, dockerfile, tag string, labels map[string]string, logger *slog.Logger) error {
 	// -f is resolved relative to the docker process's CWD, NOT the build context. CRN
 	// runs from its own repo root (which has a Go server Dockerfile), so a bare
 	// "Dockerfile" would match THAT instead of the workspace's — build the wrong
@@ -283,9 +284,18 @@ func BuildImage(ctx context.Context, dir, dockerfile, tag string, logger *slog.L
 	// Measured against the delivery registry with identical image content: as an
 	// index it failed every push; as a single manifest it pushed first try. A
 	// customer needs an image it can pull, not a supply-chain record.
-	return runDocker(ctx, logger, "build", "--platform", imagePlatform,
+	args := []string{"build", "--platform", imagePlatform,
 		"--provenance=false", "--sbom=false",
-		"-f", filepath.Join(dir, dockerfile), "-t", tag, dir)
+		"-f", filepath.Join(dir, dockerfile), "-t", tag}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--label", k+"="+labels[k])
+	}
+	return runDocker(ctx, logger, append(args, dir)...)
 }
 
 // pushAttempts/pushBackoff bound the retry in PushImage. The race it exists for
