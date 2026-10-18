@@ -58,9 +58,13 @@ if (tool === 'gcloud') {
     if (st.deployFails) process.exit(1);
     const svc = st.services[a[2]] || (st.services[a[2]] = { rev: 0, serving: null });
     svc.rev += 1; svc.image = flag('image');
-    if (!a.includes('--no-traffic')) svc.serving = a[2] + '-' + String(svc.rev).padStart(5, '0') + '-abc';
+    const revName = a[2] + '-' + String(svc.rev).padStart(5, '0') + '-abc';
+    (svc.images = svc.images || {})[revName] = svc.image;
+    if (!a.includes('--no-traffic')) svc.serving = revName;
     return save();
   }
+  if (has('run', 'services', 'list')) { const id8 = (/crn-project=([a-z0-9]+)/.exec(flag('filter') || '') || [])[1]; for (const n of Object.keys(st.services)) if (n.startsWith('uat-') && n.endsWith('-' + id8)) out(n); return; }
+  if (has('run', 'revisions', 'describe')) { for (const svc of Object.values(st.services)) if (svc.images && svc.images[a[3]]) return out(svc.images[a[3]]); process.exit(1); }
   if (has('run', 'services', 'update-traffic')) { st.services[a[3]].serving = (flag('to-revisions') || '').split('=')[0]; return save(); }
   if (has('logging', 'read')) return out('app log line one\napp log line two');
   if (has('scheduler', 'jobs', 'describe')) return st.jobs.includes(a[3]) ? out('ok') : process.exit(1);
