@@ -7,6 +7,8 @@ RUN npm ci --ignore-scripts
 
 FROM deps AS builder
 COPY . .
+# An app without scheduled work still ships an empty schedule (fitt-build: runs-anywhere).
+RUN test -f crn.schedule.json || echo '[]' > crn.schedule.json
 RUN mkdir -p public prisma /runtime-config && for f in prisma.config.*; do if [ -f "$f" ]; then cp "$f" /runtime-config/; fi; done
 ENV NEXT_TELEMETRY_DISABLED=1
 # Build never connects to customer infrastructure; Prisma config may require a URL.
@@ -24,6 +26,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # The entrypoint's npm and Prisma CLI runs call nobody: no npm update check, no Prisma telemetry.
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 ENV CHECKPOINT_DISABLE=1
+# The same image runs read-only on a customer's server and on Cloud Run: npm writes
+# only under /tmp, uploads only under UPLOAD_DIR (a volume or a Cloud Storage
+# mount), and scheduled work runs in the app unless the platform calls it.
+ENV NPM_CONFIG_CACHE=/tmp/npm-cache
+ENV UPLOAD_DIR=/data/uploads
+ENV CRN_SCHEDULER=internal
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
@@ -31,6 +39,8 @@ COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/package.json ./package.json
 COPY --from=builder --chown=node:node /runtime-config/ ./
+COPY --from=builder --chown=node:node /app/crn.schedule.json ./crn.schedule.json
+RUN mkdir -p /data/uploads && chown node:node /data/uploads
 RUN printf '#!/bin/sh\nset -eu\nif [ -f prisma/schema.prisma ]; then\n  npm run db:deploy\n  npm run db:seed\nfi\nexec node server.js\n' > /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 USER node
 EXPOSE 3000
