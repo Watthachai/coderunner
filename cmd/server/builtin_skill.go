@@ -61,6 +61,12 @@ var refServiceStatus string
 //go:embed skillassets/assets/service-status.mjs
 var assetServiceStatus string
 
+//go:embed skillassets/references/runs-anywhere.md
+var refRunsAnywhere string
+
+//go:embed skillassets/assets/scheduler.mjs
+var assetScheduler string
+
 //go:embed skillassets/scripts/verify-delivery.mjs
 var deliveryVerifier string
 
@@ -70,6 +76,8 @@ var builtinSkillFiles = map[string]string{
 	"assets/bootstrap-once.mjs":        assetBootstrap,
 	"references/service-status.md":     refServiceStatus,
 	"assets/service-status.mjs":        assetServiceStatus,
+	"references/runs-anywhere.md":      refRunsAnywhere,
+	"assets/scheduler.mjs":             assetScheduler,
 	"scripts/verify-delivery.mjs":      deliveryVerifier,
 	"references/nextjs-conversion.md":  refNextjsConversion,
 	"references/prisma-setup.md":       refPrismaSetup,

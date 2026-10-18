@@ -68,3 +68,12 @@ test('a release needs an app that obeys the switch', () => {
   assert.equal(switchVerdict('active', { homeStatus: 307, homeBody: '', healthStatus: 200 }), null);
   assert.match(switchVerdict('active', { homeStatus: 503, homeBody: page, healthStatus: 200 }), /normally/);
 });
+
+test('the checker runs the customer image read-only with no capabilities', async () => {
+  const { HARDENED_RUN } = await import('../internal/buildstep/verify-delivery.mjs');
+  assert.deepEqual(HARDENED_RUN, ['--read-only', '--tmpfs', '/tmp', '--tmpfs', '/data/uploads:mode=1777', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges']);
+  const src = await fs.readFile(new URL('../internal/buildstep/verify-delivery.mjs', import.meta.url), 'utf8');
+  const runs = src.split('\n').filter(l => /'run', '(-d|--rm)'/.test(l) && l.includes('imageName') && !l.includes('FAKE_STATUS_SERVER'));
+  assert.ok(runs.length >= 3, 'migrations, app and switch runs');
+  for (const l of runs) assert.ok(l.includes('...HARDENED_RUN'), l.trim());
+});
