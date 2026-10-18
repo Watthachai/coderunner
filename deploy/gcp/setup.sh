@@ -74,10 +74,12 @@ done
 run gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${deployer}" \
   --role=roles/resourcemanager.projectIamAdmin \
   "--condition=^;^title=crn-grants-cloudsql-client-only;expression=api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(['roles/cloudsql.client'])"
-# Administering service accounts, limited to the apps' own (crn-uat-*, crn-prod-*).
-run gcloud projects add-iam-policy-binding "${PROJECT_ID}" --member="serviceAccount:${deployer}" \
-  --role=roles/iam.serviceAccountAdmin \
-  "--condition=^;^title=crn-app-accounts-only;expression=resource.name.extract('serviceAccounts/{account}@').startsWith('crn-uat-') || resource.name.extract('serviceAccounts/{account}@').startsWith('crn-prod-')"
+# Administering service accounts (each app's own runtime account and who may act
+# as it). Not limited by name: IAM checks service accounts by their numeric id, so a
+# condition on the name never matches (found on the first real run). This is why the
+# project must be Code Runner's alone.
+run gcloud projects add-iam-policy-binding "${PROJECT_ID}" --condition=None --member="serviceAccount:${deployer}" \
+  --role=roles/iam.serviceAccountAdmin
 
 keep gcloud sql instances create "${SQL_INSTANCE}" --database-version=POSTGRES_16 --edition=ENTERPRISE \
   --tier="${SQL_TIER}" --region="${REGION}" --storage-type=SSD --storage-size=10 \
@@ -105,14 +107,23 @@ if [ -z "${DRY_RUN:-}" ] && ! gcloud secrets describe crn-deploy-fb-token >/dev/
   fi
 fi
 
+# Triggers carry the deploy script in their config, so a re-run replaces them: that is
+# how a new uat-deploy.sh reaches Cloud Build.
+replace_trigger() {
+  if [ -z "${DRY_RUN:-}" ] && gcloud builds triggers describe "$1" >/dev/null 2>&1; then
+    run gcloud builds triggers delete "$1" --quiet
+  fi
+}
 common_subs="_REGION=${REGION},_SQL_INSTANCE=${PROJECT_ID}:${REGION}:${SQL_INSTANCE},_STATUS_URL=${STATUS_URL},_FB_URL=${FB_URL},_REPO=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}"
-keep gcloud builds triggers create pubsub --name=crn-uat-deploy \
+replace_trigger crn-uat-deploy
+run gcloud builds triggers create pubsub --name=crn-uat-deploy \
   --topic="projects/${PROJECT_ID}/topics/gcr" \
   --inline-config="${here}/cloudbuild-uat.yaml" \
   --service-account="projects/${PROJECT_ID}/serviceAccounts/${deployer}" \
   --subscription-filter='_ACTION == "INSERT"' \
   --substitutions="_ACTION=\$(body.message.data.action),_DIGEST=\$(body.message.data.digest),_TAG=\$(body.message.data.tag),${common_subs}"
-keep gcloud builds triggers create pubsub --name=crn-uat-sweep \
+replace_trigger crn-uat-sweep
+run gcloud builds triggers create pubsub --name=crn-uat-sweep \
   --topic="projects/${PROJECT_ID}/topics/crn-sweep" \
   --inline-config="${here}/cloudbuild-uat.yaml" \
   --service-account="projects/${PROJECT_ID}/serviceAccounts/${deployer}" \

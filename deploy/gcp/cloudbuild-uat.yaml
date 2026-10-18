@@ -137,11 +137,31 @@ steps:
       }
       random_hex() { openssl rand -hex "$1" | tr -d '\n'; }
 
-      # close_database: owner first, then PUBLIC loses CONNECT. gcloud creates every
-      # database owned by cloudsqlsuperuser, of which every gcloud-created user is a
-      # member, so until this runs any project's user could connect to any database.
-      close_database() {
-        local proxy proxy_pid admin_pw ok="" rc=0
+      # The app's database user is made by postgres in SQL, not with gcloud: a user gcloud
+      # makes belongs to Cloud SQL's own admin, and PostgreSQL 16 lets postgres hand a
+      # database only to a role it may SET ROLE to. The password reaches psql through the
+      # environment (\getenv), never a command line; psql picks CREATE or ALTER at run time,
+      # so a run that died after making the user is finished by the next.
+      ROLE_SQL="SET createrole_self_grant = 'set, inherit';
+      SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'db') AS new_role \\gset
+      \\getenv pw NEWPW
+      \\if :new_role
+      CREATE ROLE :\"db\" LOGIN PASSWORD :'pw';
+      \\else
+      ALTER ROLE :\"db\" WITH LOGIN PASSWORD :'pw';
+      \\endif
+      "
+      # Owner first, then PUBLIC loses CONNECT: gcloud creates every database owned by
+      # cloudsqlsuperuser, so until this runs other projects' users could connect to it.
+      CLOSE_SQL="ALTER DATABASE :\"db\" OWNER TO :\"db\";
+      REVOKE CONNECT, TEMPORARY ON DATABASE :\"db\" FROM PUBLIC;
+      "
+
+      # sql_as_postgres: runs the SQL on stdin as postgres through the Cloud SQL Auth Proxy,
+      # with :db set to this project's database and NEWPW (if set) in psql's environment.
+      sql_as_postgres() {
+        local proxy proxy_pid admin_pw ok="" rc=0 sql
+        sql="$(cat)"
         # Cloud Build's image has apt and runs linux/amd64; anywhere else (promote.sh on a
         # laptop) the two tools must already be installed.
         if ! command -v psql >/dev/null 2>&1; then
@@ -163,10 +183,7 @@ steps:
           sleep 1
         done
         if [ -z "$ok" ]; then kill "$proxy_pid" 2>/dev/null || true; echo "Cloud SQL Auth Proxy did not connect" >&2; return 1; fi
-        PGPASSWORD="$admin_pw" psql -h 127.0.0.1 -p 15432 -U postgres -d postgres -v ON_ERROR_STOP=1 -v db="${db}" -f - <<'SQL' || rc=$?
-      ALTER DATABASE :"db" OWNER TO :"db";
-      REVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;
-      SQL
+        PGPASSWORD="$admin_pw" NEWPW="${NEWPW:-}" psql -h 127.0.0.1 -p 15432 -U postgres -d postgres -v ON_ERROR_STOP=1 -v db="${db}" -f - <<<"${sql}" || rc=$?
         kill "$proxy_pid" 2>/dev/null || true
         return "$rc"
       }
@@ -189,17 +206,19 @@ steps:
         step="ฐานข้อมูล"
         gcloud sql databases describe "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" >/dev/null 2>&1 \
           || gcloud sql databases create "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" >/dev/null
+        local sql="" pw=""
         if ! has_secret database-url; then
-          local pw
           pw="$(random_hex 24)"
-          # gcloud takes a SQL user's password only as a flag; it is random, used once,
-          # and then lives only in Secret Manager.
-          if [ -n "$(gcloud sql users list --instance="${sql_instance}" --project="${PROJECT_ID}" --filter="name=${db}" --format='value(name)')" ]; then
-            gcloud sql users set-password "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" --password="${pw}" >/dev/null
-          else
-            gcloud sql users create "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" --password="${pw}" >/dev/null
+          sql+="${ROLE_SQL}"
+        fi
+        if [ "$(secret_label database-url closed)" != yes ]; then sql+="${CLOSE_SQL}"; fi
+        if [ -n "${sql}" ]; then
+          step="ผู้ใช้ฐานข้อมูลและการปิดฐานจากโปรเจกต์อื่น"
+          printf '%s' "${sql}" | NEWPW="${pw}" sql_as_postgres
+          if [ -n "${pw}" ]; then
+            printf 'postgresql://%s:%s@localhost/%s?host=/cloudsql/%s' "${db}" "${pw}" "${db}" "${connection}" | put_secret database-url
           fi
-          printf 'postgresql://%s:%s@localhost/%s?host=/cloudsql/%s' "${db}" "${pw}" "${db}" "${connection}" | put_secret database-url
+          gcloud secrets update "${service}-database-url" --project="${PROJECT_ID}" --update-labels=closed=yes >/dev/null
         fi
 
         step="รหัสลับ"
@@ -208,12 +227,6 @@ steps:
         has_secret bootstrap-admin-email || printf '%s' "${admin_email}" | put_secret bootstrap-admin-email
         has_secret bootstrap-admin-password || random_hex 12 | put_secret bootstrap-admin-password
         for name in database-url auth-secret cron-secret bootstrap-admin-email bootstrap-admin-password; do grant_secret "${name}"; done
-
-        step="ปิดฐานข้อมูลจากโปรเจกต์อื่น"
-        if [ "$(secret_label database-url closed)" != yes ]; then
-          close_database
-          gcloud secrets update "${service}-database-url" --project="${PROJECT_ID}" --update-labels=closed=yes >/dev/null
-        fi
 
         step="ที่เก็บไฟล์อัปโหลด"
         gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" >/dev/null 2>&1 \

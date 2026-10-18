@@ -42,7 +42,6 @@ test('a cloud project is registered, deployed and reported on its first image', 
     /projects add-iam-policy-binding fitt-proj .*serviceAccount:crn-uat-cc0b6195@fitt-proj\.iam\.gserviceaccount\.com.*roles\/cloudsql\.client/,
     /iam service-accounts add-iam-policy-binding crn-uat-cc0b6195@fitt-proj\.iam\.gserviceaccount\.com .*serviceAccount:crn-uat-deployer@fitt-proj\.iam\.gserviceaccount\.com.*roles\/iam\.serviceAccountUser/,
     /sql databases create uat_shop_cc0b6195 --instance=crn-uat/,
-    /sql users create uat_shop_cc0b6195 .*--password=/,
     /storage buckets create gs:\/\/fitt-proj-uat-cc0b6195-uploads .*--location=asia-southeast1/,
     /storage buckets add-iam-policy-binding gs:\/\/fitt-proj-uat-cc0b6195-uploads .*roles\/storage\.objectAdmin/,
   ]) assert.match(all, want);
@@ -52,15 +51,21 @@ test('a cloud project is registered, deployed and reported on its first image', 
   const st = await w.state();
   assert.equal(st.secrets[`${SVC}-bootstrap-admin-email`].value, 'admin@customer.test');
   assert.match(st.secrets[`${SVC}-database-url`].value, /^postgresql:\/\/uat_shop_cc0b6195:[a-f0-9]{48}@localhost\/uat_shop_cc0b6195\?host=\/cloudsql\/fitt-proj:asia-southeast1:crn-uat$/);
-  // Secret values travel on stdin. The one documented exception: gcloud takes a
-  // new SQL user's password only as a flag.
+  // Secret values travel on stdin or the environment, never a command line —
+  // the database user is made in SQL, so not even its password is a flag.
   const dbPassword = /:([a-f0-9]{48})@/.exec(st.secrets[`${SVC}-database-url`].value)[1];
   for (const n of ['auth-secret', 'cron-secret', 'bootstrap-admin-password']) assert.ok(!all.includes(st.secrets[`${SVC}-${n}`].value), `${n} on a command line`);
-  assert.equal(g.filter(c => c.includes(dbPassword)).length, 1);
-  // The database is closed to every other UAT project before the app first runs.
+  assert.ok(!(await w.calls()).some(c => !c.startsWith('STDIN ') && c.includes(dbPassword)), 'database password on a command line');
+  assert.ok(!g.some(c => c.startsWith('sql users')), 'Cloud SQL\'s own users cannot be handed a database by postgres');
+  // postgres makes the user itself (so it may hand it the database: PostgreSQL 16
+  // requires SET ROLE on the new owner), then closes the database to every other project.
   const sql = await w.sql();
+  assert.match(sql, /SET createrole_self_grant = 'set, inherit';/);
+  assert.match(sql, /\\getenv pw NEWPW/);
+  assert.match(sql, /CREATE ROLE :"db" LOGIN PASSWORD :'pw';/);
   assert.match(sql, /ALTER DATABASE :"db" OWNER TO :"db";/);
   assert.match(sql, /REVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;/);
+  assert.ok(sql.indexOf('CREATE ROLE') < sql.indexOf('ALTER DATABASE'), 'the user exists before it gets the database');
   assert.ok((await w.calls()).some(c => c.startsWith('PSQL ') && c.includes('-v db=uat_shop_cc0b6195') && c.includes('-U postgres')));
   assert.equal(st.secrets[`${SVC}-database-url`].labels.closed, 'yes');
   const deploy = g.find(c => c.startsWith(`run deploy ${SVC} `));
@@ -88,20 +93,23 @@ test('registration resumes after a partial run', async () => {
   const r = w.run(SCRIPT, insert(SHOP));
   assert.equal(r.code, 0, r.out);
   const g = await w.gcloud();
-  assert.ok(!g.some(c => /^(iam service-accounts create|sql users create|sql users set-password|sql databases create)/.test(c)), g.join('\n'));
+  assert.ok(!g.some(c => /^(iam service-accounts create|sql users|sql databases create)/.test(c)), g.join('\n'));
   assert.ok(!g.some(c => c.startsWith(`secrets create ${SVC}-database-url `) || c.startsWith(`secrets create ${SVC}-auth-secret `)));
   assert.ok(g.some(c => c.startsWith(`secrets create ${SVC}-cron-secret `)));
-  assert.match(await w.sql(), /REVOKE CONNECT/);
+  const sql = await w.sql();
+  assert.match(sql, /REVOKE CONNECT/);
+  assert.doesNotMatch(sql, /CREATE ROLE|ALTER ROLE/, 'the user and its secret exist already');
   assert.ok(g.some(c => c.startsWith('storage buckets create gs://fitt-proj-uat-cc0b6195-uploads')));
   assert.deepEqual(stages(await w.events()), ['deploying', 'ready']);
 });
 
-test('a database user without its secret gets a new password, not a duplicate user', async () => {
+test('a database user left from a run that died gets a new password, not a duplicate', async () => {
   const w = await world(seed({ labels: { [SHOP]: labelsFor() }, projects: cloud(), sqlusers: ['uat_shop_cc0b6195'] }));
   assert.equal(w.run(SCRIPT, insert(SHOP)).code, 0);
-  const g = await w.gcloud();
-  assert.ok(g.some(c => c.startsWith('sql users set-password uat_shop_cc0b6195 ')));
-  assert.ok(!g.some(c => c.startsWith('sql users create')));
+  const sql = await w.sql();
+  // psql decides at run time: CREATE when the role is new, ALTER when it exists.
+  assert.match(sql, /SELECT NOT EXISTS \(SELECT 1 FROM pg_roles WHERE rolname = :'db'\) AS new_role \\gset/);
+  assert.match(sql, /\\if :new_role\nCREATE ROLE :"db" LOGIN PASSWORD :'pw';\n\\else\nALTER ROLE :"db" WITH LOGIN PASSWORD :'pw';\n\\endif/);
 });
 
 test('a new image moves traffic only after the candidate is healthy', async () => {
@@ -297,11 +305,13 @@ test('setup creates the sweep, its trigger, the secrets and the limited deployer
     /secrets create crn-uat-postgres-password/,
     /sql users set-password postgres --instance=crn-uat/,
     /roles\/resourcemanager\.projectIamAdmin --condition=.*modifiedGrantsByRole.*roles\/cloudsql\.client/,
-    /roles\/iam\.serviceAccountAdmin --condition=.*crn-uat-/,
+    // A condition on the account's name never matches: IAM checks service accounts by numeric id (first real run).
+    /--condition=None --member=serviceAccount:crn-uat-deployer@fitt-proj\.iam\.gserviceaccount\.com --role=roles\/iam\.serviceAccountAdmin/,
     /artifacts repositories set-cleanup-policies crn/,
   ]) assert.match(plan, want);
   // An empty substitution value may be refused, and keep() would hide it as "already exists".
   assert.doesNotMatch(plan, /_[A-Z]+=,/);
+  assert.doesNotMatch(plan, /resource\.name\.extract/);
   // The deployer's gcloud projects add-iam-policy-binding needs Cloud Resource Manager (found on the first real run).
   assert.match(plan.split('\n').find(l => l.includes('services enable')), /cloudresourcemanager\.googleapis\.com/);
 });
@@ -311,4 +321,16 @@ test('setup defaults to Singapore', () => {
   assert.match(plan, /--location=asia-southeast1 /);
   assert.match(plan, /--region=asia-southeast1 /);
   assert.doesNotMatch(plan, /asia-southeast3/);
+});
+
+test('setup replaces existing triggers, so a new deploy script reaches Cloud Build', async () => {
+  const w = await world(seed());
+  const r = w.run('deploy/gcp/setup.sh', {}, [], '');
+  assert.equal(r.code, 0, r.out);
+  const g = await w.gcloud();
+  for (const name of ['crn-uat-deploy', 'crn-uat-sweep']) {
+    const del = g.findIndex(c => c.startsWith(`builds triggers delete ${name} `));
+    const create = g.findIndex(c => c.startsWith(`builds triggers create pubsub --name=${name} `));
+    assert.ok(del >= 0 && create > del, `${name}: delete then create\n${g.filter(c => c.includes('triggers')).join('\n')}`);
+  }
 });
