@@ -14,6 +14,7 @@ A build is one unattended job with a bounded implement → verify → repair loo
 - `references/auth-and-bootstrap.md`: authenticated sessions, permissions and the once-only initial administrator. Required when the app has login or private data.
 - `references/delivery-checks.md`: executable validation contract and bounded repair. Required on every build and edit.
 - `references/service-status.md`: the FITT Billing suspension switch and the health route. Required on every build and edit.
+- `references/runs-anywhere.md`: one image for a customer's server and for Cloud Run — uploads, scheduled work, shared state, request length. Required on every build and edit.
 - `references/test-cases.md`: requirement-linked customer acceptance instructions. Keep results not actually executed blank.
 
 ## Establish scope before writing

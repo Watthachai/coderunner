@@ -45,6 +45,32 @@ export function switchVerdict(wanted, { homeStatus, homeBody, healthStatus }) {
   }
   return homeStatus >= 500 ? `An active app must work normally (got ${homeStatus} on /)` : null;
 }
+// The run-anywhere rules (references/runs-anywhere.md): the customer image must work
+// with a read-only root filesystem, writing only /tmp and the uploads directory, and
+// without any Linux capability — on a customer's hardened server and on Cloud Run.
+export const HARDENED_RUN = ['--read-only', '--tmpfs', '/tmp', '--tmpfs', '/data/uploads:mode=1777', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges'];
+// Same rules as assets/scheduler.mjs validateSchedule. Kept here because CRN runs this
+// checker on its own, without the skill's assets beside it.
+const SCHEDULE_EVERY = [5, 10, 15, 20, 30, 60];
+const SCHEDULE_KEYS = new Set(['name', 'path', 'every_minutes', 'daily_at']);
+export function validateSchedule(entries) {
+  if (!Array.isArray(entries)) throw new Error('crn.schedule.json must be a JSON array');
+  const seen = new Set();
+  for (const e of entries) {
+    const label = JSON.stringify(e);
+    if (!e || typeof e !== 'object' || Array.isArray(e)) throw new Error(`schedule entry is not an object: ${label}`);
+    for (const k of Object.keys(e)) if (!SCHEDULE_KEYS.has(k)) throw new Error(`schedule entry has unknown key "${k}": ${label}`);
+    if (typeof e.name !== 'string' || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(e.name)) throw new Error(`schedule name must be lowercase letters, digits and dashes: ${label}`);
+    if (seen.has(e.name)) throw new Error(`schedule name "${e.name}" is used twice`);
+    seen.add(e.name);
+    if (e.path !== `/api/cron/${e.name}`) throw new Error(`schedule path must be /api/cron/${e.name}: ${label}`);
+    const every = e.every_minutes !== undefined, daily = e.daily_at !== undefined;
+    if (every === daily) throw new Error(`schedule entry needs exactly one of every_minutes or daily_at: ${label}`);
+    if (every && !SCHEDULE_EVERY.includes(e.every_minutes)) throw new Error(`every_minutes must be one of ${SCHEDULE_EVERY.join(', ')}: ${label}`);
+    if (daily && (typeof e.daily_at !== 'string' || !/^([01]\d|2[0-3]):([0-5]\d)$/.test(e.daily_at))) throw new Error(`daily_at must be HH:MM (Bangkok time): ${label}`);
+  }
+  return entries;
+}
 export function isolatedEnvironment(source) {
   // CLI/browser runtime settings only. Never inherit host application credentials.
   const allowed = ['PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'PLAYWRIGHT_BROWSERS_PATH'];
@@ -96,6 +122,9 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     for (const file of ['BUILD_NOTES.md', 'TEST_CASES.md', 'PORT_CHECKLIST.md']) docs[file] = await fs.readFile(path.join(cwd, file), 'utf8');
     validateContract(contract, pkg, lock, docs);
     receipt.checks.push({ name: 'delivery contract', passed: true });
+    const schedule = await fs.readFile(path.join(cwd, 'crn.schedule.json'), 'utf8').catch(e => { if (e.code === 'ENOENT') return '[]'; throw e; });
+    validateSchedule(JSON.parse(schedule));
+    receipt.checks.push({ name: 'schedule', passed: true });
     receipt.lockfile_sha256 = createHash('sha256').update(await fs.readFile(path.join(cwd, 'package-lock.json'))).digest('hex');
     scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'crn-verify-'));
     await run('locked install', 'npm', ['ci', '--no-audit', '--no-fund']);
@@ -132,7 +161,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
       receipt.checks = receipt.checks.filter(c => c.name !== 'database readiness' || c.passed);
       if (!ready) throw new Error('Isolated test database did not start');
       operationName = `crn-verify-task-${suffix}`;
-      const inImage = (label, script) => run(label, 'docker', ['run', '--rm', '--name', operationName, '--network', networkName, ...runtimeEnv, '--entrypoint', 'npm', imageName, '--silent', 'run', script], { DATABASE_URL: runtimeDatabaseURL });
+      const inImage = (label, script) => run(label, 'docker', ['run', '--rm', '--name', operationName, '--network', networkName, ...HARDENED_RUN, ...runtimeEnv, '--entrypoint', 'npm', imageName, '--silent', 'run', script], { DATABASE_URL: runtimeDatabaseURL });
       await inImage('apply migrations in customer image', 'db:deploy');
       await inImage('first-install bootstrap in customer image', 'db:seed');
       env.BOOTSTRAP_ADMIN_EMAIL = 'changed@example.test'; env.BOOTSTRAP_ADMIN_PASSWORD = randomBytes(24).toString('hex');
@@ -143,7 +172,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     }
     await run('browser installation', 'node', ['node_modules/@playwright/test/cli.js', 'install', 'chromium']);
     appName = `crn-verify-app-${suffix}`;
-    await run('start customer image', 'docker', ['run', '-d', '--name', appName, '--network', networkName, '-p', '127.0.0.1::3000', ...runtimeEnv, imageName], { DATABASE_URL: runtimeDatabaseURL });
+    await run('start customer image', 'docker', ['run', '-d', '--name', appName, '--network', networkName, '-p', '127.0.0.1::3000', ...HARDENED_RUN, ...runtimeEnv, imageName], { DATABASE_URL: runtimeDatabaseURL });
     const port = (await run('application port', 'docker', ['port', appName, '3000/tcp'])).trim().split(':').pop();
     env.CRN_BASE_URL = `http://127.0.0.1:${port}`;
     let ready = false;
@@ -158,7 +187,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     await run('start fake status server', 'docker', ['run', '-d', '--name', statusName, '--network', networkName, '--network-alias', 'fitt-status', '--entrypoint', 'node', imageName, '-e', FAKE_STATUS_SERVER]);
     for (const wanted of ['suspended', 'active']) {
       switchName = `crn-verify-switch-${suffix}`;
-      await run(`start customer image while ${wanted}`, 'docker', ['run', '-d', '--name', switchName, '--network', networkName, '-p', '127.0.0.1::3000', ...runtimeEnv, '-e', `FITT_STATUS_URL=http://fitt-status:8080/${wanted}`, '-e', `FITT_LICENSE_KEY=${SWITCH_TEST_KEY}`, imageName], { DATABASE_URL: runtimeDatabaseURL });
+      await run(`start customer image while ${wanted}`, 'docker', ['run', '-d', '--name', switchName, '--network', networkName, '-p', '127.0.0.1::3000', ...HARDENED_RUN, ...runtimeEnv, '-e', `FITT_STATUS_URL=http://fitt-status:8080/${wanted}`, '-e', `FITT_LICENSE_KEY=${SWITCH_TEST_KEY}`, imageName], { DATABASE_URL: runtimeDatabaseURL });
       const switchBase = `http://127.0.0.1:${(await run('switch application port', 'docker', ['port', switchName, '3000/tcp'])).trim().split(':').pop()}`;
       let verdict = `The customer image did not answer while ${wanted}`;
       for (let i = 0; i < 60 && !stopped; i++) {
