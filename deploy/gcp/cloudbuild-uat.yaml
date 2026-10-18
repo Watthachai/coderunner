@@ -137,21 +137,27 @@ steps:
       }
       random_hex() { openssl rand -hex "$1" | tr -d '\n'; }
 
-      # Owner first, then PUBLIC loses CONNECT: gcloud creates every database owned by
-      # cloudsqlsuperuser, of which every gcloud-made user is a member, so until this runs
-      # any project's user could connect to it. The app's own user runs it: it may act as
-      # the owner (cloudsqlsuperuser) and SET ROLE to itself, which PostgreSQL 16 requires
-      # of whoever changes a database's owner. Cloud SQL's postgres user may not SET ROLE
-      # to a gcloud-made user (found on the first real run).
-      CLOSE_SQL="ALTER DATABASE :\"db\" OWNER TO :\"db\";
+      # Each app's database user is made by postgres in SQL, never with gcloud: a gcloud
+      # user stays a member of cloudsqlsuperuser, which would give every app that role's
+      # powers on the shared instance. The user may create databases; it creates its own
+      # and closes it to PUBLIC, so nothing ever changes owner (Cloud SQL's postgres may
+      # not hand a database to another role — found on the first real run). The password
+      # reaches psql through the environment (\getenv), never a command line.
+      ROLE_SQL="\\getenv pw NEWPW
+      CREATE ROLE :\"db\" LOGIN CREATEDB PASSWORD :'pw';
+      "
+      DB_SQL="SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') AS new_db \\gset
+      \\if :new_db
+      CREATE DATABASE :\"db\";
+      \\endif
       REVOKE CONNECT, TEMPORARY ON DATABASE :\"db\" FROM PUBLIC;
       "
 
-      # sql_as_app PASSWORD: runs the SQL on stdin as this project's database user through
-      # the Cloud SQL Auth Proxy, with :db set to its database. The password reaches psql
-      # through the environment only.
-      sql_as_app() {
-        local app_pw="$1" proxy proxy_pid ok="" rc=0 sql
+      # sql_as USER PASSWORD: runs the SQL on stdin as USER through the Cloud SQL Auth
+      # Proxy, with :db set to this project's database and NEWPW (if set) in psql's
+      # environment. Passwords reach psql through the environment only.
+      sql_as() {
+        local user="$1" user_pw="$2" proxy proxy_pid ok="" rc=0 sql
         sql="$(cat)"
         # Cloud Build's image has apt and runs linux/amd64; anywhere else (promote.sh on a
         # laptop) the two tools must already be installed.
@@ -169,11 +175,11 @@ steps:
         "$proxy" --port 15432 "${connection}" >/tmp/cloud-sql-proxy.log 2>&1 &
         proxy_pid=$!
         for _ in $(seq 1 30); do
-          if PGPASSWORD="$app_pw" psql -h 127.0.0.1 -p 15432 -U "${db}" -d postgres -tAc 'select 1' >/dev/null 2>&1; then ok=1; break; fi
+          if PGPASSWORD="$user_pw" psql -h 127.0.0.1 -p 15432 -U "${user}" -d postgres -tAc 'select 1' >/dev/null 2>&1; then ok=1; break; fi
           sleep 1
         done
         if [ -z "$ok" ]; then kill "$proxy_pid" 2>/dev/null || true; echo "Cloud SQL Auth Proxy did not connect" >&2; return 1; fi
-        PGPASSWORD="$app_pw" psql -h 127.0.0.1 -p 15432 -U "${db}" -d postgres -v ON_ERROR_STOP=1 -v db="${db}" -f - <<<"${sql}" || rc=$?
+        PGPASSWORD="$user_pw" NEWPW="${NEWPW:-}" psql -h 127.0.0.1 -p 15432 -U "${user}" -d postgres -v ON_ERROR_STOP=1 -v db="${db}" -f - <<<"${sql}" || rc=$?
         kill "$proxy_pid" 2>/dev/null || true
         return "$rc"
       }
@@ -193,28 +199,27 @@ steps:
             --member="serviceAccount:${DEPLOYER}" --role=roles/iam.serviceAccountUser >/dev/null
         fi
 
-        step="ฐานข้อมูล"
-        gcloud sql databases describe "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" >/dev/null 2>&1 \
-          || gcloud sql databases create "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" >/dev/null
+        step="ผู้ใช้ฐานข้อมูล"
         local pw=""
         if ! has_secret database-url; then
           pw="$(random_hex 24)"
-          # gcloud takes a SQL user's password only as a flag; it is random, used once,
-          # and then lives only in Secret Manager.
           if [ -n "$(gcloud sql users list --instance="${sql_instance}" --project="${PROJECT_ID}" --filter="name=${db}" --format='value(name)')" ]; then
+            # Left by a run that died: Cloud SQL's admin API resets any user's password.
+            # (gcloud takes it only as a flag; it is random, used once, then lives only
+            # in Secret Manager.)
             gcloud sql users set-password "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" --password="${pw}" >/dev/null
           else
-            gcloud sql users create "${db}" --instance="${sql_instance}" --project="${PROJECT_ID}" --password="${pw}" >/dev/null
+            printf '%s' "${ROLE_SQL}" | NEWPW="${pw}" sql_as postgres "$(gcloud secrets versions access latest --secret="${postgres_secret}" --project="${PROJECT_ID}")"
           fi
           printf 'postgresql://%s:%s@localhost/%s?host=/cloudsql/%s' "${db}" "${pw}" "${db}" "${connection}" | put_secret database-url
         fi
         if [ "$(secret_label database-url closed)" != yes ]; then
-          step="ปิดฐานข้อมูลจากโปรเจกต์อื่น"
+          step="ฐานข้อมูลของโปรเจกต์ และปิดจากโปรเจกต์อื่น"
           if [ -z "${pw}" ]; then
             pw="$(read_secret database-url | python3 -c 'import sys, urllib.parse
       print(urllib.parse.urlparse(sys.stdin.read().strip()).password or "")')"
           fi
-          printf '%s' "${CLOSE_SQL}" | sql_as_app "${pw}"
+          printf '%s' "${DB_SQL}" | sql_as "${db}" "${pw}"
           gcloud secrets update "${service}-database-url" --project="${PROJECT_ID}" --update-labels=closed=yes >/dev/null
         fi
 

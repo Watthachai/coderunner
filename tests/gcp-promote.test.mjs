@@ -23,7 +23,7 @@ test('promote takes the digest UAT serves to a new production with its own datab
   const all = g.join('\n');
   assert.match(all, /sql instances create crn-prod-cc0b6195 .*--tier=db-custom-1-3840 .*--region=asia-southeast1/);
   assert.match(all, /sql users set-password postgres --instance=crn-prod-cc0b6195 /);
-  assert.match(all, /sql databases create prod_shop_cc0b6195 --instance=crn-prod-cc0b6195/);
+  assert.ok(!g.some(c => c.startsWith('sql databases') || c.startsWith('sql users create')), 'the app makes its own database');
   assert.match(all, /iam service-accounts create crn-prod-cc0b6195 /);
   const st = await w.state();
   assert.ok(st.secrets[`${PROD}-postgres-password`], 'the instance\'s postgres password is kept');
