@@ -54,19 +54,24 @@ test('a cloud project is registered, deployed and reported on its first image', 
   const dbPassword = /:([a-f0-9]{48})@/.exec(st.secrets[`${SVC}-database-url`].value)[1];
   for (const n of ['auth-secret', 'cron-secret', 'bootstrap-admin-password']) assert.ok(!all.includes(st.secrets[`${SVC}-${n}`].value), `${n} on a command line`);
   assert.ok(!(await w.calls()).some(c => !c.startsWith('STDIN ') && c.includes(dbPassword)), 'database password on a command line');
-  // No gcloud-made user and no gcloud-made database: a gcloud user stays a member of
+  // No gcloud-made user or database. A gcloud user stays a member of
   // cloudsqlsuperuser, which would give every app that role's powers on the shared
-  // instance. postgres makes the user in SQL; the user makes its own database and
-  // closes it, so nothing changes owner (Cloud SQL's postgres may not hand one over).
+  // instance; and Cloud SQL's postgres may not hand a database to another role. So
+  // postgres makes the user in SQL (no CREATEDB: an app could squat another
+  // project's database name) and owns the database, granting the app what it needs.
   assert.ok(!g.some(c => /^sql (users (create|set-password)|databases)/.test(c)), g.filter(c => c.startsWith('sql')).join('\n'));
   const psql = (await w.calls()).filter(c => c.startsWith('PSQL ') && c.includes('-f -'));
-  assert.equal(psql.length, 2, psql.join('\n'));
+  assert.equal(psql.length, 1, psql.join('\n'));
   assert.ok(psql[0].includes('-U postgres') && psql[0].includes('-v db=uat_shop_cc0b6195'), psql[0]);
-  assert.ok(psql[1].includes('-U uat_shop_cc0b6195') && psql[1].includes('-v db=uat_shop_cc0b6195'), psql[1]);
   const sql = await w.sql();
-  assert.match(sql, /\\getenv pw NEWPW\nCREATE ROLE :"db" LOGIN CREATEDB PASSWORD :'pw';/);
-  assert.match(sql, /\\if :new_db\nCREATE DATABASE :"db";\n\\endif\nREVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;/);
-  assert.doesNotMatch(sql, /OWNER TO|cloudsqlsuperuser/);
+  assert.match(sql, /\\getenv pw NEWPW\nCREATE ROLE :"db" LOGIN PASSWORD :'pw';/);
+  assert.doesNotMatch(sql, /CREATEDB|OWNER TO/);
+  for (const want of [
+    /\\if :new_db\nCREATE DATABASE :"db";\n\\endif/,
+    /CASE WHEN pg_get_userbyid\(datdba\) = current_user THEN 'owner ok' ELSE \(datname \|\| ' is owned by another role, not by postgres'\)::int::text END/,
+    /REVOKE CONNECT, TEMPORARY ON DATABASE :"db" FROM PUBLIC;\nGRANT CONNECT, TEMPORARY, CREATE ON DATABASE :"db" TO :"db";\n\\connect :"db"\nGRANT USAGE, CREATE ON SCHEMA public TO :"db";/,
+  ]) assert.match(sql, want);
+  assert.ok(sql.indexOf('CREATE ROLE') < sql.indexOf('CREATE DATABASE'), 'the user exists before it is granted the database');
   assert.equal(st.secrets[`${SVC}-database-url`].labels.closed, 'yes');
   const deploy = g.find(c => c.startsWith(`run deploy ${SVC} `));
   for (const want of [`--image ${REPO}/${SHOP}@${DIGEST}`, '--region asia-southeast1', '--port 3000', '--execution-environment gen2',
@@ -99,7 +104,6 @@ test('registration resumes after a partial run', async () => {
   const sql = await w.sql();
   assert.match(sql, /REVOKE CONNECT/);
   assert.doesNotMatch(sql, /CREATE ROLE/, 'the user and its secret exist already');
-  assert.ok((await w.calls()).some(c => c.startsWith('PSQL ') && c.includes('-f -') && c.includes('-U uat_shop_cc0b6195')));
   assert.ok(g.some(c => c.startsWith('storage buckets create gs://fitt-proj-uat-cc0b6195-uploads')));
   assert.deepEqual(stages(await w.events()), ['deploying', 'ready']);
 });
