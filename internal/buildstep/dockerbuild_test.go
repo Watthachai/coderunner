@@ -200,3 +200,40 @@ func TestCustomerComposeFeedbackURLOnlyWithWidget(t *testing.T) {
 		t.Error("compose lost FITT_FEEDBACK_URL for an app with the widget")
 	}
 }
+
+// One image for a customer's server and for Cloud Run: uploads live in one
+// directory a volume can back, npm writes only under /tmp, the schedule ships.
+func TestCustomerImageRunsAnywhere(t *testing.T) {
+	builder := productionDockerfile[strings.Index(productionDockerfile, "AS builder"):strings.Index(productionDockerfile, "AS runner")]
+	if !strings.Contains(builder, "test -f crn.schedule.json || echo '[]' > crn.schedule.json") {
+		t.Error("builder must default the schedule")
+	}
+	runner := productionDockerfile[strings.Index(productionDockerfile, "AS runner"):]
+	for _, want := range []string{"ENV UPLOAD_DIR=/data/uploads", "ENV CRN_SCHEDULER=internal", "ENV NPM_CONFIG_CACHE=/tmp/npm-cache",
+		"mkdir -p /data/uploads && chown node:node /data/uploads", "/app/crn.schedule.json ./crn.schedule.json"} {
+		if !strings.Contains(runner, want) {
+			t.Errorf("runner missing %q", want)
+		}
+	}
+	dir := t.TempDir()
+	writePkg(t, dir, `{"dependencies":{"next":"16"}}`)
+	if _, err := WriteImageBundle(dir, "reg/app:v1", "reg", 4123, nil); err != nil {
+		t.Fatal(err)
+	}
+	compose := readFile(t, filepath.Join(dir, "docker-compose.customer.yml"))
+	for _, want := range []string{`CRON_SECRET: "${CRON_SECRET:-}"`, "- uploads:/data/uploads", "volumes:\n  uploads: {}"} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose missing %q", want)
+		}
+	}
+	install := readFile(t, filepath.Join(dir, "INSTALL.md"))
+	for _, want := range []string{"/data/uploads", "CRON_SECRET"} {
+		if !strings.Contains(install, want) {
+			t.Errorf("INSTALL missing %q", want)
+		}
+	}
+	raw, _ := json.Marshal(NewDemoEnvExample(4123))
+	if !strings.Contains(string(raw), `"CRON_SECRET":""`) {
+		t.Errorf("env example: %s", raw)
+	}
+}
