@@ -129,9 +129,15 @@ random_hex() { openssl rand -hex "$1" | tr -d '\n'; }
 # member, so until this runs any project's user could connect to any database.
 close_database() {
   local proxy proxy_pid admin_pw ok="" rc=0
-  command -v psql >/dev/null 2>&1 || { apt-get update -qq >/dev/null && apt-get install -y -qq postgresql-client >/dev/null; }
+  # Cloud Build's image has apt and runs linux/amd64; anywhere else (promote.sh on a
+  # laptop) the two tools must already be installed.
+  if ! command -v psql >/dev/null 2>&1; then
+    command -v apt-get >/dev/null 2>&1 || { echo "ต้องมี psql ก่อน (macOS: brew install libpq)" >&2; return 1; }
+    apt-get update -qq >/dev/null && apt-get install -y -qq postgresql-client >/dev/null
+  fi
   proxy="$(command -v cloud-sql-proxy || true)"
   if [ -z "$proxy" ]; then
+    [ "$(uname -sm)" = "Linux x86_64" ] || { echo "ต้องมี cloud-sql-proxy ก่อน (macOS: brew install cloud-sql-proxy)" >&2; return 1; }
     proxy=/tmp/cloud-sql-proxy
     curl -fsSL -o "$proxy" "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/${PROXY_VERSION}/cloud-sql-proxy.linux.amd64"
     chmod +x "$proxy"
