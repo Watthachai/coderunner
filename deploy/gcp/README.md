@@ -30,7 +30,7 @@ PROJECT_ID=<project> DRY_RUN=1 ./deploy/gcp/setup.sh   # ดูก่อนว�
 PROJECT_ID=<project> ./deploy/gcp/setup.sh
 ```
 
-ค่าเริ่มต้น: region `asia-southeast3` (กรุงเทพ) · repository `crn` · Cloud SQL `crn-uat` ขนาด `db-custom-1-3840` (มีค่าใช้จ่ายทั้งเดือน ดูเอกสารค่าใช้จ่าย) · เปลี่ยนได้ด้วย `REGION`, `REPO`, `SQL_INSTANCE`, `SQL_TIER`
+ค่าเริ่มต้น: region `asia-southeast1` (สิงคโปร์) · repository `crn` · Cloud SQL `crn-uat` ขนาด `db-custom-1-3840` (มีค่าใช้จ่ายทั้งเดือน ดูเอกสารค่าใช้จ่าย) · เปลี่ยนได้ด้วย `REGION`, `REPO`, `SQL_INSTANCE`, `SQL_TIER`
 
 service account ที่สร้าง มีสิทธิ์เท่าที่ต้องใช้:
 
@@ -45,8 +45,8 @@ service account ที่สร้าง มีสิทธิ์เท่าท
 `setup.sh` ไม่ออก key ให้ เพราะการออก credential เป็นขั้นที่ต้องตั้งใจทำ:
 
 1. คนที่ดูแลโปรเจกต์ออก key ของ `crn-pusher` แล้วส่งให้เจ้าของเครื่อง build ทางช่องทางลับ (ถ้าองค์กรห้ามออก key ให้คุยทางเลือกในนัด)
-2. ที่เครื่อง build เอง (ไม่ผ่าน ssh เพราะ keychain): `docker login -u _json_key --password-stdin https://asia-southeast3-docker.pkg.dev < key.json` แล้วลบไฟล์ key
-3. ใส่ `CRN_MIRROR_REGISTRY=asia-southeast3-docker.pkg.dev/<project>/crn` ใน `.env` แล้ว restart Code Runner
+2. ที่เครื่อง build เอง (ไม่ผ่าน ssh เพราะ keychain): `docker login -u _json_key --password-stdin https://asia-southeast1-docker.pkg.dev < key.json` แล้วลบไฟล์ key
+3. ใส่ `CRN_MIRROR_REGISTRY=asia-southeast1-docker.pkg.dev/<project>/crn` ใน `.env` แล้ว restart Code Runner
 
 ## 3. ลงทะเบียนโปรเจกต์ลูกค้า
 
@@ -64,6 +64,6 @@ PROJECT_ID=<project> BOOTSTRAP_ADMIN_EMAIL=<ผู้ดูแลคนแรก
 
 - **ยังไม่ได้รันกับ GCP จริง** สคริปต์ทดสอบกับ gcloud จำลองเท่านั้น (`node --test tests/gcp-uat-deploy.test.mjs`) รอบแรกให้รัน `DRY_RUN=1` ก่อนแล้วดูผลทีละขั้น
 - UAT เปิดให้เข้าได้โดยไม่ต้องล็อกอิน Google (`--allow-unauthenticated`) เพราะแอปมีระบบล็อกอินของตัวเอง ถ้า organization policy ห้าม allUsers คำสั่ง deploy จะไม่ผ่าน
-- region กรุงเทพผูกโดเมนของลูกค้ากับ Cloud Run ตรงๆ ไม่ได้ ต้องใช้ load balancer (ดูเอกสารค่าใช้จ่าย) · ใช้ URL `*.run.app` สำหรับ UAT ได้เลย
+- ช่วงแรกใช้ URL `*.run.app` · การผูกโดเมนของลูกค้าทำทีหลัง
 - แอปเริ่มแต่ละครั้งรัน migration และ bootstrap ก่อนรับ request ครั้งแรกหลังหลับจึงช้ากว่าปกติ
 - สวิตช์ระงับของ FITT Billing ใช้ได้บน Cloud Run เลย: trigger ตั้ง `FITT_STATUS_URL` ให้ และใส่ `FITT_LICENSE_KEY` ถ้าโปรเจกต์มี secret `-license-key`
