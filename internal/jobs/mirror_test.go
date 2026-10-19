@@ -62,12 +62,15 @@ func TestNoMirrorWithoutAMirrorRegistry(t *testing.T) {
 }
 
 func TestMirrorReportsTheUnchangedDigest(t *testing.T) {
-	fakeDocker(t, `case "$*" in *inspect*) echo '{"digest":"`+mirrorDigest+`"}';; esac`)
+	fakeDocker(t, `case "$*" in
+  "image inspect"*) echo '["reg.test/fitt/app@`+mirrorDigest+`"]';;
+  *"imagetools inspect"*) echo '{"digest":"`+mirrorDigest+`"}';;
+esac`)
 	m := mirrorManager("reg.test/fitt", "asia-southeast1-docker.pkg.dev/proj/crn")
 	job := &domain.Job{ID: uuid.New()}
 	m.mirrorImage(context.Background(), "reg.test/fitt/app:v3", job, m.logger)
 	got := streamText(m, job.ID)
-	if !strings.Contains(got, "asia-southeast1-docker.pkg.dev/proj/crn/app:v3") || !strings.Contains(got, mirrorDigest) {
+	if !strings.Contains(got, "asia-southeast1-docker.pkg.dev/proj/crn/app:v3") || !strings.Contains(got, mirrorDigest) || !strings.Contains(got, "digest unchanged") || strings.Contains(got, "failed") {
 		t.Fatalf("stream: %q", got)
 	}
 }
@@ -75,7 +78,10 @@ func TestMirrorReportsTheUnchangedDigest(t *testing.T) {
 // The delivery registry already holds the image the customer pulls; a mirror that
 // fails is reported in the build's stream, and the build carries on.
 func TestAFailedMirrorIsReportedNotFatal(t *testing.T) {
-	fakeDocker(t, `case "$*" in *create*) echo "denied: artifactregistry.repositories.uploadArtifacts" >&2; exit 1;; *) echo '{"digest":"`+mirrorDigest+`"}';; esac`)
+	fakeDocker(t, `case "$*" in
+  "image inspect"*) echo '["reg.test/fitt/app@`+mirrorDigest+`"]';;
+  push*) echo "denied: artifactregistry.repositories.uploadArtifacts" >&2; exit 1;;
+esac`)
 	m := mirrorManager("reg.test/fitt", "asia-southeast1-docker.pkg.dev/proj/crn")
 	job := &domain.Job{ID: uuid.New()}
 	m.mirrorImage(context.Background(), "reg.test/fitt/app:v3", job, m.logger)

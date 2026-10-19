@@ -14,12 +14,18 @@ import (
 // Mirroring a delivered image to a second registry (Google Artifact Registry,
 // KR "code runner on GCP") without changing its digest. A customer or FTC DV pins
 // the digest CRN reports; the copy in Artifact Registry must answer to that same
-// digest, so it is copied registry to registry as a carbon copy — never rebuilt
-// or re-pushed, which could recompress layers and produce a new manifest.
+// digest.
+//
+// The copy is pushed from the local image store, right after the delivery push:
+// the delivery registry speaks plain HTTP, which buildx imagetools refuses, so it
+// cannot be read back registry to registry. With the containerd image store (the
+// build machine's) a push sends the stored manifest unchanged; the mirror's digest
+// is then checked against the one the delivery registry gave, so a store that
+// re-encodes layers fails loudly instead of handing out a second digest.
 //
 // Auth is ambient, like PushImage: the CRN host must be logged in to both
-// registries (for Artifact Registry, `gcloud auth configure-docker <region>-docker.pkg.dev`
-// with a service account that may write to the repository).
+// registries (for Artifact Registry, docker login at the machine itself with the
+// crn-pusher key — not over ssh, where the keychain is out of reach).
 
 var digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
@@ -39,16 +45,36 @@ func RemoteDigest(ctx context.Context, ref string, logger *slog.Logger) (string,
 	return m.Digest, nil
 }
 
-// MirrorImage copies ref to dest byte for byte and returns the digest both now
-// answer to. It fails if the registry ends up holding anything else.
-func MirrorImage(ctx context.Context, ref, dest string, logger *slog.Logger) (string, error) {
-	digest, err := RemoteDigest(ctx, ref, logger)
+// PushedDigest is the manifest digest the registry gave ref when it was pushed,
+// from the local image's RepoDigests.
+func PushedDigest(ctx context.Context, ref string, logger *slog.Logger) (string, error) {
+	out, err := dockerOutput(ctx, logger, "image", "inspect", ref, "--format", "{{json .RepoDigests}}")
 	if err != nil {
 		return "", err
 	}
-	// --prefer-index=false: with a single source, copy it as it is instead of
-	// wrapping it in a new index (which would have a digest of its own).
-	if _, err := dockerOutput(ctx, logger, "buildx", "imagetools", "create", "--prefer-index=false", "--tag", dest, repository(ref)+"@"+digest); err != nil {
+	var digests []string
+	_ = json.Unmarshal([]byte(out), &digests)
+	repo := repository(ref)
+	for _, d := range digests {
+		if r, digest, ok := strings.Cut(d, "@"); ok && r == repo && digestPattern.MatchString(digest) {
+			return digest, nil
+		}
+	}
+	return "", fmt.Errorf("buildstep: no digest from %s for the local image (was it pushed?): %q", repo, tailLines(out, 3))
+}
+
+// MirrorImage pushes the local image ref (already pushed to its delivery
+// registry) to dest and returns the digest both answer to. It fails if dest ends
+// up holding anything else.
+func MirrorImage(ctx context.Context, ref, dest string, logger *slog.Logger) (string, error) {
+	digest, err := PushedDigest(ctx, ref, logger)
+	if err != nil {
+		return "", err
+	}
+	if _, err := dockerOutput(ctx, logger, "tag", ref, dest); err != nil {
+		return "", err
+	}
+	if err := PushImage(ctx, dest, logger); err != nil {
 		return "", err
 	}
 	got, err := RemoteDigest(ctx, dest, logger)
