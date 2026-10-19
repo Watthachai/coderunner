@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -39,37 +40,62 @@ func TestRemoteDigestRefusesAnAnswerThatIsNotADigest(t *testing.T) {
 	}
 }
 
-// The copy goes registry to registry by digest, as a carbon copy: an index would
-// get a new digest, and a rebuild or re-push could too.
-func TestMirrorImageCopiesByDigestAndProvesTheCopyMatches(t *testing.T) {
-	args := stubDocker(t, `case "$*" in *inspect*) echo '{"digest":"`+digestA+`"}';; esac`)
+// The copy is pushed from the local image store, not read back from the delivery
+// registry: that registry speaks plain HTTP, which buildx imagetools refuses
+// ("server gave HTTP response to HTTPS client", found on the build machine). With
+// the containerd image store a push sends the stored manifest as it is, so the
+// mirror answers to the digest the delivery registry gave — checked, not assumed.
+func TestMirrorImagePushesTheSameImageAndProvesTheDigestMatches(t *testing.T) {
+	args := stubDocker(t, `case "$*" in
+  "image inspect"*) echo '["other.test/x@sha256:0000000000000000000000000000000000000000000000000000000000000002","reg.test/crn/app@`+digestA+`"]';;
+  *"imagetools inspect"*) echo '{"digest":"`+digestA+`"}';;
+esac`)
 	got, err := MirrorImage(context.Background(), "reg.test/crn/app:v3", "asia-southeast1-docker.pkg.dev/p/crn/app:v3", discardLogger())
 	if err != nil || got != digestA {
 		t.Fatalf("got %q, %v", got, err)
 	}
 	ran := strings.Split(strings.TrimSpace(readFile(t, args)), "\n")
 	want := []string{
-		"buildx imagetools inspect reg.test/crn/app:v3 --format {{json .Manifest}}",
-		"buildx imagetools create --prefer-index=false --tag asia-southeast1-docker.pkg.dev/p/crn/app:v3 reg.test/crn/app@" + digestA,
+		"image inspect reg.test/crn/app:v3 --format {{json .RepoDigests}}",
+		"tag reg.test/crn/app:v3 asia-southeast1-docker.pkg.dev/p/crn/app:v3",
+		"push asia-southeast1-docker.pkg.dev/p/crn/app:v3",
 		"buildx imagetools inspect asia-southeast1-docker.pkg.dev/p/crn/app:v3 --format {{json .Manifest}}",
 	}
 	if strings.Join(ran, "\n") != strings.Join(want, "\n") {
 		t.Errorf("ran:\n%s\nwant:\n%s", strings.Join(ran, "\n"), strings.Join(want, "\n"))
 	}
+	for _, line := range ran {
+		if strings.Contains(line, "imagetools") && strings.Contains(line, "reg.test") {
+			t.Errorf("read the HTTP delivery registry with imagetools: %s", line)
+		}
+	}
 }
 
 func TestMirrorImageFailsWhenTheCopyHasAnotherDigest(t *testing.T) {
-	stubDocker(t, `case "$*" in *"inspect reg.test"*) echo '{"digest":"`+digestA+`"}';; *inspect*) echo '{"digest":"`+digestB+`"}';; esac`)
+	stubDocker(t, `case "$*" in "image inspect"*) echo '["reg.test/crn/app@`+digestA+`"]';; *"imagetools inspect"*) echo '{"digest":"`+digestB+`"}';; esac`)
 	_, err := MirrorImage(context.Background(), "reg.test/crn/app:v3", "mirror.test/crn/app:v3", discardLogger())
 	if err == nil || !strings.Contains(err.Error(), "digest") {
 		t.Fatalf("err = %v, want a digest mismatch", err)
 	}
 }
 
-func TestMirrorImageFailsWhenTheCopyFails(t *testing.T) {
-	stubDocker(t, `case "$*" in *create*) echo "denied: permission" >&2; exit 1;; *) echo '{"digest":"`+digestA+`"}';; esac`)
+func TestMirrorImageFailsWhenThePushFails(t *testing.T) {
+	restore := pushBackoff
+	pushBackoff = time.Millisecond
+	t.Cleanup(func() { pushBackoff = restore })
+	stubDocker(t, `case "$*" in "image inspect"*) echo '["reg.test/crn/app@`+digestA+`"]';; push*) echo "denied: permission" >&2; exit 1;; esac`)
 	if _, err := MirrorImage(context.Background(), "reg.test/crn/app:v3", "mirror.test/crn/app:v3", discardLogger()); err == nil || !strings.Contains(err.Error(), "denied") {
 		t.Fatalf("err = %v, want the registry's refusal", err)
+	}
+}
+
+func TestMirrorImageNeedsTheDigestTheDeliveryRegistryGave(t *testing.T) {
+	args := stubDocker(t, `case "$*" in "image inspect"*) echo '["elsewhere.test/crn/app@`+digestA+`"]';; esac`)
+	if _, err := MirrorImage(context.Background(), "reg.test/crn/app:v3", "mirror.test/crn/app:v3", discardLogger()); err == nil || !strings.Contains(err.Error(), "reg.test/crn/app") {
+		t.Fatalf("err = %v, want: no digest from the delivery registry", err)
+	}
+	if strings.Contains(readFile(t, args), "push") {
+		t.Error("pushed without knowing the digest to prove")
 	}
 }
 
