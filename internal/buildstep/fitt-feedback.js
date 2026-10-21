@@ -172,9 +172,13 @@
 
   // --- UI (Shadow DOM) --------------------------------------------------------
 
+  // Closed, so the app's own browser tests cannot see these controls: CRN adds
+  // the widget after the AI's tests pass, then reruns them, and Playwright
+  // pierces open roots (a page-wide button count found 💬 too). People and
+  // screen readers still see and use it. Keep using `root`: the host's shadowRoot is null.
   var host = document.createElement("div");
   host.id = "fitt-feedback-host";
-  var root = host.attachShadow({ mode: "open" });
+  var root = host.attachShadow({ mode: "closed" });
   (document.body || document.documentElement).appendChild(host);
 
   // A page-level highlight box used during point mode (outside shadow so it can

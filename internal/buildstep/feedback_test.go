@@ -147,3 +147,23 @@ func TestInjectFeedbackWidgetSkipsNextBuildOutput(t *testing.T) {
 		t.Errorf(".next html was patched but must be skipped")
 	}
 }
+
+// The widget is added after the AI has written and passed its own browser tests,
+// and CRN's gate then reruns those tests against the shipped image. Playwright
+// pierces open shadow roots, so an app test such as
+// expect(page.getByRole("button")).toHaveCount(1) counted the 💬 button and the
+// gate failed a build the AI had passed (Hello Fitt, 21 Oct). A closed root keeps
+// the widget on screen and clickable while Playwright cannot see into it.
+func TestFeedbackWidgetIsHiddenFromAppTests(t *testing.T) {
+	if !strings.Contains(feedbackWidgetJS, `attachShadow({ mode: "closed" })`) {
+		t.Error(`widget must attach a closed shadow root so the app's own browser tests cannot see its controls`)
+	}
+	if strings.Contains(feedbackWidgetJS, `mode: "open"`) {
+		t.Error(`widget still attaches an open shadow root`)
+	}
+	// host.shadowRoot is null for a closed root; the widget must keep using the
+	// reference attachShadow returned.
+	if strings.Contains(feedbackWidgetJS, ".shadowRoot") {
+		t.Error(`widget reads .shadowRoot, which is null for a closed root`)
+	}
+}
