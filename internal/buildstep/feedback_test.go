@@ -167,3 +167,85 @@ func TestFeedbackWidgetIsHiddenFromAppTests(t *testing.T) {
 		t.Error(`widget reads .shadowRoot, which is null for a closed root`)
 	}
 }
+
+// Customer deliveries ship without the widget unless the build asks for it.
+// RemoveFeedbackWidget takes out a widget an earlier build left behind, so an
+// edit build that turns it off leaves no widget code in the source.
+func TestRemoveFeedbackWidgetHTML(t *testing.T) {
+	dir := t.TempDir()
+	html := "<!doctype html><html><body><h1>Cafe</h1></body></html>"
+	path := filepath.Join(dir, "index.html")
+	if err := os.WriteFile(path, []byte(html), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InjectFeedbackWidget(dir, "p", "http://localhost:3010/feedback_requests", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !HasFeedbackWidget(dir) {
+		t.Fatal("HasFeedbackWidget = false after inject")
+	}
+
+	n, err := RemoveFeedbackWidget(dir, nil)
+	if err != nil || n != 1 {
+		t.Fatalf("remove: n=%d err=%v, want 1/nil", n, err)
+	}
+	if got := readFile(t, path); got != html {
+		t.Errorf("html after remove = %q, want the original %q", got, html)
+	}
+	if HasFeedbackWidget(dir) {
+		t.Error("HasFeedbackWidget = true after remove")
+	}
+	if n, _ := RemoveFeedbackWidget(dir, nil); n != 0 {
+		t.Errorf("second remove = %d, want 0", n)
+	}
+}
+
+func TestRemoveFeedbackWidgetNextLayout(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	layoutPath := filepath.Join(dir, "app", "layout.tsx")
+	layout := "export default function RootLayout({ children }) {\n" +
+		"  return (\n    <html>\n      <body>\n        {children}\n      </body>\n    </html>\n  );\n}\n"
+	if err := os.WriteFile(layoutPath, []byte(layout), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := InjectFeedbackWidget(dir, "p", "http://localhost:3010/feedback_requests", nil); n != 1 {
+		t.Fatalf("inject = %d, want 1", n)
+	}
+	if !HasFeedbackWidget(dir) {
+		t.Fatal("HasFeedbackWidget = false after inject")
+	}
+
+	n, err := RemoveFeedbackWidget(dir, nil)
+	if err != nil || n != 1 {
+		t.Fatalf("remove: n=%d err=%v, want 1/nil", n, err)
+	}
+	if got := readFile(t, layoutPath); got != layout {
+		t.Errorf("layout after remove =\n%s\nwant the original\n%s", got, layout)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "public", "fitt-feedback.js")); !os.IsNotExist(err) {
+		t.Errorf("public/fitt-feedback.js still present (err=%v)", err)
+	}
+	if HasFeedbackWidget(dir) {
+		t.Error("HasFeedbackWidget = true after remove")
+	}
+}
+
+func TestRemoveFeedbackWidgetLeavesPlainAppsAlone(t *testing.T) {
+	dir := t.TempDir()
+	html := "<!doctype html><html><body><script>start()</script></body></html>"
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(html), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if HasFeedbackWidget(dir) {
+		t.Error("HasFeedbackWidget = true for an app that never had it")
+	}
+	if n, err := RemoveFeedbackWidget(dir, nil); err != nil || n != 0 {
+		t.Fatalf("remove: n=%d err=%v, want 0/nil", n, err)
+	}
+	if got := readFile(t, filepath.Join(dir, "index.html")); got != html {
+		t.Errorf("plain app changed: %q", got)
+	}
+}

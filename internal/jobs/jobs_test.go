@@ -3,6 +3,7 @@ package jobs
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -205,4 +206,56 @@ func TestDownloadZipRejectsNonHTTPScheme(t *testing.T) {
 	if _, err := downloadZip("file:///etc/passwd"); err == nil {
 		t.Fatal("expected non-http scheme to be rejected")
 	}
+}
+
+// The 💬 feedback widget is opt-in. A build request turns it on only with
+// "feedback_widget": true; without that a new build ships no widget. An edit
+// that does not say keeps whatever the project already has, so a demo's
+// feedback loop survives its own fix builds.
+func TestParsePayloadFeedbackWidget(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    *bool
+	}{
+		{"build, not asked", `{"name":"Hello Fitt"}`, nil},
+		{"build, on", `{"name":"Hello Fitt","feedback_widget":true}`, &yes},
+		{"build, off", `{"name":"Hello Fitt","feedback_widget":false}`, &no},
+		{"edit, not asked", `{"mode":"edit","change":"x","name":"Hello Fitt"}`, nil},
+		{"edit, off", `{"mode":"edit","change":"x","name":"Hello Fitt","feedback_widget":false}`, &no},
+	} {
+		got := parsePayload(json.RawMessage(tc.payload), nil).FeedbackWidget
+		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("%s: FeedbackWidget = %v, want %v", tc.name, fmtBoolPtr(got), fmtBoolPtr(tc.want))
+		}
+	}
+}
+
+func TestFeedbackWidgetPlan(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name              string
+		spec              payloadSpec
+		inject, removeOld bool
+	}{
+		{"build, not asked: off", payloadSpec{}, false, true},
+		{"build, on", payloadSpec{FeedbackWidget: &yes}, true, false},
+		{"build, off", payloadSpec{FeedbackWidget: &no}, false, true},
+		{"edit, not asked: keep as is", payloadSpec{Mode: "edit"}, false, false},
+		{"edit, on", payloadSpec{Mode: "edit", FeedbackWidget: &yes}, true, false},
+		{"edit, off: remove", payloadSpec{Mode: "edit", FeedbackWidget: &no}, false, true},
+	} {
+		inject, removeOld := feedbackWidgetPlan(tc.spec)
+		if inject != tc.inject || removeOld != tc.removeOld {
+			t.Errorf("%s: inject=%v remove=%v, want inject=%v remove=%v", tc.name, inject, removeOld, tc.inject, tc.removeOld)
+		}
+	}
+}
+
+func fmtBoolPtr(b *bool) string {
+	if b == nil {
+		return "<not asked>"
+	}
+	return fmt.Sprint(*b)
 }

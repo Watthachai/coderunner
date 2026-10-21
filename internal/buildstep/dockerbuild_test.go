@@ -169,3 +169,34 @@ func TestCustomerImageMakesNoCallsAtStart(t *testing.T) {
 		}
 	}
 }
+
+// The customer compose passes FITT_FEEDBACK_URL through only when the app
+// carries the widget; a delivery without it has nothing to point there.
+func TestCustomerComposeFeedbackURLOnlyWithWidget(t *testing.T) {
+	without := t.TempDir()
+	writePkg(t, without, `{"dependencies":{"next":"16"}}`)
+	if _, err := WriteImageBundle(without, "reg/app:v1", "reg", 4123, nil); err != nil {
+		t.Fatal(err)
+	}
+	if s := readFile(t, filepath.Join(without, "docker-compose.customer.yml")); strings.Contains(s, "FITT_FEEDBACK_URL") {
+		t.Error("compose names FITT_FEEDBACK_URL for an app without the widget")
+	}
+
+	with := t.TempDir()
+	writePkg(t, with, `{"dependencies":{"next":"16"}}`)
+	if err := os.MkdirAll(filepath.Join(with, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(with, "app", "layout.tsx"), []byte("<html><body>{children}</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := InjectFeedbackWidget(with, "p", "http://localhost:3010/feedback_requests", nil); n != 1 {
+		t.Fatalf("inject = %d, want 1", n)
+	}
+	if _, err := WriteImageBundle(with, "reg/app:v1", "reg", 4123, nil); err != nil {
+		t.Fatal(err)
+	}
+	if s := readFile(t, filepath.Join(with, "docker-compose.customer.yml")); !strings.Contains(s, `FITT_FEEDBACK_URL: "${FITT_FEEDBACK_URL:-}"`) {
+		t.Error("compose lost FITT_FEEDBACK_URL for an app with the widget")
+	}
+}

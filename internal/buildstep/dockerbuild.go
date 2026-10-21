@@ -242,10 +242,15 @@ func WriteImageBundle(dir, appImage, registry string, port int, logger *slog.Log
 		"{{REGISTRY}}", registry,
 		"{{PORT}}", strconv.Itoa(port),
 	)
+	compose := customerCompose
+	if !HasFeedbackWidget(dir) {
+		// The widget is opt-in; without it nothing in the app reads this variable.
+		compose = strings.Replace(compose, "      FITT_FEEDBACK_URL: \"${FITT_FEEDBACK_URL:-}\"\n", "", 1)
+	}
 	for _, f := range []struct{ name, body string }{
 		{"Dockerfile", productionDockerfile},
 		{".dockerignore", dockerIgnore},
-		{"docker-compose.customer.yml", rep.Replace(customerCompose)},
+		{"docker-compose.customer.yml", rep.Replace(compose)},
 		{"INSTALL.md", rep.Replace(installMD)},
 	} {
 		if err := os.WriteFile(filepath.Join(dir, f.name), []byte(f.body), 0o644); err != nil {

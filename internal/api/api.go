@@ -909,6 +909,9 @@ type ingestBody struct {
 	ZipURI    string `json:"zip_uri"`
 	FileCount int    `json:"file_count"`
 	ZipBytes  int    `json:"zip_bytes"`
+	// FeedbackWidget opts this build into the 💬 feedback widget. Absent or
+	// false ships without it (the default for customer deliveries).
+	FeedbackWidget *bool `json:"feedback_widget,omitempty"`
 }
 
 // handleIngest accepts a full project payload from FBD, ensures the org and
@@ -1009,6 +1012,20 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 // description of what to change in the existing project.
 type editProjectBody struct {
 	Change string `json:"change"`
+	// FeedbackWidget, when given, turns the 💬 widget on or off for this edit;
+	// absent keeps the project as it is.
+	FeedbackWidget *bool `json:"feedback_widget,omitempty"`
+}
+
+// editPayload is the edit build payload the jobs layer decodes: mode=edit routes
+// runJob down the clone/pull + edit path; name reproduces the same branch slug
+// as the build.
+func editPayload(change, name string, feedbackWidget *bool) ([]byte, error) {
+	p := map[string]any{"mode": "edit", "change": change, "name": name}
+	if feedbackWidget != nil {
+		p["feedback_widget"] = *feedbackWidget
+	}
+	return json.Marshal(p)
 }
 
 // handleEditProject creates an EDIT build for an existing project: Claude edits
@@ -1043,13 +1060,7 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The edit payload the jobs layer decodes: mode=edit routes runJob down the
-	// clone/pull + edit path; name reproduces the same branch slug as the build.
-	payload, err := json.Marshal(map[string]string{
-		"mode":   "edit",
-		"change": body.Change,
-		"name":   project.Name,
-	})
+	payload, err := editPayload(body.Change, project.Name, body.FeedbackWidget)
 	if err != nil {
 		s.logger.Error("marshal edit payload failed", "err", err, "project_id", projectID)
 		s.writeError(w, r, http.StatusInternalServerError, "could not encode payload")

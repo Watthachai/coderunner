@@ -667,14 +667,27 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		m.publishPhase(job.ID, "claude_skipped")
 	}
 
-	// Inject the in-demo feedback widget into the generated app so every demo
-	// ships the "💬 feedback" control deterministically (not left to Claude). Runs
-	// after generation, before the git phase, so the widget is committed + shipped.
-	// Best-effort: a widget hiccup must not fail an otherwise-good build.
-	if n, injErr := buildstep.InjectFeedbackWidget(workDir, job.ProjectID.String(), m.feedbackIngestURL, m.logger); injErr != nil {
-		log.Warn("inject feedback widget failed", "err", injErr)
-	} else if n > 0 {
-		log.Info("injected feedback widget", "html_files", n)
+	// The in-demo 💬 feedback widget is opt-in per build (customer deliveries ship
+	// without it). When asked for, CRN injects it deterministically (not left to
+	// Claude); when turned off, it removes one an earlier build left. Runs after
+	// generation, before the git phase, so the result is what is committed and
+	// shipped. Injection is best-effort; a widget that cannot be removed fails the
+	// build, because shipping it would break the default.
+	switch inject, removeOld := feedbackWidgetPlan(spec); {
+	case inject:
+		if n, injErr := buildstep.InjectFeedbackWidget(workDir, job.ProjectID.String(), m.feedbackIngestURL, m.logger); injErr != nil {
+			log.Warn("inject feedback widget failed", "err", injErr)
+		} else if n > 0 {
+			log.Info("injected feedback widget", "html_files", n)
+		}
+	case removeOld:
+		if _, rmErr := buildstep.RemoveFeedbackWidget(workDir, m.logger); rmErr != nil {
+			m.finishFailed(ctx, job, "remove feedback widget: "+rmErr.Error(), meta)
+			return
+		}
+		log.Info("feedback widget off")
+	default:
+		log.Info("feedback widget left as the project has it", "present", buildstep.HasFeedbackWidget(workDir))
 	}
 
 	// Scaffold a zero-setup runner (docker-compose + QUICKSTART) for DB-backed
@@ -1598,6 +1611,9 @@ type payloadSpec struct {
 	// IssueNumber, when > 0, is the GitHub issue that drove this edit build. After
 	// a successful edit push (owner model) the build comments the commit on it.
 	IssueNumber int
+	// FeedbackWidget is the request's "feedback_widget": nil when it did not say.
+	// See feedbackWidgetPlan for what each value does.
+	FeedbackWidget *bool
 }
 
 // ingestPayload mirrors the FBD -> CRN ingest body (api.ingestBody). Only the
@@ -1622,6 +1638,8 @@ type ingestPayload struct {
 	// IssueNumber, when > 0, is the GitHub issue that drove this edit build (the
 	// /issues/{number}/fix flow). The build comments on it after a successful push.
 	IssueNumber int `json:"issue_number"`
+	// FeedbackWidget opts the build into the 💬 feedback widget (absent = not asked).
+	FeedbackWidget *bool `json:"feedback_widget"`
 }
 
 // zipDialAllowed reports whether downloadZip may connect to a resolved dial
@@ -1684,6 +1702,21 @@ func downloadZip(rawurl string) ([]byte, error) {
 	return raw, nil
 }
 
+// feedbackWidgetPlan decides the 💬 widget for a build. A request that says
+// "feedback_widget" gets exactly that: true injects it, false removes any the
+// project already carries. A new build that does not say ships without it. An
+// edit that does not say keeps the project as it is, so a demo's feedback loop
+// survives its own fix builds.
+func feedbackWidgetPlan(spec payloadSpec) (inject, removeOld bool) {
+	if spec.FeedbackWidget != nil {
+		return *spec.FeedbackWidget, !*spec.FeedbackWidget
+	}
+	if spec.Mode == "edit" {
+		return false, false
+	}
+	return false, true
+}
+
 // parsePayload materializes the prototype zip and composes the Claude prompt
 // from idea/brd/prd/prompts. The zip is written into the workdir as a single
 // file; the build agent extracts it itself (see the "# Source" prompt section).
@@ -1696,6 +1729,7 @@ func parsePayload(payload json.RawMessage, logger *slog.Logger) payloadSpec {
 
 	var spec payloadSpec
 	spec.Name = p.Name
+	spec.FeedbackWidget = p.FeedbackWidget
 	spec.Idea = p.Idea
 	spec.BRD = p.BRD
 	spec.PRD = p.PRD

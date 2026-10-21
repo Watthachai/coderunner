@@ -6,12 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
-// fitt-feedback.js is the self-contained in-demo feedback widget, inlined into
-// every build's HTML so each demo ships a "💬 feedback" control deterministically
-// (never left to Claude to reproduce).
+// fitt-feedback.js is the self-contained in-demo feedback widget. A build that
+// asks for it ("feedback_widget": true) gets it inlined deterministically (never
+// left to Claude to reproduce); customer deliveries ship without it by default.
 //
 //go:embed fitt-feedback.js
 var feedbackWidgetJS string
@@ -159,6 +160,136 @@ func injectIntoNextLayout(dir, projectID, ingestURL string, logger *slog.Logger)
 	}
 	logger.Info("injected feedback widget into next layout", "layout", layoutPath)
 	return 1
+}
+
+// The widget is opt-in per build, so a build that leaves it off must also take
+// out one an earlier build put in (an edit build starts from the pushed repo).
+var (
+	// What injectIntoHTML adds: the inline tag plus the newline after it.
+	inlineWidgetRe = regexp.MustCompile(`(?s)<script data-fitt-feedback[^>]*>.*?</script>\n?`)
+	// What injectIntoNextLayout adds, byte for byte, so removal restores the layout.
+	layoutWidgetExactRe = regexp.MustCompile(` {8}<script src="/fitt-feedback\.js" data-fitt-feedback="true"[^\n]*/>\n {6}`)
+	// The same tag after a formatter or the AI has moved it.
+	layoutWidgetLooseRe = regexp.MustCompile(`\s*<script\s+src="/fitt-feedback\.js"[\s\S]*?/>`)
+)
+
+// HasFeedbackWidget reports whether the app under dir carries the widget: an
+// inlined tag in an HTML file, the tag in a Next root layout, or the public copy.
+func HasFeedbackWidget(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "public", "fitt-feedback.js")); err == nil {
+		return true
+	}
+	for _, layout := range nextLayoutCandidates(dir) {
+		if raw, err := os.ReadFile(layout); err == nil && strings.Contains(string(raw), "fitt-feedback") {
+			return true
+		}
+	}
+	found := false
+	_ = walkAppHTML(dir, func(_ string, html string) {
+		if strings.Contains(html, "data-fitt-feedback") {
+			found = true
+		}
+	})
+	return found
+}
+
+// RemoveFeedbackWidget takes the widget out of the app under dir, undoing
+// InjectFeedbackWidget: the inlined tag from every HTML file, the tag from the
+// Next root layout and public/fitt-feedback.js. It returns the number of HTML
+// files and layouts changed (the layout and its public copy count as one).
+func RemoveFeedbackWidget(dir string, logger *slog.Logger) (int, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	changed := 0
+	var firstErr error
+	keep := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	keep(walkAppHTML(dir, func(path, html string) {
+		if !strings.Contains(html, "data-fitt-feedback") {
+			return
+		}
+		out := inlineWidgetRe.ReplaceAllString(html, "")
+		if out == html {
+			return
+		}
+		if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
+			keep(fmt.Errorf("buildstep: remove feedback widget from %s: %w", path, err))
+			return
+		}
+		changed++
+	}))
+
+	layoutChanged := false
+	for _, layout := range nextLayoutCandidates(dir) {
+		raw, err := os.ReadFile(layout)
+		if err != nil || !strings.Contains(string(raw), "fitt-feedback") {
+			continue
+		}
+		src := string(raw)
+		out := layoutWidgetExactRe.ReplaceAllString(src, "")
+		out = layoutWidgetLooseRe.ReplaceAllString(out, "")
+		if out == src {
+			// Only a mention (a comment, say): no tag loads the widget, nothing to undo.
+			logger.Warn("layout mentions fitt-feedback but holds no widget tag", "layout", layout)
+			continue
+		}
+		if err := os.WriteFile(layout, []byte(out), 0o644); err != nil {
+			keep(fmt.Errorf("buildstep: remove feedback widget from %s: %w", layout, err))
+			continue
+		}
+		layoutChanged = true
+	}
+	public := filepath.Join(dir, "public", "fitt-feedback.js")
+	if err := os.Remove(public); err == nil {
+		layoutChanged = true
+	} else if !os.IsNotExist(err) {
+		keep(fmt.Errorf("buildstep: remove %s: %w", public, err))
+	}
+	if layoutChanged {
+		changed++
+	}
+	if changed > 0 {
+		logger.Info("removed feedback widget", "files", changed)
+	}
+	return changed, firstErr
+}
+
+// walkAppHTML calls fn with every .html file under dir that is app source,
+// skipping the same build output and tooling dirs injectIntoHTML skips.
+func walkAppHTML(dir string, fn func(path, html string)) error {
+	return filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "node_modules", ".claude", "dist", "build", ".next", "out", ".turbo", ".vercel":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(path), ".html") {
+			return nil
+		}
+		if raw, err := os.ReadFile(path); err == nil {
+			fn(path, string(raw))
+		}
+		return nil
+	})
+}
+
+func nextLayoutCandidates(dir string) []string {
+	return []string{
+		filepath.Join(dir, "app", "layout.tsx"),
+		filepath.Join(dir, "app", "layout.jsx"),
+		filepath.Join(dir, "src", "app", "layout.tsx"),
+		filepath.Join(dir, "src", "app", "layout.jsx"),
+	}
 }
 
 // feedbackScriptTag wraps the embedded widget in an inline <script> carrying the
