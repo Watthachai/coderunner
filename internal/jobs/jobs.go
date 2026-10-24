@@ -433,7 +433,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	job.Status = domain.JobBuilding
 	m.notify(ctx, job.ID, domain.EventBuildStarted, nil)
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "building", "", nil)
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "", "building", "", nil)
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSBuildPhase,
 		Phase:     string(domain.JobBuilding),
@@ -797,7 +797,8 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// deliverable: if it can't be built/pushed, FAIL the build rather than
 	// releasing with a "branch:main" tag that would make a consumer fall back to
 	// git-cloning the source repo. (When image mode is off, this is a no-op.)
-	if err := m.buildAndPushImage(runCtx, workDir, spec, job, log); err != nil {
+	imageDigest, err := m.buildAndPushImage(runCtx, workDir, spec, job, log)
+	if err != nil {
 		log.Error("image build failed; failing the build", "err", err)
 		if runCtx.Err() != nil && ctx.Err() == nil {
 			m.finishCancelled(ctx, job, meta)
@@ -842,7 +843,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, envEx))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, pushRemote, pushBranch, "released", "", envEx)
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, "released", "", envEx)
 
 	// Cache this source → image so an identical resubmission reuses it (skips the AI
 	// conversion). srcHash is "" for edit builds, which clears the cache so a later
@@ -900,7 +901,7 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef st
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(filepath.Join(m.projectsDir, job.ProjectID.String())))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, meta.remote, meta.branch, envEx))
-	go m.ftcCallback(job.ID, job.BuildNo, imageRef, meta.remote, meta.branch, "released", "", envEx)
+	go m.ftcCallback(job.ID, job.BuildNo, imageRef, m.reusedDigest(ctx, imageRef, log), meta.remote, meta.branch, "released", "", envEx)
 
 	// A reused build is still a build the operator may need to inspect later.
 	m.saveTrace(ctx, job, meta)
@@ -925,7 +926,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", errMsg, nil)
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "", "failed", errMsg, nil)
 
 	// Persist the trace for the failed build too — the operator needs to see how
 	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
@@ -959,7 +960,7 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, meta tra
 	// "cancelled" not "failed"); the FTC HTTP callback maps to "failed" since its
 	// vocabulary is only building/released/failed.
 	m.notify(ctx, job.ID, domain.EventBuildCancelled, cancelledPayload(msg))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "failed", msg, nil)
+	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "", "failed", msg, nil)
 
 	m.saveTrace(ctx, job, meta)
 	m.closeSubscribers(job.ID)
@@ -1049,13 +1050,15 @@ func (m *manager) writeImageBundle(workDir string, spec payloadSpec, job *domain
 // the build (never releases a "branch:main" tag that would make a consumer fall
 // back to git-cloning the source). The app self-migrates its schema on start, so
 // there is no separate migrate image. The air-gap tarball stays best-effort.
-func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, log *slog.Logger) error {
+// It also returns the digest the registry gave the push ("" when nothing was
+// pushed or the digest could not be read; that never fails the build).
+func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, log *slog.Logger) (string, error) {
 	if !m.buildImage {
-		return nil
+		return "", nil
 	}
 	if !buildstep.IsNextApp(workDir) {
 		log.Info("docker image skipped (not a Next app)")
-		return nil
+		return "", nil
 	}
 	m.publishPhase(job.ID, "docker")
 	appTag := m.imageTag(spec, job)
@@ -1066,17 +1069,23 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 			Kind: domain.WSError, Text: "docker build (app) failed: " + err.Error(),
 			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
 		})
-		return fmt.Errorf("docker build (app) failed: %w", err)
+		return "", fmt.Errorf("docker build (app) failed: %w", err)
 	}
 	// App image must be PULLABLE for a registry consumer — push failure fails too.
+	digest := ""
 	if m.imageRegistry != "" {
 		if err := buildstep.PushImage(ctx, appTag, log); err != nil {
 			m.publish(job.ID, domain.BuildEventMsg{
 				Kind: domain.WSError, Text: "docker push (app) failed: " + err.Error(),
 				JobID: job.ID.String(), Timestamp: time.Now().UTC(),
 			})
-			return fmt.Errorf("docker push (app) failed: %w", err)
+			return "", fmt.Errorf("docker push (app) failed: %w", err)
 		}
+		d, err := buildstep.PushedDigest(ctx, appTag, log)
+		if err != nil {
+			log.Warn("image digest unknown; the callback goes without it", "err", err)
+		}
+		digest = d
 	}
 
 	// Air-gap bundle (docker save tarball + compose + INSTALL) when configured.
@@ -1096,8 +1105,22 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
-	log.Info("docker image ready", "app", appTag, "pushed", m.imageRegistry != "")
-	return nil
+	log.Info("docker image ready", "app", appTag, "pushed", m.imageRegistry != "", "digest", digest)
+	return digest, nil
+}
+
+// reusedDigest is the registry digest of a reused build's image, read from the
+// local image store so the released callback carries it as for a fresh build.
+// Best-effort: "" when the image is no longer local or nothing was pushed.
+func (m *manager) reusedDigest(ctx context.Context, imageRef string, log *slog.Logger) string {
+	if m.imageRegistry == "" || !strings.HasPrefix(imageRef, m.imageRegistry+"/") {
+		return ""
+	}
+	digest, err := buildstep.PushedDigest(ctx, imageRef, log)
+	if err != nil {
+		log.Warn("reused image digest unknown; the callback goes without it", "err", err)
+	}
+	return digest
 }
 
 // writeArtifactBundle writes the air-gap delivery bundle for this build when
@@ -1155,7 +1178,7 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 	}
 	for _, o := range orphans {
 		m.notify(ctx, o.ID, domain.EventBuildFailed, failedPayload(msg))
-		go m.ftcCallback(o.ID, o.BuildNo, o.DockerTag, "", "", "failed", msg, nil)
+		go m.ftcCallback(o.ID, o.BuildNo, o.DockerTag, "", "", "", "failed", msg, nil)
 	}
 	if len(orphans) > 0 {
 		m.logger.Warn("reconciled orphaned builds on startup", "count", len(orphans))
@@ -1339,7 +1362,7 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 // ("building" / "released" / "failed").
 // Takes job fields by value so callers can dispatch it in a goroutine (it is
 // best-effort telemetry — never block the build lifecycle on a slow FTC DV).
-func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, gitRemote, gitBranch, status, message string, env any) {
+func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, status, message string, env any) {
 	if m.ftcdvCallbackURL == "" {
 		return
 	}
@@ -1353,6 +1376,10 @@ func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, gitRemote,
 	}
 	if imageRef != "" {
 		payload["image_ref"] = imageRef
+	}
+	// The registry's manifest digest for image_ref: FTC DV pulls by digest only.
+	if imageDigest != "" {
+		payload["image_digest"] = imageDigest
 	}
 	// On "released", the example runtime env contract for the delivered image
 	// (DATABASE_URL + ports) so FTC DV knows what to inject to run it.

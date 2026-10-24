@@ -145,7 +145,7 @@ func TestFTCCallback(t *testing.T) {
 	defer srv.Close()
 
 	m := &manager{ftcdvCallbackURL: srv.URL, ftcdvCallbackToken: "secret-tok", logger: slog.Default()}
-	m.ftcCallback(uuid.New(), 7, "", "acme/repo", "main", "released", "", buildstep.NewDemoEnvExample(4123))
+	m.ftcCallback(uuid.New(), 7, "reg.test/crn/app:v7", "sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682", "acme/repo", "main", "released", "", buildstep.NewDemoEnvExample(4123))
 
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
@@ -156,10 +156,25 @@ func TestFTCCallback(t *testing.T) {
 	if gotCT != "application/json" {
 		t.Errorf("content-type = %q", gotCT)
 	}
-	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`, `"git_remote":"acme/repo"`, `"git_branch":"main"`, `"env"`, `"DATABASE_URL"`, `"APP_PORT":"4123"`, `"DEV_EMAIL"`} {
+	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`, `"image_ref":"reg.test/crn/app:v7"`, `"image_digest":"sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682"`, `"git_remote":"acme/repo"`, `"git_branch":"main"`, `"env"`, `"DATABASE_URL"`, `"APP_PORT":"4123"`, `"DEV_EMAIL"`} {
 		if !strings.Contains(gotBody, want) {
 			t.Errorf("body missing %q\n%s", want, gotBody)
 		}
+	}
+}
+
+func TestFTCCallbackOmitsAnUnknownDigest(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+	}))
+	defer srv.Close()
+
+	m := &manager{ftcdvCallbackURL: srv.URL, logger: slog.Default()}
+	m.ftcCallback(uuid.New(), 1, "branch:main", "", "", "", "building", "", nil)
+	if strings.Contains(gotBody, "image_digest") {
+		t.Errorf("building callback carries a digest: %s", gotBody)
 	}
 }
 
@@ -189,7 +204,7 @@ func TestSourceHash(t *testing.T) {
 func TestFTCCallbackDisabledWhenNoURL(t *testing.T) {
 	m := &manager{logger: slog.Default()} // no URL configured
 	// Must be a silent no-op (no panic, no network).
-	m.ftcCallback(uuid.New(), 1, "", "", "", "building", "", nil)
+	m.ftcCallback(uuid.New(), 1, "", "", "", "", "building", "", nil)
 }
 
 func TestDownloadZipBlocksLoopback(t *testing.T) {

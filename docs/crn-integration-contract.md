@@ -148,6 +148,7 @@ Content-Type: application/json
   "git_remote": "https://github.com/owner/repo.git",  // เฉพาะ released
   "git_branch": "main",                                 // เฉพาะ released
   "image_ref": "…:v4",       // ใส่มาถ้ามี docker_tag
+  "image_digest": "sha256:<64 hex>",  // เฉพาะ released ที่ push image แล้ว — digest ที่ registry ให้ image_ref นี้ ใช้ pull แบบ <repo>@<digest>
   "env": {                    // เฉพาะ released — example runtime env ของ image
     "DATABASE_URL": "postgresql://USER:PASSWORD@HOST:5432/DB?schema=public",
     "PORT": "3000",           // port ที่ app listen ใน container (fixed)
