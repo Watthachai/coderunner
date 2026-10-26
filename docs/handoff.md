@@ -61,12 +61,11 @@
 
 **Spotlight** — ต้องมี `.metadata_never_index` ไม่งั้น `ENOTEMPTY` ตอน rebuild
 
-**🔴 ห้ามรัน `make restart` ผ่าน ssh** — CRN ไม่มี launchd ไม่มีตัวคุมอะไรเลย มันเป็นลูกของ**เชลล์ล็อกอินจริงบน `ttys000`** ที่เปิดค้างไว้ตั้งแต่ 24 ส.ค. (`make restart` ตัวเดิมยังค้างเป็น PID 87019 อยู่ เพราะ `run-bin` ไม่เคย return) · `make run-bin` รัน binary แบบ foreground ไม่มี `nohup` ไม่มี `&` → สั่งผ่าน ssh = `make stop` ฆ่าตัวที่ดีอยู่ แล้วตัวใหม่ผูกกับเซสชัน ssh พอหลุดก็ตาย **ไม่มีอะไรปลุก ล่มเงียบไม่มี error** ท่าที่ปลอดภัย:
-```bash
-cd ~/fitt-coderunner && make stop && \
-  ( set -a; . ./.env; set +a; nohup ./bin/crn-server > ~/crn.log 2>&1 & )
-```
-แล้ว**ตัด ssh ก่อน** ค่อย `curl /healthz` จากเครื่องตัวเอง ถึงจะพิสูจน์ว่าหลุดจากเซสชันจริง · ทางที่ถูกระยะยาวคือทำ launchd agent — **ยังไม่มีใครทำ**
+**CRN รันใต้ launchd (`com.fitt.crn-server`)** — ติดตั้งครั้งเดียวที่หน้าจอเครื่อง build (Screen Sharing ได้) ด้วย `make agent-install` จากนั้น launchd เปิด CRN เองทุกครั้งที่ล็อกอิน และเปิดใหม่ถ้ามันตาย โดยรันในเซสชันที่ keychain เปิดอยู่ (gh, claude, docker login อยู่ในนั้น ผ่าน ssh เข้าไม่ถึง)
+- **deploy**: `make deploy` สั่งผ่าน ssh ได้ — ไม่ยอมทำถ้ามี build รันหรือรอคิว แล้ว pull dev → build → `launchctl kickstart -k` → รอ `/healthz` (pull ก่อน restart เสมอ ตามข้อข้างบน)
+- **หยุด**: `make agent-stop` · `make stop`/`make restart` จะไม่ยอมทำตอน launchd คุมอยู่ เพราะ launchd จะเปิดกลับทันที
+- **log**: `~/crn.log` (รอบก่อนๆ เก็บเป็น `~/crn-<วันเวลา>.log`) · error ของตัว launchd เองอยู่ `~/crn-launchd.log`
+- ยังไม่ได้ `agent-install` = แบบเดิม: ห้าม `make restart` ผ่าน ssh, start ที่หน้าจอด้วย `make stop && ( set -a; . ./.env; set +a; nohup ./bin/crn-server > ~/crn.log 2>&1 & )`
 
 **boot log ไม่ได้ลงไฟล์** — CRN ไม่ได้อยู่ใน docker compose (มีแค่ postgres/postgrest/mongo) log ออกหน้าเทอร์มินัล `ttys000` เท่านั้น `docker compose logs crn` ไม่มีวันได้อะไร
 

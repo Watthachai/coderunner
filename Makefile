@@ -7,7 +7,7 @@ MIGRATIONS_DIR ?= migrations
 # Port the backend listens on (matches CRN_LISTEN_ADDR's default :8080).
 PORT ?= 8080
 
-.PHONY: help build run stop restart vet tidy test migrate migrate-baseline db-up db-down fmt frontend-dev
+.PHONY: help build run stop restart agent-install agent-stop deploy vet tidy test migrate migrate-baseline db-up db-down fmt frontend-dev
 
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -27,6 +27,8 @@ run-bin: build ## Run the compiled binary (auto-loads .env). `go build` stamps t
 	./bin/crn-server
 
 stop: ## Stop the running backend (kills whatever listens on :$(PORT)).
+	@if launchctl print gui/$$(id -u)/com.fitt.crn-server >/dev/null 2>&1; then \
+		echo "CRN runs under launchd, which would start it again: use make agent-stop or make deploy"; exit 1; fi
 	@pid=$$(lsof -nP -tiTCP:$(PORT) -sTCP:LISTEN 2>/dev/null); \
 	if [ -n "$$pid" ]; then kill $$pid 2>/dev/null; sleep 1; \
 		pid=$$(lsof -nP -tiTCP:$(PORT) -sTCP:LISTEN 2>/dev/null); \
@@ -36,6 +38,15 @@ stop: ## Stop the running backend (kills whatever listens on :$(PORT)).
 restart: ## Stop any running backend, then rebuild + run a fresh binary (stamps git revision; picks up .env).
 	@$(MAKE) stop
 	@$(MAKE) run-bin
+
+agent-install: build ## (build machine, at its screen) Hand CRN to launchd: it starts at login and again after a crash.
+	@zsh deploy/macmini/install-agent.sh
+
+agent-stop: ## (build machine) Stop CRN under launchd until the next login or agent-install.
+	@launchctl bootout gui/$$(id -u)/com.fitt.crn-server && echo "stopped com.fitt.crn-server"
+
+deploy: ## (build machine, ssh is fine) Pull dev, rebuild and restart CRN under launchd; refuses while a build runs.
+	@zsh deploy/macmini/deploy.sh
 
 vet: ## go vet the whole module.
 	go vet ./...
