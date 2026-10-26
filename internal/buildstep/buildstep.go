@@ -136,7 +136,7 @@ func InjectSkills(dir string, skills []SkillFile) error {
 // to <remote> as refs/heads/<branch>. It initializes the repo (git init +
 // local user identity) and (re)points origin at remote on first use. The host's
 // ambient git credentials are used as-is; no tokens are injected. It returns the
-// short SHA of the pushed HEAD.
+// full SHA of the pushed HEAD, which the image's revision label carries.
 //
 // A no-op commit (nothing staged) is tolerated: the push still publishes the
 // current HEAD so the remote branch is created/updated either way.
@@ -191,7 +191,7 @@ func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, 
 		return "", err
 	}
 
-	sha, err := runGit(ctx, dir, log, "rev-parse", "--short", "HEAD")
+	sha, err := runGit(ctx, dir, log, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
 	}
