@@ -1,7 +1,11 @@
 package buildstep
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,13 +89,21 @@ func TestInjectFeedbackWidgetNextLayout(t *testing.T) {
 	for _, want := range []string{
 		`src="/fitt-feedback.js"`,
 		`data-project="proj-xyz"`,
-		// data-ingest is a JSX expression reading RUNTIME env (build-time url is the fallback).
-		`data-ingest={process.env.FITT_FEEDBACK_URL ?? "http://localhost:3010/feedback_requests"}`,
+		// The widget posts to the app's own route; the receiver is the route's business.
+		`data-ingest="/api/fitt-feedback"`,
 		"</body>",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("layout missing %q", want)
 		}
+	}
+	// A page Next prerenders at build time would bake an env read here for good.
+	if strings.Contains(s, "process.env") {
+		t.Error("layout reads process.env; a prerendered page keeps the build's value")
+	}
+	route := readFile(t, filepath.Join(dir, "app", "api", "fitt-feedback", "route.ts"))
+	if !strings.Contains(route, "process.env.FITT_FEEDBACK_URL") || !strings.Contains(route, `"http://localhost:3010/feedback_requests"`) {
+		t.Errorf("route must read FITT_FEEDBACK_URL with the build's URL as fallback:\n%s", route)
 	}
 
 	// Idempotent: a second pass must not double-inject.
@@ -228,8 +240,106 @@ func TestRemoveFeedbackWidgetNextLayout(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "public", "fitt-feedback.js")); !os.IsNotExist(err) {
 		t.Errorf("public/fitt-feedback.js still present (err=%v)", err)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "app", "api")); !os.IsNotExist(err) {
+		t.Errorf("app/api (the feedback route) still present (err=%v)", err)
+	}
 	if HasFeedbackWidget(dir) {
 		t.Error("HasFeedbackWidget = true after remove")
+	}
+}
+
+// The route keeps the app's own routes: removing the widget takes out only
+// api/fitt-feedback.
+func TestRemoveFeedbackWidgetKeepsTheAppsOwnRoutes(t *testing.T) {
+	dir := t.TempDir()
+	own := filepath.Join(dir, "app", "api", "health", "route.ts")
+	if err := os.MkdirAll(filepath.Dir(own), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(own, []byte("export function GET() { return Response.json({ ok: true }); }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app", "layout.tsx"), []byte("<html><body>{children}</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := InjectFeedbackWidget(dir, "p", "http://localhost:3010/feedback_requests", nil); n != 1 {
+		t.Fatalf("inject = %d, want 1", n)
+	}
+	if _, err := RemoveFeedbackWidget(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(own); err != nil {
+		t.Errorf("the app's own route went with the widget: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "app", "api", "fitt-feedback")); !os.IsNotExist(err) {
+		t.Errorf("api/fitt-feedback still present (err=%v)", err)
+	}
+}
+
+// The widget posts to the app's own origin and the app's server sends the report
+// on, so the receiver is the one FITT_FEEDBACK_URL names when the app runs, on
+// every page, and the receiver needs no CORS. Runs the generated route in node.
+func TestFeedbackRouteForwardsToTheReceiverNamedAtRunTime(t *testing.T) {
+	if out, err := exec.Command("node", "-p", "process.features.typescript").Output(); err != nil || strings.TrimSpace(string(out)) == "false" {
+		t.Skip("needs node with TypeScript type stripping")
+	}
+	type received struct{ body, contentType string }
+	got := make(chan received, 4)
+	status := http.StatusCreated
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got <- received{string(raw), r.Header.Get("Content-Type")}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte("receiver said so"))
+	}))
+	defer receiver.Close()
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app", "layout.tsx"), []byte("<html><body>{children}</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The build's URL is only the fallback; this one never answers.
+	if n, _ := InjectFeedbackWidget(dir, "p", "http://127.0.0.1:9/feedback_requests", nil); n != 1 {
+		t.Fatalf("inject = %d, want 1", n)
+	}
+	route := filepath.Join(dir, "app", "api", "fitt-feedback", "route.ts")
+	post := func(env string) string {
+		t.Helper()
+		script := `const { POST } = await import(process.argv[1]);
+const res = await POST(new Request("http://app.test/api/fitt-feedback", { method: "POST", body: '{"note":"ปุ่มสีเขียว"}' }));
+console.log(res.status, await res.text());`
+		cmd := exec.Command("node", "--input-type=module", "-e", script, route)
+		cmd.Env = append(os.Environ(), "FITT_FEEDBACK_URL="+env)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("node: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	if out := post(receiver.URL + "/api/ingest/feedback"); out != "204" {
+		t.Errorf("accepted report: route answered %q, want 204", out)
+	}
+	select {
+	case r := <-got:
+		if r.body != `{"note":"ปุ่มสีเขียว"}` || r.contentType != "application/json" {
+			t.Errorf("receiver got %+v", r)
+		}
+	default:
+		t.Fatal("the report never reached FITT_FEEDBACK_URL")
+	}
+
+	status = http.StatusRequestEntityTooLarge
+	if out := post(receiver.URL + "/api/ingest/feedback"); out != "413 receiver said so" {
+		t.Errorf("refused report: route answered %q, want the receiver's 413", out)
+	}
+	<-got
+
+	if out := post(""); !strings.HasPrefix(out, "502") {
+		t.Errorf("unreachable receiver: route answered %q, want 502", out)
 	}
 }
 

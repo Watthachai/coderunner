@@ -2,6 +2,7 @@ package buildstep
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,8 +25,9 @@ var feedbackWidgetJS string
 // appended. Skips .git / node_modules / .claude and already-injected files.
 //
 // Next.js App Router apps have no index.html (app/layout.tsx owns <body>); for
-// those it falls back to dropping the widget in public/ and adding a <script src>
-// to the layout, so CRN's real (Next.js) output gets the widget too.
+// those it falls back to dropping the widget in public/, adding a <script src>
+// to the layout and a route the widget posts to (see feedbackRoute), so CRN's
+// real (Next.js) output gets the widget too.
 func InjectFeedbackWidget(dir, projectID, ingestURL string, logger *slog.Logger) (int, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -141,18 +143,25 @@ func injectIntoNextLayout(dir, projectID, ingestURL string, logger *slog.Logger)
 		return 0
 	}
 
+	// The widget posts to the app's own route, which sends the report on to the
+	// receiver FITT_FEEDBACK_URL names when the app runs. Reading the env in the
+	// layout instead would freeze the build's value into every page Next
+	// prerenders, and the browser would need to reach the receiver across origins.
+	routePath, route := feedbackRoute(filepath.Dir(layoutPath), filepath.Ext(layoutPath), ingestURL)
+	if err := os.MkdirAll(filepath.Dir(routePath), 0o755); err != nil {
+		logger.Warn("create feedback route dir failed", "err", err)
+		return 0
+	}
+	if err := os.WriteFile(routePath, []byte(route), 0o644); err != nil {
+		logger.Warn("write feedback route failed", "path", routePath, "err", err)
+		return 0
+	}
+
 	// A plain classic <script src> (not next/script) so document.currentScript and
 	// its data-* config resolve during synchronous execution. Values are safe
-	// (uuid + url) so no JSX-entity escaping is needed.
-	//
-	// data-ingest is a JSX EXPRESSION reading the demo's RUNTIME env
-	// (FITT_FEEDBACK_URL) — a server component evaluates it per request, so the
-	// operator sets the receiver URL at run time (like DATABASE_URL) instead of it
-	// being baked at build. The build-time ingestURL stays as the fallback (local
-	// dev / single-box). Consumers deploying to a real box set FITT_FEEDBACK_URL to
-	// their receiver, e.g. http://<host>:<port>/api/ingest/feedback.
+	// (uuid + path) so no JSX-entity escaping is needed.
 	script := `<script src="/fitt-feedback.js" data-fitt-feedback="true" data-project="` +
-		projectID + `" data-ingest={process.env.FITT_FEEDBACK_URL ?? "` + ingestURL + `"} />`
+		projectID + `" data-ingest="` + feedbackRoutePath + `" />`
 	out := src[:i] + "        " + script + "\n      " + src[i:]
 	if err := os.WriteFile(layoutPath, []byte(out), 0o644); err != nil {
 		logger.Warn("write feedback-injected layout failed", "path", layoutPath, "err", err)
@@ -160,6 +169,54 @@ func injectIntoNextLayout(dir, projectID, ingestURL string, logger *slog.Logger)
 	}
 	logger.Info("injected feedback widget into next layout", "layout", layoutPath)
 	return 1
+}
+
+// feedbackRoutePath is where a Next app's widget posts, on the app's own origin.
+const feedbackRoutePath = "/api/fitt-feedback"
+
+// feedbackRoute returns the path and source of the route that sends the widget's
+// reports on to FITT_FEEDBACK_URL, read when each report arrives; ingestURL is
+// the fallback when it is unset. appDir is the layout's directory and layoutExt
+// its extension, so a JavaScript app gets a JavaScript route.
+func feedbackRoute(appDir, layoutExt, ingestURL string) (string, string) {
+	fallback, _ := json.Marshal(ingestURL)
+	signature, ext := "request: Request): Promise<Response>", ".ts"
+	if layoutExt == ".jsx" {
+		signature, ext = "request)", ".js"
+	}
+	src := `// fitt-feedback: CRN adds this route with the 💬 feedback widget and removes it
+// with the widget. The widget posts here, on the app's own origin, and the server
+// sends the report on to the receiver FITT_FEEDBACK_URL names when the app runs.
+const FALLBACK = ` + string(fallback) + `;
+
+export async function POST(` + signature + ` {
+  const target = process.env.FITT_FEEDBACK_URL || FALLBACK;
+  try {
+    const res = await fetch(target, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: await request.text(),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) return new Response(null, { status: 204 });
+    return new Response(await res.text(), { status: res.status });
+  } catch {
+    return new Response("feedback receiver unreachable", { status: 502 });
+  }
+}
+`
+	return filepath.Join(appDir, "api", "fitt-feedback", "route"+ext), src
+}
+
+// feedbackRouteFiles are the routes feedbackRoute may have written under dir.
+func feedbackRouteFiles(dir string) []string {
+	var files []string
+	for _, appDir := range []string{filepath.Join(dir, "app"), filepath.Join(dir, "src", "app")} {
+		for _, ext := range []string{".ts", ".js"} {
+			files = append(files, filepath.Join(appDir, "api", "fitt-feedback", "route"+ext))
+		}
+	}
+	return files
 }
 
 // The widget is opt-in per build, so a build that leaves it off must also take
@@ -174,10 +231,16 @@ var (
 )
 
 // HasFeedbackWidget reports whether the app under dir carries the widget: an
-// inlined tag in an HTML file, the tag in a Next root layout, or the public copy.
+// inlined tag in an HTML file, the tag in a Next root layout, the public copy or
+// the route it posts to.
 func HasFeedbackWidget(dir string) bool {
 	if _, err := os.Stat(filepath.Join(dir, "public", "fitt-feedback.js")); err == nil {
 		return true
+	}
+	for _, route := range feedbackRouteFiles(dir) {
+		if raw, err := os.ReadFile(route); err == nil && strings.Contains(string(raw), "fitt-feedback") {
+			return true
+		}
 	}
 	for _, layout := range nextLayoutCandidates(dir) {
 		if raw, err := os.ReadFile(layout); err == nil && strings.Contains(string(raw), "fitt-feedback") {
@@ -195,8 +258,9 @@ func HasFeedbackWidget(dir string) bool {
 
 // RemoveFeedbackWidget takes the widget out of the app under dir, undoing
 // InjectFeedbackWidget: the inlined tag from every HTML file, the tag from the
-// Next root layout and public/fitt-feedback.js. It returns the number of HTML
-// files and layouts changed (the layout and its public copy count as one).
+// Next root layout, public/fitt-feedback.js and the route. It returns the number
+// of HTML files and layouts changed (the layout, its public copy and the route
+// count as one).
 func RemoveFeedbackWidget(dir string, logger *slog.Logger) (int, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -249,6 +313,21 @@ func RemoveFeedbackWidget(dir string, logger *slog.Logger) (int, error) {
 		layoutChanged = true
 	} else if !os.IsNotExist(err) {
 		keep(fmt.Errorf("buildstep: remove %s: %w", public, err))
+	}
+	for _, route := range feedbackRouteFiles(dir) {
+		raw, err := os.ReadFile(route)
+		if err != nil || !strings.Contains(string(raw), "fitt-feedback") {
+			continue
+		}
+		if err := os.Remove(route); err != nil {
+			keep(fmt.Errorf("buildstep: remove %s: %w", route, err))
+			continue
+		}
+		layoutChanged = true
+		// The directories go too when nothing of the app's own is left in them.
+		routeDir := filepath.Dir(route)
+		_ = os.Remove(routeDir)
+		_ = os.Remove(filepath.Dir(routeDir))
 	}
 	if layoutChanged {
 		changed++

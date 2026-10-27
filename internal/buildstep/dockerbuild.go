@@ -122,10 +122,10 @@ type DemoEnvExample struct {
 	// Customer applications use persisted accounts and once-only bootstrap inputs.
 	DevEmail    string `json:"DEV_EMAIL"`
 	DevPassword string `json:"DEV_PASSWORD"`
-	// FeedbackURL is where the in-demo feedback widget POSTs. Read from RUNTIME env
-	// (the widget's data-ingest is server-rendered from process.env.FITT_FEEDBACK_URL),
+	// FeedbackURL is where the in-demo feedback widget's reports go. The widget posts
+	// to the app's own route, which reads FITT_FEEDBACK_URL as each report arrives,
 	// so the operator points it at their receiver per deployment without a rebuild.
-	// Only relevant when the widget was injected (CRN_FEEDBACK_INGEST_URL set at build).
+	// Only relevant when the widget was injected (the build asked for it).
 	FeedbackURL       string `json:"FITT_FEEDBACK_URL"`
 	BootstrapEmail    string `json:"BOOTSTRAP_ADMIN_EMAIL"`
 	BootstrapPassword string `json:"BOOTSTRAP_ADMIN_PASSWORD"`
