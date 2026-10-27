@@ -57,21 +57,19 @@ export async function crnFetch(url: string, init: RequestInit = {}): Promise<Res
   return res;
 }
 
-// A browser cannot set headers on a WebSocket handshake, so the key rides in
-// the query; CRN takes it there only on a handshake and never logs the query.
-function withToken(wsUrl: string): string {
+// A browser can set no header on a WebSocket handshake but its subprotocols,
+// so the key goes there as ["crn-bearer", key] and CRN picks "crn-bearer".
+// Pass this as new WebSocket(url, crnWsProtocols()).
+export function crnWsProtocols(): string[] | undefined {
   const token = crnToken();
-  if (!token) return wsUrl;
-  const url = new URL(wsUrl);
-  url.searchParams.set("access_token", token);
-  return url.toString();
+  return token ? ["crn-bearer", token] : undefined;
 }
 
 /**
  * Build the live-log WebSocket URL for a given project + build number.
  *
- * The dashboard connects to the internal endpoint, with the operator's key in
- * the query once one is set (browsers cannot set headers on a WS handshake):
+ * The dashboard connects to the internal endpoint; open it with
+ * crnWsProtocols() so the operator's key goes along once one is set:
  *   GET /internal/projects/{id}/jobs/{build_no}/logs
  *
  * The apiKey arg is kept for call-site compatibility but is unused here; the
@@ -87,7 +85,7 @@ export function jobLogsWsUrl(
   const path = `/internal/projects/${encodeURIComponent(
     projectId,
   )}/jobs/${buildNo}/logs`;
-  return withToken(WS_BASE + path);
+  return new URL(WS_BASE + path).toString();
 }
 
 /**
@@ -104,9 +102,7 @@ export function jobLogsWsUrl(
  *     { "type": "resize", "cols": <int>, "rows": <int> }
  */
 export function terminalWsUrl(projectId: string): string {
-  return withToken(
-    `${WS_BASE}/internal/projects/${encodeURIComponent(projectId)}/terminal`,
-  );
+  return `${WS_BASE}/internal/projects/${encodeURIComponent(projectId)}/terminal`;
 }
 
 export function projectStatusUrl(projectId: string): string {

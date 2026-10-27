@@ -1,13 +1,18 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 )
 
 func sha(token string) string {
@@ -38,18 +43,20 @@ func TestInternalRoutesNeedAKnownBearerOnceTokensAreSet(t *testing.T) {
 		target string
 		bearer string
 		ws     bool
+		proto  string
 		want   int
 	}{
-		{"no token", http.MethodPost, "/internal/projects", "", false, http.StatusUnauthorized},
-		{"unknown token", http.MethodPost, "/internal/projects", "guess", false, http.StatusUnauthorized},
-		{"Fittcore's token", http.MethodPost, "/internal/projects", "ftc-secret", false, http.StatusOK},
-		{"operator's token", http.MethodPost, "/internal/jobs/x/cancel", "op-secret", false, http.StatusOK},
-		{"token in the query of a plain request", http.MethodPost, "/internal/jobs/x/cancel?access_token=op-secret", "", false, http.StatusUnauthorized},
-		{"token in the query of a WebSocket handshake", http.MethodGet, "/internal/projects/p/jobs/1/logs?access_token=op-secret", "", true, http.StatusOK},
-		{"wrong token in a WebSocket query", http.MethodGet, "/internal/projects/p/jobs/1/logs?access_token=guess", "", true, http.StatusUnauthorized},
-		{"health check stays open", http.MethodGet, "/healthz", "", false, http.StatusOK},
-		{"tenant API keeps its own auth", http.MethodGet, "/api/v1/projects/p/status", "", false, http.StatusOK},
-		{"preflight passes to CORS", http.MethodOptions, "/internal/projects", "", false, http.StatusOK},
+		{"no token", http.MethodPost, "/internal/projects", "", false, "", http.StatusUnauthorized},
+		{"unknown token", http.MethodPost, "/internal/projects", "guess", false, "", http.StatusUnauthorized},
+		{"Fittcore's token", http.MethodPost, "/internal/projects", "ftc-secret", false, "", http.StatusOK},
+		{"operator's token", http.MethodPost, "/internal/jobs/x/cancel", "op-secret", false, "", http.StatusOK},
+		{"token in the query of a plain request", http.MethodPost, "/internal/jobs/x/cancel?access_token=op-secret", "", false, "", http.StatusUnauthorized},
+		{"token in a WebSocket query", http.MethodGet, "/internal/projects/p/jobs/1/logs?access_token=op-secret", "", true, "", http.StatusUnauthorized},
+		{"token as the WebSocket subprotocol", http.MethodGet, "/internal/projects/p/jobs/1/logs", "", true, "crn-bearer, op-secret", http.StatusOK},
+		{"wrong token as the WebSocket subprotocol", http.MethodGet, "/internal/projects/p/jobs/1/logs", "", true, "crn-bearer, guess", http.StatusUnauthorized},
+		{"health check stays open", http.MethodGet, "/healthz", "", false, "", http.StatusOK},
+		{"tenant API keeps its own auth", http.MethodGet, "/api/v1/projects/p/status", "", false, "", http.StatusOK},
+		{"preflight passes to CORS", http.MethodOptions, "/internal/projects", "", false, "", http.StatusOK},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -60,6 +67,9 @@ func TestInternalRoutesNeedAKnownBearerOnceTokensAreSet(t *testing.T) {
 			if c.ws {
 				req.Header.Set("Connection", "Upgrade")
 				req.Header.Set("Upgrade", "websocket")
+			}
+			if c.proto != "" {
+				req.Header.Set("Sec-WebSocket-Protocol", c.proto)
 			}
 			code, ran := guarded(t, tokens, req)
 			if code != c.want || ran != (c.want == http.StatusOK) {
@@ -74,5 +84,28 @@ func TestInternalRoutesNeedAKnownBearerOnceTokensAreSet(t *testing.T) {
 func TestInternalRoutesStayOpenWithoutTokens(t *testing.T) {
 	if code, ran := guarded(t, nil, httptest.NewRequest(http.MethodPost, "/internal/projects", nil)); code != http.StatusOK || !ran {
 		t.Errorf("status %d, handler ran %v; want the request through", code, ran)
+	}
+}
+
+// A browser that offers subprotocols drops the connection unless the server
+// picks one of them, so CRN's WebSockets pick crn-bearer.
+func TestInternalWebSocketsPickTheBearerSubprotocol(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, internalWSAccept)
+		if err != nil {
+			return
+		}
+		conn.Close(websocket.StatusNormalClosure, "")
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), &websocket.DialOptions{Subprotocols: []string{"crn-bearer", "op-secret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if got := conn.Subprotocol(); got != "crn-bearer" {
+		t.Errorf("subprotocol picked = %q, want crn-bearer", got)
 	}
 }

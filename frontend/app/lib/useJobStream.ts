@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { jobLogsWsUrl } from "./config";
+import { crnWsProtocols, jobLogsWsUrl } from "./config";
 import type { BuildEventMsg, FeedEvent } from "./types";
 
 export type StreamStatus = "idle" | "connecting" | "open" | "closed" | "error";
@@ -76,7 +76,7 @@ export function useJobStream(
 
     let closedByUs = false;
     const url = jobLogsWsUrl(projectId, buildNo, apiKey);
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, crnWsProtocols());
 
     ws.onopen = () => setStatus("open");
 

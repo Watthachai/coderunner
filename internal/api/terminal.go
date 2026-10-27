@@ -55,12 +55,7 @@ func (s *server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Same rationale as the log WS: the dashboard is served from a different
-		// origin/port than the API, so skip the same-origin check in dev.
-		// TODO(crn): set OriginPatterns to the known dashboard origin(s) in prod.
-		InsecureSkipVerify: true,
-	})
+	conn, err := websocket.Accept(w, r, internalWSAccept)
 	if err != nil {
 		// Accept already wrote an HTTP error response.
 		s.logger.Warn("terminal ws accept failed", "err", err, "project_id", projectID)

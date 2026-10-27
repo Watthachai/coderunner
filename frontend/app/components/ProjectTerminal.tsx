@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { terminalWsUrl } from "../lib/config";
+import { crnWsProtocols, terminalWsUrl } from "../lib/config";
 
 type ConnState = "connecting" | "connected" | "closed";
 
@@ -78,7 +78,7 @@ export function ProjectTerminal({ projectId }: { projectId: string }) {
     };
     fit();
 
-    const ws = new WebSocket(terminalWsUrl(projectId));
+    const ws = new WebSocket(terminalWsUrl(projectId), crnWsProtocols());
     ws.binaryType = "arraybuffer";
 
     // Send the current terminal size to the PTY (only when the socket is open).

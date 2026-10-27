@@ -265,11 +265,25 @@ func (s *server) requestLogger(next http.Handler) http.Handler {
 	})
 }
 
+// wsBearerProtocol is the WebSocket subprotocol a browser offers with its key as
+// the next entry, the one header it can set on a handshake. internalAuth reads
+// the key there and internalWSAccept picks this protocol, as a browser that
+// offered subprotocols requires.
+const wsBearerProtocol = "crn-bearer"
+
+// internalWSAccept is how CRN's /internal WebSockets accept a handshake. The
+// dashboard is served from a different origin/port than the API, so the
+// same-origin check is skipped, as devCORS does for plain requests.
+// TODO(crn): set OriginPatterns to the known dashboard origin(s) in prod.
+var internalWSAccept = &websocket.AcceptOptions{
+	InsecureSkipVerify: true,
+	Subprotocols:       []string{wsBearerProtocol},
+}
+
 // internalAuth guards /internal/*. With internalTokens set, a request needs
 // Authorization: Bearer <token> whose SHA-256 is one of them; a WebSocket
-// handshake may carry it as ?access_token= instead, since a browser cannot set
-// headers on one (requestLogger logs the path, never the query). CORS
-// preflights pass. Without tokens /internal stays open.
+// handshake may carry it as the subprotocol after wsBearerProtocol instead.
+// CORS preflights pass. Without tokens /internal stays open.
 func (s *server) internalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(s.internalTokens) == 0 || r.Method == http.MethodOptions || !strings.HasPrefix(r.URL.Path, "/internal/") {
@@ -278,7 +292,7 @@ func (s *server) internalAuth(next http.Handler) http.Handler {
 		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-			token = r.URL.Query().Get("access_token")
+			token = wsBearer(r.Header.Values("Sec-WebSocket-Protocol"))
 		}
 		if token != "" {
 			sum := sha256.Sum256([]byte(token))
@@ -292,6 +306,23 @@ func (s *server) internalAuth(next http.Handler) http.Handler {
 		}
 		s.writeError(w, r, http.StatusUnauthorized, "missing or unknown bearer token")
 	})
+}
+
+// wsBearer is the entry after wsBearerProtocol in a handshake's offered
+// subprotocols, or "".
+func wsBearer(offered []string) string {
+	var protocols []string
+	for _, v := range offered {
+		for _, p := range strings.Split(v, ",") {
+			protocols = append(protocols, strings.TrimSpace(p))
+		}
+	}
+	for i, p := range protocols {
+		if p == wsBearerProtocol && i+1 < len(protocols) {
+			return protocols[i+1]
+		}
+	}
+	return ""
 }
 
 // apiKeyAuth resolves the calling org from the X-API-Key header. The raw key is
@@ -1670,14 +1701,7 @@ func (s *server) streamJobLogsWS(w http.ResponseWriter, r *http.Request, project
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// The dashboard is served from a different origin/port (e.g. :3001) than
-		// the API (:8080), so the default same-origin check rejects the handshake
-		// with a 403. Skip it in dev to match devCORS.
-		// TODO(crn): set OriginPatterns to the known dashboard origin(s) in prod
-		// instead of skipping verification.
-		InsecureSkipVerify: true,
-	})
+	conn, err := websocket.Accept(w, r, internalWSAccept)
 	if err != nil {
 		// Accept already wrote an HTTP error response.
 		s.logger.Warn("ws accept failed", "err", err)

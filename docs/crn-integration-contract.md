@@ -41,7 +41,7 @@ CRN **ต่อกับฝั่งดีไซน์ได้แล้ว** (�
 POST http://<crn-host>:8080/internal/projects
 Content-Type: application/json
 ```
-- **auth:** เมื่อ CRN ตั้ง `CRN_INTERNAL_TOKEN_SHA256` ทุก `/internal/*` ต้องส่ง `Authorization: Bearer <token>` (ไม่ส่ง/ไม่ตรง = `401`) · WebSocket จากเบราว์เซอร์ส่ง `?access_token=<token>` แทนได้เฉพาะตอน handshake · CRN เก็บแค่ SHA-256 ของ token · ยังไม่ตั้ง = เปิดเหมือนเดิม · `/healthz` เปิดเสมอ
+- **auth:** เมื่อ CRN ตั้ง `CRN_INTERNAL_TOKEN_SHA256` ทุก `/internal/*` ต้องส่ง `Authorization: Bearer <token>` (ไม่ส่ง/ไม่ตรง = `401`) · WebSocket จากเบราว์เซอร์ส่ง token เป็น subprotocol แทนได้ (`Sec-WebSocket-Protocol: crn-bearer, <token>`) CRN ตอบเลือก `crn-bearer` · ไม่รับ token ใน query · CRN เก็บแค่ SHA-256 ของ token · ยังไม่ตั้ง = เปิดเหมือนเดิม · `/healthz` เปิดเสมอ
 - **ไม่มี `Idempotency-Key`** — ยิงซ้ำ = build ใหม่ทุกครั้ง (`build_no` เพิ่มขึ้น), ส่ง `project_id` เดิมจะใช้ project row เดิมแต่ยัง build ซ้ำ
 - decoder **เข้มงวด** (`DisallowUnknownFields`) → ฟิลด์ที่ **ไม่ได้ประกาศไว้** = **`400`** (`zip_uri` ประกาศแล้ว รับได้)
 
