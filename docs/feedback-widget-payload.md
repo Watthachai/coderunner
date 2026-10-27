@@ -12,16 +12,16 @@ POST  {FITT_FEEDBACK_URL}
 Content-Type: application/json
 ```
 
-- **endpoint อ่านจาก RUNTIME env `FITT_FEEDBACK_URL`** — widget `data-ingest` ถูก server-render จาก `process.env.FITT_FEEDBACK_URL` ตอน request → operator ตั้งค่าเองต่อ deployment **ไม่ต้อง rebuild** (ตั้งใน Run demo Environment เหมือน `DATABASE_URL`)
+- **endpoint อ่านจาก RUNTIME env `FITT_FEEDBACK_URL`** — widget POST เข้า route ของแอปเอง (`/api/fitt-feedback`) แล้ว server ของแอปส่ง body เดิมต่อไป `FITT_FEEDBACK_URL` ที่อ่านตอนมี feedback เข้ามาแต่ละครั้ง → operator ตั้งค่าเองต่อ deployment **ไม่ต้อง rebuild** (ตั้งใน Run demo Environment เหมือน `DATABASE_URL`). เบราว์เซอร์คุยกับแอปเท่านั้น; เครื่องที่รันแอปต้องต่อถึง receiver ได้
   ```
   FITT_FEEDBACK_URL=http://172.168.1.247:3101/api/ingest/feedback
   ```
   ใส่ **full URL รวม path เอง** → ไม่ต้องมี alias route
 - **ไม่มี auth header** (widget ยิงตรง unauthenticated). ถ้า receiver ต้องการ auth ต้องแจ้ง CRN เพิ่ม
-- widget ถือว่าสำเร็จเมื่อได้ **HTTP 2xx** → โชว์ "ส่งแล้ว ขอบคุณ ✓". non-2xx → โชว์ error
-- **build-time gate:** widget จะถูกฝังก็ต่อเมื่อ CRN build ด้วย `CRN_FEEDBACK_INGEST_URL` ตั้งค่า (ค่านั้นเป็น fallback ตอน `FITT_FEEDBACK_URL` ไม่ได้ตั้ง)
+- receiver ตอบ **2xx** → route ตอบ widget 204 → โชว์ "ส่งแล้ว ขอบคุณ ✓". receiver ตอบ non-2xx → route ส่ง status + body นั้นกลับ → โชว์ error. ต่อ receiver ไม่ได้ / เกิน 15 วินาที → 502
+- **เปิด widget ต่อ build:** `"feedback_widget": true` ใน body ของ build หรือของ change request (`POST /internal/projects/{id}/edit`). change request ที่ไม่ใส่ field นี้คงสถานะเดิม; `false` = เอาออก
 
-> ⚠️ **ต้อง rebuild demo** ด้วย CRN ที่มี fix นี้ (commit `609b8c9`+) — build เก่า `data-ingest` ยัง baked เป็น literal เปลี่ยนด้วย env ไม่ได้
+> ⚠️ แอปที่ build ก่อน CRN เวอร์ชันนี้ยัง POST ตรงไป URL ที่ฝังไว้ และส่งภาพเป็น SVG — ต้อง build ใหม่
 
 ---
 
@@ -42,7 +42,7 @@ Content-Type: application/json
         "label":       "Save button",                  // ป้ายสั้นของ element (หรือ "พื้นที่ 200×48")
         "note":        "เปลี่ยนเป็นสีเขียว",            // โน้ตต่อจุด (user พิมพ์แก้ได้)
         "box":         { "x": 120, "y": 340, "w": 200, "h": 48 }, // page coords (รวม scroll แล้ว) px
-        "region_shot": "data:image/svg+xml;base64,PHN2Zy…"        // screenshot ของจุด — ⚠️ ใหญ่ได้มาก
+        "region_shot": "data:image/png;base64,iVBORw0K…"           // ภาพจุดนั้นเป็น PNG (ด้านยาวสุด ≤ 1600px); "" ถ้าเบราว์เซอร์วาดภาพไม่ได้
       }
     ],
     "full_shot":  "",                // ตอนนี้ "" เสมอ
@@ -67,7 +67,7 @@ Content-Type: application/json
 | `payload.pins[].label` | string | ป้าย element / "พื้นที่ W×H" |
 | `payload.pins[].note` | string | โน้ตต่อจุด |
 | `payload.pins[].box` | `{x,y,w,h}` | **page** coords (รวม `scrollX/Y`) หน่วย px, int |
-| `payload.pins[].region_shot` | string (data URL) | `data:image/svg+xml;base64,…` **หลาย MB ได้** |
+| `payload.pins[].region_shot` | string (data URL) | `data:image/png;base64,…` ด้านยาวสุด ≤ 1600px, หรือ `""` (ไม่ส่ง SVG อีกแล้ว) |
 | `payload.full_shot` | string | "" เสมอ |
 | `payload.viewport` | `{w,h}` | ขนาด viewport |
 | `payload.user_agent` | string | UA ของ browser |
@@ -141,11 +141,11 @@ curl -sS -X POST "http://172.168.1.247:3101/api/ingest/feedback" \
 ## 4. Receiver checklist (ฝั่ง FTC DV)
 
 - [ ] **required:** `project_id` (uuid) + อย่างน้อย `note` **หรือ** 1 pin (widget บังคับก่อนส่ง)
-- [ ] **body size limit สูง** — `region_shot` เป็น base64 SVG screenshot หลาย MB/pin (หลาย pin = ใหญ่มาก) → กัน 413. แนะนำ ≥ 25MB หรือ stream
+- [ ] **body size limit** — `region_shot` เป็น base64 PNG ต่อ pin (ปกติหลัก KB–ร้อย KB, หน้าเต็มไปด้วยรูปอาจถึงหลาย MB) → กัน 413. แนะนำ ≥ 25MB
 - [ ] ตอบ **200/201** เมื่อรับสำเร็จ (ไม่งั้น widget โชว์ "ส่งไม่สำเร็จ")
 - [ ] `note` อยู่ 2 ระดับ: top-level = คำอธิบายรวม · `payload.pins[].note` = ต่อจุด
 - [ ] validate enum: `category` ∈ {bug,feature,style} · `priority` ∈ {low,med,high}
-- [ ] **CORS:** widget POST จาก origin ของ demo (`http://<demo-host>:<port>`) → receiver ต้องอนุญาต origin นั้น (หรือ `*` สำหรับ ingest)
+- [ ] **ไม่ต้องเปิด CORS** — feedback มาจาก server ของแอป (route `/api/fitt-feedback`) ไม่ใช่จากเบราว์เซอร์
 - [ ] เก็บ `payload` (nested) เป็น **jsonb** ทั้งก้อนได้; field บนเป็นคอลัมน์
 
 ---
@@ -166,5 +166,5 @@ feedback POST **ไม่ trigger edit build อัตโนมัติ** — F
 
 ## อ้างอิงโค้ด
 - `internal/buildstep/fitt-feedback.js` — สร้าง body + `fetch(INGEST, {POST, JSON})` (~บรรทัด 491-508)
-- `internal/buildstep/feedback.go` — inject `<script>` เข้า `app/layout.tsx`; `data-ingest={process.env.FITT_FEEDBACK_URL ?? "<fallback>"}` (runtime env)
+- `internal/buildstep/feedback.go` — inject `<script>` เข้า `app/layout.tsx` (`data-ingest="/api/fitt-feedback"`) + เขียน `app/api/fitt-feedback/route.ts` ที่ส่งต่อไป `FITT_FEEDBACK_URL`
 - `internal/buildstep/dockerbuild.go` — `FITT_FEEDBACK_URL` อยู่ใน `DemoEnvExample` (env contract ที่ callback ส่งไป)
