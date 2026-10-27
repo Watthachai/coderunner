@@ -19,7 +19,7 @@ import (
 func TestTerminalRouteIsGoneUnlessEnabled(t *testing.T) {
 	projects := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := NewServer(logger, &settingsStore{}, nil, "", "", projects, "", false, "", buildsettings.Defaults{Model: "claude-opus-5", Effort: "xhigh"})
+	h := NewServer(logger, &settingsStore{}, nil, "", "", projects, "", false, "", buildsettings.Defaults{Model: "claude-opus-5", Effort: "xhigh"}, nil)
 	project := uuid.New()
 
 	rec := httptest.NewRecorder()

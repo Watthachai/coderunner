@@ -5,6 +5,7 @@ package config
 
 import (
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -101,6 +102,12 @@ type Config struct {
 	// CAs are left as they are. nil = the system's CAs. An unreadable file or
 	// one without a certificate stops startup.
 	FTCDVCallbackCA *x509.CertPool
+
+	// InternalTokenHashes are the bearer tokens /internal/* accepts, each by its
+	// SHA-256 hex (name -> hash), so no token value sits in .env. Set as
+	// CRN_INTERNAL_TOKEN_SHA256="fittcore=<sha256>,operator=<sha256>"; empty
+	// leaves /internal open, and a malformed entry stops startup.
+	InternalTokenHashes map[string]string
 
 	// BuildImage toggles the docker-image pipeline: after a successful build CRN
 	// runs `docker build` on the produced Next standalone app and (if
@@ -252,6 +259,12 @@ func Load() (*Config, error) {
 	}
 	cfg.FTCDVCallbackOrgs = callbackOrgs
 
+	tokenHashes, err := parseTokenHashes(os.Getenv("CRN_INTERNAL_TOKEN_SHA256"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.InternalTokenHashes = tokenHashes
+
 	if path := os.Getenv("CRN_FTC_DV_CALLBACK_CA"); path != "" {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -311,6 +324,25 @@ func parseOrgRegistries(raw string) (map[uuid.UUID]string, error) {
 			return nil, fmt.Errorf("config: CRN_ORG_IMAGE_REGISTRIES entry %q is not <org uuid>=<registry>", pair)
 		}
 		out[id] = registry
+	}
+	return out, nil
+}
+
+// parseTokenHashes reads CRN_INTERNAL_TOKEN_SHA256: comma-separated
+// <name>=<sha256 hex> entries.
+func parseTokenHashes(raw string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, hash, ok := strings.Cut(entry, "=")
+		name, hash = strings.TrimSpace(name), strings.ToLower(strings.TrimSpace(hash))
+		if _, err := hex.DecodeString(hash); !ok || name == "" || len(hash) != 64 || err != nil {
+			return nil, fmt.Errorf("config: CRN_INTERNAL_TOKEN_SHA256 entry %q is not <name>=<sha256 hex>", entry)
+		}
+		out[name] = hash
 	}
 	return out, nil
 }

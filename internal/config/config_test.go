@@ -160,3 +160,27 @@ func TestFTCDVCallbackCAThatIsNoCertificateStopsStartup(t *testing.T) {
 		}
 	}
 }
+
+func TestInternalTokenHashesComeFromEnv(t *testing.T) {
+	requiredEnv(t)
+	ftc := strings.Repeat("6e", 32)
+	op := strings.Repeat("AB", 32)
+	t.Setenv("CRN_INTERNAL_TOKEN_SHA256", " fittcore="+ftc+" , operator="+op+",")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.InternalTokenHashes) != 2 || cfg.InternalTokenHashes["fittcore"] != ftc || cfg.InternalTokenHashes["operator"] != strings.ToLower(op) {
+		t.Errorf("InternalTokenHashes = %v", cfg.InternalTokenHashes)
+	}
+}
+
+func TestInternalTokenHashThatIsNoSHA256StopsStartup(t *testing.T) {
+	requiredEnv(t)
+	for _, raw := range []string{"fittcore=abc", "=" + strings.Repeat("6e", 32), "fittcore", "fittcore=" + strings.Repeat("zz", 32)} {
+		t.Setenv("CRN_INTERNAL_TOKEN_SHA256", raw)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_INTERNAL_TOKEN_SHA256") {
+			t.Errorf("%q: Load() err = %v, want one naming CRN_INTERNAL_TOKEN_SHA256", raw, err)
+		}
+	}
+}

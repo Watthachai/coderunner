@@ -41,7 +41,7 @@ CRN **ต่อกับฝั่งดีไซน์ได้แล้ว** (�
 POST http://<crn-host>:8080/internal/projects
 Content-Type: application/json
 ```
-- **ไม่มี auth** (service-to-service ในเน็ตเวิร์กที่เชื่อถือกัน) — ไม่ต้องส่ง `Authorization` / `X-API-Key`
+- **auth:** เมื่อ CRN ตั้ง `CRN_INTERNAL_TOKEN_SHA256` ทุก `/internal/*` ต้องส่ง `Authorization: Bearer <token>` (ไม่ส่ง/ไม่ตรง = `401`) · WebSocket จากเบราว์เซอร์ส่ง `?access_token=<token>` แทนได้เฉพาะตอน handshake · CRN เก็บแค่ SHA-256 ของ token · ยังไม่ตั้ง = เปิดเหมือนเดิม · `/healthz` เปิดเสมอ
 - **ไม่มี `Idempotency-Key`** — ยิงซ้ำ = build ใหม่ทุกครั้ง (`build_no` เพิ่มขึ้น), ส่ง `project_id` เดิมจะใช้ project row เดิมแต่ยัง build ซ้ำ
 - decoder **เข้มงวด** (`DisallowUnknownFields`) → ฟิลด์ที่ **ไม่ได้ประกาศไว้** = **`400`** (`zip_uri` ประกาศแล้ว รับได้)
 
@@ -86,7 +86,7 @@ Content-Type: application/json
 |---|---|
 | `400` | JSON พัง / UUID ผิด / **มีฟิลด์ที่ไม่รู้จัก** |
 
-> **ยังไม่มี:** `403 org_mismatch` (ไม่มี auth ให้เทียบ), `413 zip_too_large` (ไม่จำกัดขนาด), `422 invalid_payload` (ใช้ `400` แทน), และ `200 duplicate` (ไม่มี dedupe)
+> **ยังไม่มี:** `403 org_mismatch` (token ยังไม่ผูกกับ org), `413 zip_too_large` (ไม่จำกัดขนาด), `422 invalid_payload` (ใช้ `400` แทน), และ `200 duplicate` (ไม่มี dedupe)
 
 ---
 
@@ -188,7 +188,7 @@ CRN_FTC_DV_CALLBACK_TOKEN=<token>
 
 เมื่อ FTC DV ตัดสินใจเอา feedback ไปแก้ → **POST edit request มา CRN** → CRN รัน edit build (clone repo เดิม + ให้ Claude แก้ตาม `change` + push branch เดิม → build image ใหม่) → callback เหมือน build ปกติ
 
-**Endpoint** (trusted-network `/internal/*` เหมือน ingest — ไม่มี auth):
+**Endpoint** (`/internal/*` เหมือน ingest — ใช้ `Authorization: Bearer` แบบเดียวกัน):
 ```
 POST /internal/projects/{project_id}/edit
 Content-Type: application/json

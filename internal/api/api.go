@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -87,6 +88,10 @@ type server struct {
 	// (internal/buildsettings), so every Claude call made here names a model
 	// and an effort explicitly.
 	claudeDefaults buildsettings.Defaults
+
+	// internalTokens are the bearer tokens /internal/* accepts, name -> SHA-256
+	// hex (internalAuth). Empty leaves /internal open.
+	internalTokens map[string]string
 }
 
 // defaultOrgID is the org an ingest call is attributed to when the body carries
@@ -100,7 +105,7 @@ var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
 // + issues endpoints). projectsDir is the per-project working-dir root used by
 // the interactive terminal WS, and terminalShell is the optional shell override
 // for that terminal.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell string, terminalEnabled bool, claudeBin string, claudeDefaults buildsettings.Defaults) http.Handler {
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell string, terminalEnabled bool, claudeBin string, claudeDefaults buildsettings.Defaults, internalTokens map[string]string) http.Handler {
 	s := &server{
 		logger:         logger,
 		store:          store,
@@ -111,6 +116,7 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 		terminalShell:  terminalShell,
 		claudeBin:      claudeBin,
 		claudeDefaults: claudeDefaults,
+		internalTokens: internalTokens,
 	}
 
 	r := chi.NewRouter()
@@ -119,6 +125,7 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	r.Use(middleware.Recoverer)
 	r.Use(devCORS)
 	r.Use(s.requestLogger)
+	r.Use(s.internalAuth)
 
 	// Health check — no auth.
 	r.Get("/healthz", s.handleHealthz)
@@ -255,6 +262,35 @@ func (s *server) requestLogger(next http.Handler) http.Handler {
 			"duration_ms", time.Since(start).Milliseconds(),
 			"request_id", middleware.GetReqID(r.Context()),
 		)
+	})
+}
+
+// internalAuth guards /internal/*. With internalTokens set, a request needs
+// Authorization: Bearer <token> whose SHA-256 is one of them; a WebSocket
+// handshake may carry it as ?access_token= instead, since a browser cannot set
+// headers on one (requestLogger logs the path, never the query). CORS
+// preflights pass. Without tokens /internal stays open.
+func (s *server) internalAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(s.internalTokens) == 0 || r.Method == http.MethodOptions || !strings.HasPrefix(r.URL.Path, "/internal/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			token = r.URL.Query().Get("access_token")
+		}
+		if token != "" {
+			sum := sha256.Sum256([]byte(token))
+			got := []byte(hex.EncodeToString(sum[:]))
+			for _, want := range s.internalTokens {
+				if subtle.ConstantTimeCompare(got, []byte(want)) == 1 {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+		s.writeError(w, r, http.StatusUnauthorized, "missing or unknown bearer token")
 	})
 }
 

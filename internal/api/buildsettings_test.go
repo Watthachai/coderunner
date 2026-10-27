@@ -44,7 +44,7 @@ func (s *settingsStore) SaveBuildSettings(_ context.Context, bs *domain.BuildSet
 func settingsServer(st *settingsStore) http.Handler {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	defaults := buildsettings.Defaults{Model: "claude-opus-5", Effort: "xhigh"}
-	return NewServer(logger, st, nil, "", "", "", "", false, "", defaults)
+	return NewServer(logger, st, nil, "", "", "", "", false, "", defaults, nil)
 }
 
 func callSettings(t *testing.T, h http.Handler, method, body string) (*httptest.ResponseRecorder, buildSettingsView) {
