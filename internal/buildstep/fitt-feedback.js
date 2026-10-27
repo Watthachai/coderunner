@@ -1,12 +1,13 @@
 /*!
  * fitt-feedback — the in-demo feedback widget CRN injects into every build.
  * Self-contained, framework-agnostic, Shadow-DOM isolated. Lets a demo tester
- * pin elements on the live page (CSS selector + bounding box + a foreignObject
+ * pin elements on the live page (CSS selector + bounding box + a PNG
  * "screenshot"), pick a category/priority, describe the change, and POST it to
- * the PostgREST ingest — which lands in CRN's Edit Request Panel.
+ * data-ingest: a Next app's own /api/fitt-feedback route, which sends it on to
+ * FITT_FEEDBACK_URL, or for a static page the receiver itself.
  *
  * Config comes from this script tag's dataset:
- *   <script data-project="<uuid>" data-ingest="https://host/feedback_requests"> ...
+ *   <script data-project="<uuid>" data-ingest="/api/fitt-feedback"> ...
  */
 (function () {
   "use strict";
@@ -27,6 +28,7 @@
 
   var GREEN = "#58cc02";
   var pins = []; // { selector, label, note, box, region_shot }
+  var shots = []; // pin pictures still being painted; sending waits for them
   var pointing = false;
   var cropOverlay = null,
     cropRect = null,
@@ -138,8 +140,38 @@
     for (var j = 0; j < sc.length && j < dc.length; j++) inlineStyles(sc[j], dc[j], clip);
   }
 
-  // Best-effort "screenshot" of one element as an SVG data URI (self-contained;
-  // cross-origin images/fonts may not render, which is acceptable).
+  // Fittcore takes PNG, JPEG or WebP only, so a snapshot (SVG, foreignObject) is
+  // painted onto a canvas and sent as PNG, its longest side at most SHOT_MAX px.
+  // Resolves "" when the browser will not paint it (a decode error or a tainted
+  // canvas): the pin goes without a picture, never with the SVG.
+  var SHOT_MAX = 1600;
+  function svgToPNG(svgURI, w, h) {
+    return new Promise(function (resolve) {
+      if (!svgURI) return resolve("");
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var scale = Math.min(1, SHOT_MAX / Math.max(w, h));
+          var c = document.createElement("canvas");
+          c.width = Math.max(1, Math.round(w * scale));
+          c.height = Math.max(1, Math.round(h * scale));
+          var ctx = c.getContext("2d");
+          ctx.fillStyle = "#fff"; // a transparent page reads as black in most viewers
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.drawImage(img, 0, 0, c.width, c.height);
+          resolve(c.toDataURL("image/png"));
+        } catch (e) {
+          resolve("");
+        }
+      };
+      img.onerror = function () { resolve(""); };
+      img.src = svgURI;
+    });
+  }
+
+  // Best-effort "screenshot" of one element, resolving to a PNG data URI (see
+  // svgToPNG; cross-origin images/fonts may not render, which is acceptable). The
+  // element is copied now; only the painting happens later.
   function captureElement(el) {
     try {
       var rect = el.getBoundingClientRect();
@@ -154,10 +186,20 @@
         "<foreignObject width='100%' height='100%'>" +
         "<div xmlns='http://www.w3.org/1999/xhtml'>" + html + "</div>" +
         "</foreignObject></svg>";
-      return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+      return svgToPNG("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg), w, h);
     } catch (e) {
-      return "";
+      return Promise.resolve("");
     }
+  }
+
+  // addPin lists pin now and fills in its picture once shot is painted.
+  function addPin(pin, shot) {
+    pins.push(pin);
+    shots.push(shot.then(function (png) {
+      pin.region_shot = png;
+      if (png && pins.indexOf(pin) >= 0) renderPins();
+    }));
+    renderPins();
   }
 
   function pageBox(el) {
@@ -460,14 +502,13 @@
     if (!el || host.contains(el)) return; // clicks on our UI pass through
     e.preventDefault();
     e.stopPropagation();
-    pins.push({
+    addPin({
       selector: cssPath(el),
       label: shortLabel(el),
       note: "",
       box: pageBox(el),
-      region_shot: captureElement(el),
-    });
-    renderPins();
+      region_shot: "",
+    }, captureElement(el));
     stopPointing();
     panel.hidden = false;
   }
@@ -569,7 +610,7 @@
     stopCrop();
     panel.hidden = false;
     if (w < 8 || h < 8) return; // ignore tiny drags
-    pins.push({
+    addPin({
       selector: "region",
       label: "พื้นที่ " + Math.round(w) + "×" + Math.round(h),
       note: "",
@@ -579,14 +620,14 @@
         w: Math.round(w),
         h: Math.round(h),
       },
-      region_shot: captureRegion(x, y, w, h),
-    });
-    renderPins();
+      region_shot: "",
+    }, captureRegion(x, y, w, h));
   }
 
   // Capture a viewport rectangle by cloning <body> into an SVG foreignObject,
-  // offset so the selected rect aligns to the image origin. Cross-origin images
-  // won't render (CORS) but layout/text/colors do — enough to point at a spot.
+  // offset so the selected rect aligns to the image origin, then painting it to
+  // PNG (svgToPNG). Cross-origin images won't render (CORS) but layout/text/colors
+  // do — enough to point at a spot.
   function captureRegion(vx, vy, w, h) {
     try {
       w = Math.max(1, Math.round(w));
@@ -596,8 +637,9 @@
       // Only rasterize images inside the crop rectangle (viewport coords), so a
       // small crop over an image-heavy page stays small instead of embedding
       // every full-res image on the page.
+      // The body keeps its own margin: the copy sits at the page origin, so the
+      // margin is what puts the content where the user saw it.
       inlineStyles(body, clone, { left: vx, top: vy, right: vx + w, bottom: vy + h });
-      clone.style.margin = "0";
       var html = new XMLSerializer().serializeToString(clone);
       var fw = Math.max(body.scrollWidth, window.innerWidth);
       var fh = Math.max(body.scrollHeight, window.innerHeight);
@@ -608,9 +650,9 @@
         "<foreignObject x='" + ox + "' y='" + oy + "' width='" + fw + "' height='" + fh + "'>" +
         "<div xmlns='http://www.w3.org/1999/xhtml'>" + html + "</div>" +
         "</foreignObject></svg>";
-      return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+      return svgToPNG("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg), w, h);
     } catch (e) {
-      return "";
+      return Promise.resolve("");
     }
   }
 
@@ -624,29 +666,32 @@
     }
     sendBtn.disabled = true;
     setStatus("กำลังส่ง…", "");
-    var body = {
-      project_id: PROJECT,
-      category: category,
-      priority: priority,
-      note: note,
-      page_url: location.href,
-      reporter: "",
-      payload: {
-        pins: pins,
-        full_shot: "",
-        viewport: { w: window.innerWidth, h: window.innerHeight },
-        user_agent: navigator.userAgent,
-      },
-    };
-    fetch(INGEST, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
+    Promise.all(shots)
+      .then(function () {
+        var body = {
+          project_id: PROJECT,
+          category: category,
+          priority: priority,
+          note: note,
+          page_url: location.href,
+          reporter: "",
+          payload: {
+            pins: pins,
+            full_shot: "",
+            viewport: { w: window.innerWidth, h: window.innerHeight },
+            user_agent: navigator.userAgent,
+          },
+        };
+        return fetch(INGEST, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      })
       .then(function (res) {
         if (!res.ok) throw new Error("HTTP " + res.status);
         setStatus("ส่งแล้ว ขอบคุณ! ✓", "ok");
-        pins = []; renderPins(); noteEl.value = "";
+        pins = []; shots = []; renderPins(); noteEl.value = "";
         setTimeout(function () { panel.hidden = true; setStatus("", ""); }, 1400);
       })
       .catch(function (err) {

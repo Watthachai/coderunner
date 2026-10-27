@@ -359,3 +359,19 @@ func TestRemoveFeedbackWidgetLeavesPlainAppsAlone(t *testing.T) {
 		t.Errorf("plain app changed: %q", got)
 	}
 }
+
+// Fittcore keeps the pictures customers pin and takes PNG, JPEG or WebP only. The
+// widget snapshots a pin as SVG, paints it onto a canvas and sends PNG, or no
+// picture when the browser will not paint it; the SVG itself never leaves the page.
+// Painting is asynchronous, so sending waits for the pictures still being painted.
+func TestFeedbackWidgetSendsPinPicturesAsPNG(t *testing.T) {
+	if strings.Contains(feedbackWidgetJS, `return "data:image/svg+xml`) {
+		t.Error("a capture still returns the SVG snapshot as the pin's picture")
+	}
+	if !strings.Contains(feedbackWidgetJS, `function svgToPNG(`) || !strings.Contains(feedbackWidgetJS, `resolve(c.toDataURL("image/png"))`) {
+		t.Error("the snapshot is not painted to PNG")
+	}
+	if !strings.Contains(feedbackWidgetJS, `Promise.all(shots)`) {
+		t.Error("sending does not wait for the pictures still being painted")
+	}
+}
