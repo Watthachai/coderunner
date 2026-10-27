@@ -32,6 +32,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -101,6 +103,8 @@ type manager struct {
 	// ftcdvCallbackOrgs are the orgs FTC DV orders builds for; only their
 	// builds are reported to ftcdvCallbackURL.
 	ftcdvCallbackOrgs map[uuid.UUID]bool
+	// ftcdvClient posts the callbacks (callbackClient).
+	ftcdvClient *http.Client
 	// buildImage toggles the docker-image pipeline; imageRegistry is the push
 	// target prefix (empty -> build locally, no push); artifactDir, when set, is
 	// where the air-gap bundle (docker save tarball + compose + INSTALL) is written.
@@ -163,6 +167,7 @@ func NewManager(
 	ftcdvCallbackURL string,
 	ftcdvCallbackToken string,
 	ftcdvCallbackOrgs map[uuid.UUID]bool,
+	ftcdvCallbackCA *x509.CertPool,
 	buildImage bool,
 	imageRegistry string,
 	orgRegistries map[uuid.UUID]string,
@@ -192,6 +197,7 @@ func NewManager(
 		ftcdvCallbackURL:   ftcdvCallbackURL,
 		ftcdvCallbackToken: ftcdvCallbackToken,
 		ftcdvCallbackOrgs:  ftcdvCallbackOrgs,
+		ftcdvClient:        callbackClient(ftcdvCallbackCA),
 		buildImage:         buildImage,
 		imageRegistry:      imageRegistry,
 		orgRegistries:      orgRegistries,
@@ -1503,7 +1509,11 @@ func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, ima
 	if m.ftcdvCallbackToken != "" {
 		req.Header.Set("Authorization", "Bearer "+m.ftcdvCallbackToken)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := m.ftcdvClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		m.logger.Warn("ftc callback POST failed", "err", err, "job_id", jobID, "status", status)
 		return
@@ -1514,6 +1524,19 @@ func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, ima
 		return
 	}
 	m.logger.Info("ftc callback sent", "job_id", jobID, "status", status, "code", resp.StatusCode)
+}
+
+// callbackClient is the client the FTC DV callbacks go out on. Given a CA pool
+// it trusts that pool alone (FTC DV's internal CA, for its HTTPS endpoint),
+// without touching the host's CAs or any other client; nil is the default
+// client and the system's CAs.
+func callbackClient(ca *x509.CertPool) *http.Client {
+	if ca == nil {
+		return http.DefaultClient
+	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.TLSClientConfig = &tls.Config{RootCAs: ca, MinVersion: tls.VersionTLS12}
+	return &http.Client{Transport: t}
 }
 
 // --- internal: live subscriber fan-out -------------------------------------

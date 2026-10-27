@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -199,6 +200,41 @@ func TestFTCCallbackGoesOnlyToTheOrgsListed(t *testing.T) {
 	case id := <-got:
 		t.Errorf("another org's build reached the callback URL: %s", id)
 	default:
+	}
+}
+
+// Fittcore's callback endpoint presents a certificate from its own CA. The
+// callback client trusts that CA and nothing else; without it the same server
+// is refused.
+func TestFTCCallbackTrustsTheCAItIsGiven(t *testing.T) {
+	got := make(chan struct{}, 4)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- struct{}{}
+	}))
+	defer srv.Close()
+	org := uuid.New()
+	ca := x509.NewCertPool()
+	ca.AddCert(srv.Certificate())
+	send := func(client *http.Client) bool {
+		m := &manager{
+			logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+			ftcdvCallbackURL:  srv.URL,
+			ftcdvCallbackOrgs: map[uuid.UUID]bool{org: true},
+			ftcdvClient:       client,
+		}
+		m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+		select {
+		case <-got:
+			return true
+		default:
+			return false
+		}
+	}
+	if !send(callbackClient(ca)) {
+		t.Error("callback with Fittcore's CA did not reach the server")
+	}
+	if send(callbackClient(nil)) {
+		t.Error("callback reached a server whose CA the client was never given")
 	}
 }
 

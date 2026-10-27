@@ -4,6 +4,7 @@
 package config
 
 import (
+	"crypto/x509"
 	"fmt"
 	"os"
 	"strconv"
@@ -95,6 +96,11 @@ type Config struct {
 	// and env never reach it. Set as CRN_FTC_DV_CALLBACK_ORGS="<org uuid>,...";
 	// empty sends no callback, and a malformed entry stops startup.
 	FTCDVCallbackOrgs map[uuid.UUID]bool
+	// FTCDVCallbackCA, from the PEM file CRN_FTC_DV_CALLBACK_CA names, is the
+	// only CA the callback client trusts (FTC DV's internal CA); the host's own
+	// CAs are left as they are. nil = the system's CAs. An unreadable file or
+	// one without a certificate stops startup.
+	FTCDVCallbackCA *x509.CertPool
 
 	// BuildImage toggles the docker-image pipeline: after a successful build CRN
 	// runs `docker build` on the produced Next standalone app and (if
@@ -245,6 +251,18 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.FTCDVCallbackOrgs = callbackOrgs
+
+	if path := os.Getenv("CRN_FTC_DV_CALLBACK_CA"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("config: CRN_FTC_DV_CALLBACK_CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(raw) {
+			return nil, fmt.Errorf("config: CRN_FTC_DV_CALLBACK_CA %s holds no PEM certificate", path)
+		}
+		cfg.FTCDVCallbackCA = pool
+	}
 
 	if !buildsettings.ValidEffort(cfg.ClaudeEffort) {
 		return nil, fmt.Errorf("config: CRN_CLAUDE_EFFORT must be one of %s, got %q",

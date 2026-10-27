@@ -1,6 +1,12 @@
 package config
 
 import (
+	"crypto/x509"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,5 +118,45 @@ func TestFTCDVCallbackOrgsTypoStopsStartup(t *testing.T) {
 	t.Setenv("CRN_FTC_DV_CALLBACK_ORGS", "088c8070-3ec3-46a9-b53f")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_FTC_DV_CALLBACK_ORGS") {
 		t.Errorf("Load() err = %v, want one naming CRN_FTC_DV_CALLBACK_ORGS", err)
+	}
+}
+
+func TestFTCDVCallbackCAIsReadFromItsFile(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_FTC_DV_CALLBACK_CA", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FTCDVCallbackCA != nil {
+		t.Error("no CRN_FTC_DV_CALLBACK_CA: want the system's CAs (nil pool)")
+	}
+
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	defer srv.Close()
+	ca := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CRN_FTC_DV_CALLBACK_CA", ca)
+	if cfg, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FTCDVCallbackCA == nil || !cfg.FTCDVCallbackCA.Equal(func() *x509.CertPool { p := x509.NewCertPool(); p.AddCert(srv.Certificate()); return p }()) {
+		t.Error("FTCDVCallbackCA does not hold the file's certificate")
+	}
+}
+
+func TestFTCDVCallbackCAThatIsNoCertificateStopsStartup(t *testing.T) {
+	requiredEnv(t)
+	bad := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(bad, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{bad, filepath.Join(t.TempDir(), "missing.crt")} {
+		t.Setenv("CRN_FTC_DV_CALLBACK_CA", path)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_FTC_DV_CALLBACK_CA") {
+			t.Errorf("CRN_FTC_DV_CALLBACK_CA=%s: Load() err = %v, want one naming the variable", path, err)
+		}
 	}
 }
