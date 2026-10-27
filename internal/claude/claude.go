@@ -19,10 +19,12 @@
 //     stream-json line can far exceed bufio's 64 KiB default). For EACH line we
 //     json.Unmarshal into a private raw wire struct, translate it into a
 //     domain.ClaudeEvent (preserving the original bytes in .Raw), and call
-//     emit(ev) sequentially. The loop stops on ctx.Done(), a scanner error, or
-//     the terminal "result" line. On context cancellation the whole process
+//     emit(ev) sequentially. The loop runs until stdout closes, ctx.Done(), or
+//     a scanner error: a run can print several "result" lines (one per turn,
+//     and a resumed session may print one before any work), so RunResult is
+//     populated from the LAST one. On context cancellation the whole process
 //     GROUP is killed so no orphan children survive. A non-zero exit yields a
-//     non-nil error; RunResult is populated from the terminal result line.
+//     non-nil error.
 package claude
 
 import (
@@ -239,7 +241,7 @@ func (r *runner) Run(ctx context.Context, spec domain.RunSpec, emit func(domain.
 		drainStderr(stderr, log)
 	}()
 
-	// Scan stdout, translate, and emit. result captures the terminal line.
+	// Scan stdout, translate, and emit. result keeps the last terminal line.
 	var result domain.RunResult
 	var sawResult bool
 	scanErr := scanStream(stdout, log, func(ev domain.ClaudeEvent) error {
@@ -297,8 +299,9 @@ func (r *runner) Run(ctx context.Context, spec domain.RunSpec, emit func(domain.
 // scanStream reads NDJSON lines from r, decodes each into a domain.ClaudeEvent,
 // and calls emit in order. Garbage / non-JSON lines are skipped with a debug
 // log. It returns the first emit error or a scanner read error; io.EOF is
-// normal termination and is reported as nil. Scanning also stops after the
-// terminal result line is emitted.
+// normal termination and is reported as nil. A result line does not end the
+// scan: background tasks finishing after it start more turns, each ending in
+// its own result line.
 func scanStream(r io.Reader, log *slog.Logger, emit func(domain.ClaudeEvent) error) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxLineBytes)
@@ -317,12 +320,6 @@ func scanStream(r io.Reader, log *slog.Logger, emit func(domain.ClaudeEvent) err
 
 		if err := emit(ev); err != nil {
 			return err
-		}
-
-		if ev.IsTerminal() {
-			// Terminal result line reached; stop scanning. We do NOT drain the
-			// rest of stdout — the process is expected to exit right after.
-			return nil
 		}
 	}
 

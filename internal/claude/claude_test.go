@@ -1,7 +1,13 @@
 package claude
 
 import (
+	"context"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
@@ -98,5 +104,63 @@ func TestChildEnvKeepsOnlyWhatTheBuildNeeds(t *testing.T) {
 func TestChildEnvIsNeverNil(t *testing.T) {
 	if got := childEnv([]string{"CRN_DATABASE_URL=x"}); got == nil {
 		t.Fatal("childEnv returned nil; exec.Cmd treats a nil Env as \"inherit the parent's environment\"")
+	}
+}
+
+// fakeClaude writes a `claude` that prints lines as its stream-json output.
+func fakeClaude(t *testing.T, lines ...string) string {
+	t.Helper()
+	script := "#!/bin/sh\ncat <<'STREAM'\n" + strings.Join(lines, "\n") + "\nSTREAM\n"
+	bin := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// A resumed session can print a result before any work (a background task's
+// notification left over from the last run), and a run prints another result
+// after each turn a notification starts. The run's outcome is the last one, and
+// everything printed before it is still the build's stream.
+func TestRunReadsToTheLastResult(t *testing.T) {
+	bin := fakeClaude(t,
+		`{"type":"system","subtype":"init","session_id":"a786"}`,
+		`{"type":"result","subtype":"success","total_cost_usd":11.14,"session_id":"a786"}`,
+		`{"type":"assistant","session_id":"a786","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"app/page.tsx"}}]}}`,
+		`{"type":"result","subtype":"success","total_cost_usd":16.96,"session_id":"a786"}`,
+	)
+	r := NewRunner(bin, t.TempDir(), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var tools []string
+	res, err := r.Run(context.Background(), domain.RunSpec{Prompt: "edit it", WorkDir: t.TempDir(), ResumeSessionID: "a786"}, func(ev domain.ClaudeEvent) error {
+		if ev.ToolName != "" {
+			tools = append(tools, ev.ToolName)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.CostUSD != 16.96 || !res.Success || res.SessionID != "a786" {
+		t.Errorf("result = %+v, want the last result line (16.96, success, a786)", res)
+	}
+	if !slices.Equal(tools, []string{"Edit"}) {
+		t.Errorf("tool calls seen = %q, want the Edit after the early result", tools)
+	}
+}
+
+// The last result decides the outcome: a run that ends in an error failed,
+// whatever an earlier turn reported.
+func TestRunFailsWhenTheLastResultIsAnError(t *testing.T) {
+	bin := fakeClaude(t,
+		`{"type":"result","subtype":"success","total_cost_usd":2,"session_id":"s"}`,
+		`{"type":"result","subtype":"error_during_execution","total_cost_usd":3,"session_id":"s"}`,
+	)
+	r := NewRunner(bin, t.TempDir(), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res, err := r.Run(context.Background(), domain.RunSpec{Prompt: "p", WorkDir: t.TempDir()}, func(domain.ClaudeEvent) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Success || res.CostUSD != 3 {
+		t.Errorf("result = %+v, want the last line's failure and cost 3", res)
 	}
 }

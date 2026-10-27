@@ -633,6 +633,13 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 
 		var runErr error
 		result, runErr = m.runner.Run(runCtx, runSpec, emit)
+		if resumeSession != "" {
+			traces, err := m.store.ListBuildTraces(ctx, job.ProjectID)
+			if err != nil {
+				log.Warn("earlier runs' cost unknown; this run's cost includes them", "err", err)
+			}
+			result.CostUSD = runCost(result.CostUSD, resumeSession, job.ID, traces)
+		}
 		meta.cost = result.CostUSD
 
 		// Remove the injected .claude dir (success OR fail) BEFORE the git phase so
@@ -1325,6 +1332,26 @@ func (m *manager) claudeConfigFor(ctx context.Context, jobID uuid.UUID, log *slo
 		log.Warn("record claude config on job failed", "err", err, "model", res.Model, "effort", res.Effort)
 	}
 	return res
+}
+
+// runCost is what one Claude run cost, given the session's running total at its
+// end (total_cost_usd). A resumed session's total carries over its earlier runs,
+// which the project's traces of that session already count; a total below them
+// means Claude started this run's total from zero.
+func runCost(total float64, resumed string, jobID uuid.UUID, traces []*domain.BuildTrace) float64 {
+	if resumed == "" {
+		return total
+	}
+	before := 0.0
+	for _, t := range traces {
+		if t.SessionID == resumed && t.JobID != jobID {
+			before += t.CostUSD
+		}
+	}
+	if total < before {
+		return total
+	}
+	return total - before
 }
 
 // saveTrace snapshots the job's in-memory live event buffer plus derived

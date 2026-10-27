@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"math"
 	"testing"
 
 	"github.com/google/uuid"
@@ -134,5 +135,27 @@ func TestFinishFailedStampsItsOwnError(t *testing.T) {
 
 	if store.saved.ErrorMsg != "the real reason" {
 		t.Errorf("error = %q, want %q", store.saved.ErrorMsg, "the real reason")
+	}
+}
+
+// Claude's total_cost_usd is the session's running total, and --resume carries
+// it over, so a resumed run cost what the session spent beyond its earlier runs.
+func TestRunCostTakesOffWhatTheSessionSpentBefore(t *testing.T) {
+	this, earlier := uuid.New(), uuid.New()
+	traces := []*domain.BuildTrace{
+		{JobID: earlier, SessionID: "a786", CostUSD: 11.14},
+		{JobID: uuid.New(), SessionID: "older-session", CostUSD: 7},
+		{JobID: this, SessionID: "a786", CostUSD: 99}, // this run's own row, if one was saved early
+	}
+	if got := runCost(16.96, "a786", this, traces); math.Abs(got-5.82) > 1e-9 {
+		t.Errorf("resumed run cost = %v, want 5.82", got)
+	}
+	if got := runCost(11.14, "", this, traces); got != 11.14 {
+		t.Errorf("fresh run cost = %v, want its whole total 11.14", got)
+	}
+	// A total below what the session spent before means Claude started this run's
+	// total from zero; it is then the run's own cost.
+	if got := runCost(4, "a786", this, traces); got != 4 {
+		t.Errorf("run whose total did not carry over = %v, want 4", got)
 	}
 }

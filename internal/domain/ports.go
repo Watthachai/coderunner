@@ -217,11 +217,14 @@ type RunSpec struct {
 	Effort string
 }
 
-// RunResult is the terminal outcome of a Claude Code run.
+// RunResult is the terminal outcome of a Claude Code run, from its last result
+// line.
 type RunResult struct {
 	SessionID string
-	CostUSD   float64
-	Success   bool
+	// CostUSD is Claude's total_cost_usd: the session's running total, which a
+	// --resume carries over from the session's earlier runs.
+	CostUSD float64
+	Success bool
 }
 
 // JobManager owns the queue, the build lifecycle, and the per-org concurrency
