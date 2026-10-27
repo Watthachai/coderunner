@@ -139,6 +139,10 @@ type Config struct {
 	// The fallback logic lives in the terminal handler; this field only carries
 	// the operator's explicit override.
 	TerminalShell string
+	// TerminalEnabled turns on the per-project terminal WebSocket, a shell on this
+	// host with CRN's environment and no auth. Off unless CRN_TERMINAL_ENABLED is
+	// true: anyone who can reach the port could otherwise open it.
+	TerminalEnabled bool
 }
 
 // defaultClaudeModel is the model builds use when CRN_CLAUDE_MODEL is unset:
@@ -168,6 +172,7 @@ const defaultClaudeModel = "claude-opus-5"
 //	CRN_SHUTDOWN_TIMEOUT   ("15s")
 //	CRN_ENV                ("development")
 //	CRN_TERMINAL_SHELL     ("" — falls back to $SHELL, then /bin/zsh/bash/sh)
+//	CRN_TERMINAL_ENABLED   (false — "true"/"1" serves the no-auth terminal WebSocket)
 //	CRN_CLAUDE_MODEL       (defaultClaudeModel — the latest Opus)
 //	CRN_CLAUDE_EFFORT      (buildsettings.DefaultEffort — "xhigh"; must be low|medium|high|xhigh|max)
 func Load() (*Config, error) {
@@ -195,6 +200,7 @@ func Load() (*Config, error) {
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),
+		TerminalEnabled:    getEnvBool("CRN_TERMINAL_ENABLED", false),
 	}
 
 	if cfg.CentralDatabaseURL == "" {

@@ -100,7 +100,7 @@ var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
 // + issues endpoints). projectsDir is the per-project working-dir root used by
 // the interactive terminal WS, and terminalShell is the optional shell override
 // for that terminal.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell, claudeBin string, claudeDefaults buildsettings.Defaults) http.Handler {
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell string, terminalEnabled bool, claudeBin string, claudeDefaults buildsettings.Defaults) http.Handler {
 	s := &server{
 		logger:         logger,
 		store:          store,
@@ -140,9 +140,11 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 
 	// No-auth interactive per-project terminal WebSocket: an OS shell running in
 	// a PTY in the project's working dir, bridged to the browser. SECURITY: this
-	// is a remote shell on the CRN host with NO auth — fine for local/trusted
-	// dev, MUST be locked down (auth + network policy) in prod. See terminal.go.
-	r.Get("/internal/projects/{id}/terminal", s.handleTerminalWS)
+	// is a remote shell on the CRN host with NO auth and CRN's environment, so it
+	// is served only when the operator sets CRN_TERMINAL_ENABLED. See terminal.go.
+	if terminalEnabled {
+		r.Get("/internal/projects/{id}/terminal", s.handleTerminalWS)
+	}
 
 	// No-auth operator-console read model. A single snapshot of vitals, the
 	// in-flight builds, the queue, all projects, and a recent activity feed.

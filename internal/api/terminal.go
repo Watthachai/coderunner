@@ -5,9 +5,9 @@
 //
 // SECURITY: this endpoint is a REMOTE SHELL on the CRN host with NO auth (it
 // mirrors the no-auth /internal log WS: InsecureSkipVerify origin, trusted
-// network). That is fine for local/trusted dev, but in production it MUST be
-// locked down — put it behind authentication and a network policy so an
-// untrusted client can never open a shell on the build host.
+// network), so NewServer serves it only when CRN_TERMINAL_ENABLED is set. Turn
+// it on for local/trusted dev only; anywhere else it needs authentication and a
+// network policy so an untrusted client can never open a shell on the build host.
 package api
 
 import (

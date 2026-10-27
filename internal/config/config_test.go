@@ -79,3 +79,17 @@ func TestOrgImageRegistriesTypoStopsStartup(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalIsOffUnlessEnabled(t *testing.T) {
+	requiredEnv(t)
+	for env, want := range map[string]bool{"": false, "false": false, "yes please": false, "true": true, "1": true} {
+		t.Setenv("CRN_TERMINAL_ENABLED", env)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.TerminalEnabled != want {
+			t.Errorf("CRN_TERMINAL_ENABLED=%q: TerminalEnabled = %v, want %v", env, cfg.TerminalEnabled, want)
+		}
+	}
+}
