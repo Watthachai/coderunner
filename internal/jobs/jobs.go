@@ -108,7 +108,8 @@ type manager struct {
 	// project (Fittcore's UAT pulls from fitt/ftcdv-uat).
 	orgRegistries map[uuid.UUID]string
 	// mirrorRegistry, when set, receives a digest-identical copy of every pushed
-	// image (Google Artifact Registry for the GCP deploy path).
+	// image of an org without its own registry (Google Artifact Registry for the
+	// GCP deploy path).
 	mirrorRegistry string
 
 	// claudeDefaults is the environment's model/effort, used until an operator
@@ -1064,8 +1065,12 @@ func (m *manager) writeImageBundle(workDir string, spec payloadSpec, job *domain
 // mirrorImage copies the pushed image to the mirror registry with its digest
 // unchanged (buildstep.MirrorImage). Best effort: the delivery registry already
 // holds the image the customer pulls, so a failed mirror is reported in the
-// build's stream and the build carries on.
+// build's stream and the build carries on. An org with its own registry project
+// takes delivery from it alone, so its images are not copied anywhere else.
 func (m *manager) mirrorImage(ctx context.Context, appTag string, job *domain.Job, log *slog.Logger) {
+	if _, own := m.orgRegistries[job.OrgID]; own {
+		return
+	}
 	registry := m.registryFor(job)
 	if m.mirrorRegistry == "" || registry == "" {
 		return

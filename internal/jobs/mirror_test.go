@@ -91,11 +91,11 @@ esac`)
 }
 
 // Fittcore's UAT pulls from its own registry project: a build of an org that has
-// one is tagged and pushed there, mirrored under the same name, and every other
-// org's build stays in the shared registry.
+// one is tagged and pushed there and stays there (no copy to the mirror), and
+// every other org's build goes to the shared registry and is mirrored.
 func TestAnOrgWithItsOwnRegistryIsPushedThere(t *testing.T) {
-	fakeDocker(t, `case "$*" in
-  "image inspect"*) echo '["reg.test/fitt/ftcdv-uat/crn-demo-hello-fitt-c0241b87@`+mirrorDigest+`"]';;
+	args := fakeDocker(t, `case "$*" in
+  "image inspect"*) echo '["reg.test/fitt/demos/crn-demo-hello-fitt-c0241b87@`+mirrorDigest+`"]';;
   *"imagetools inspect"*) echo '{"digest":"`+mirrorDigest+`"}';;
 esac`)
 	ftc, other := uuid.New(), uuid.New()
@@ -114,7 +114,15 @@ esac`)
 	}
 
 	m.mirrorImage(context.Background(), "reg.test/fitt/ftcdv-uat/crn-demo-hello-fitt-c0241b87:v4", ftcJob, m.logger)
-	if got := streamText(m, ftcJob.ID); !strings.Contains(got, "asia-southeast1-docker.pkg.dev/proj/crn/crn-demo-hello-fitt-c0241b87:v4@") {
-		t.Errorf("mirror stream: %q", got)
+	if _, err := os.Stat(args); err == nil {
+		t.Error("docker ran to mirror the build of an org with its own registry")
+	}
+	if got := streamText(m, ftcJob.ID); got != "" {
+		t.Errorf("Fittcore build's stream: %q", got)
+	}
+
+	m.mirrorImage(context.Background(), "reg.test/fitt/demos/crn-demo-hello-fitt-c0241b87:v4", otherJob, m.logger)
+	if got := streamText(m, otherJob.ID); !strings.Contains(got, "asia-southeast1-docker.pkg.dev/proj/crn/crn-demo-hello-fitt-c0241b87:v4@") {
+		t.Errorf("other org's mirror stream: %q", got)
 	}
 }

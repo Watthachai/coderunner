@@ -106,7 +106,7 @@ type Config struct {
 	// closed. Set as CRN_ORG_IMAGE_REGISTRIES="<org uuid>=<registry>,...".
 	OrgImageRegistries map[uuid.UUID]string
 	// MirrorRegistry, when set (with ImageRegistry), receives a digest-identical
-	// copy of every pushed image, e.g. "asia-southeast1-docker.pkg.dev/<project>/<repo>"
+	// copy of every pushed image except those of an org in OrgImageRegistries, e.g. "asia-southeast1-docker.pkg.dev/<project>/<repo>"
 	// for the GCP deploy path. The host must be logged in to it (gcloud
 	// auth configure-docker). Empty -> no mirror.
 	MirrorRegistry string
