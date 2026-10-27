@@ -279,10 +279,49 @@ func TestRemoveFeedbackWidgetKeepsTheAppsOwnRoutes(t *testing.T) {
 // The widget posts to the app's own origin and the app's server sends the report
 // on, so the receiver is the one FITT_FEEDBACK_URL names when the app runs, on
 // every page, and the receiver needs no CORS. Runs the generated route in node.
-func TestFeedbackRouteForwardsToTheReceiverNamedAtRunTime(t *testing.T) {
+// feedbackRouteFor injects the widget into a Next app whose root layout is
+// app/<layout> and returns the route it writes. The build's URL is only the
+// fallback; this one never answers.
+func feedbackRouteFor(t *testing.T, layout string) string {
+	t.Helper()
 	if out, err := exec.Command("node", "-p", "process.features.typescript").Output(); err != nil || strings.TrimSpace(string(out)) == "false" {
 		t.Skip("needs node with TypeScript type stripping")
 	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app", layout), []byte("<html><body>{children}</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := InjectFeedbackWidget(dir, "p", "http://127.0.0.1:9/feedback_requests", nil); n != 1 {
+		t.Fatalf("inject = %d, want 1", n)
+	}
+	ext := ".ts"
+	if filepath.Ext(layout) == ".jsx" {
+		ext = ".js"
+	}
+	return filepath.Join(dir, "app", "api", "fitt-feedback", "route"+ext)
+}
+
+// postToFeedbackRoute calls the route's POST in node with FITT_FEEDBACK_URL=env
+// and a body made by the JavaScript expression body, and returns "<status> <text>".
+func postToFeedbackRoute(t *testing.T, route, env, body string) string {
+	t.Helper()
+	script := `const { POST } = await import(process.argv[1]);
+const res = await POST(new Request("http://app.test/api/fitt-feedback", { method: "POST", body: ` + body + ` }));
+console.log(res.status, await res.text());`
+	cmd := exec.Command("node", "--input-type=module", "-e", script, route)
+	cmd.Env = append(os.Environ(), "FITT_FEEDBACK_URL="+env)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestFeedbackRouteForwardsToTheReceiverNamedAtRunTime(t *testing.T) {
+	route := feedbackRouteFor(t, "layout.tsx")
 	type received struct{ body, contentType string }
 	got := make(chan received, 4)
 	status := http.StatusCreated
@@ -293,34 +332,9 @@ func TestFeedbackRouteForwardsToTheReceiverNamedAtRunTime(t *testing.T) {
 		_, _ = w.Write([]byte("receiver said so"))
 	}))
 	defer receiver.Close()
+	report := `'{"note":"ปุ่มสีเขียว"}'`
 
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "app"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "app", "layout.tsx"), []byte("<html><body>{children}</body></html>"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// The build's URL is only the fallback; this one never answers.
-	if n, _ := InjectFeedbackWidget(dir, "p", "http://127.0.0.1:9/feedback_requests", nil); n != 1 {
-		t.Fatalf("inject = %d, want 1", n)
-	}
-	route := filepath.Join(dir, "app", "api", "fitt-feedback", "route.ts")
-	post := func(env string) string {
-		t.Helper()
-		script := `const { POST } = await import(process.argv[1]);
-const res = await POST(new Request("http://app.test/api/fitt-feedback", { method: "POST", body: '{"note":"ปุ่มสีเขียว"}' }));
-console.log(res.status, await res.text());`
-		cmd := exec.Command("node", "--input-type=module", "-e", script, route)
-		cmd.Env = append(os.Environ(), "FITT_FEEDBACK_URL="+env)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("node: %v\n%s", err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-
-	if out := post(receiver.URL + "/api/ingest/feedback"); out != "204" {
+	if out := postToFeedbackRoute(t, route, receiver.URL+"/api/ingest/feedback", report); out != "204" {
 		t.Errorf("accepted report: route answered %q, want 204", out)
 	}
 	select {
@@ -333,13 +347,72 @@ console.log(res.status, await res.text());`
 	}
 
 	status = http.StatusRequestEntityTooLarge
-	if out := post(receiver.URL + "/api/ingest/feedback"); out != "413 receiver said so" {
+	if out := postToFeedbackRoute(t, route, receiver.URL+"/api/ingest/feedback", report); out != "413 receiver said so" {
 		t.Errorf("refused report: route answered %q, want the receiver's 413", out)
 	}
 	<-got
 
-	if out := post(""); !strings.HasPrefix(out, "502") {
+	if out := postToFeedbackRoute(t, route, "", report); !strings.HasPrefix(out, "502") {
 		t.Errorf("unreachable receiver: route answered %q, want 502", out)
+	}
+}
+
+// Anyone who can open the app can post to the route, so it must not hold an
+// unbounded body in memory or pass one on.
+func TestFeedbackRouteRefusesReportsOverTwentyFiveMB(t *testing.T) {
+	for _, layout := range []string{"layout.tsx", "layout.jsx"} {
+		t.Run(layout, func(t *testing.T) {
+			route := feedbackRouteFor(t, layout)
+			reached := make(chan int, 4)
+			receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				reached <- len(raw)
+				w.WriteHeader(http.StatusCreated)
+			}))
+			defer receiver.Close()
+
+			out := postToFeedbackRoute(t, route, receiver.URL, `"x".repeat(25 * 1024 * 1024 + 1)`)
+			if !strings.HasPrefix(out, "413") {
+				t.Errorf("oversized report: route answered %q, want 413", out)
+			}
+			select {
+			case n := <-reached:
+				t.Errorf("an oversized report reached the receiver (%d bytes)", n)
+			default:
+			}
+
+			if out := postToFeedbackRoute(t, route, receiver.URL, `"x".repeat(25 * 1024 * 1024)`); out != "204" {
+				t.Errorf("report of exactly 25 MB: route answered %q, want 204", out)
+			}
+			if n := <-reached; n != 25*1024*1024 {
+				t.Errorf("receiver got %d bytes, want %d", n, 25*1024*1024)
+			}
+		})
+	}
+}
+
+// A receiver that redirects must not steer reports to a host nobody let through
+// the firewall.
+func TestFeedbackRouteDoesNotFollowRedirects(t *testing.T) {
+	route := feedbackRouteFor(t, "layout.tsx")
+	elsewhere := make(chan struct{}, 4)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhere <- struct{}{}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer other.Close()
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/steal", http.StatusTemporaryRedirect)
+	}))
+	defer receiver.Close()
+
+	if out := postToFeedbackRoute(t, route, receiver.URL, `'{"note":"x"}'`); !strings.HasPrefix(out, "502") {
+		t.Errorf("redirecting receiver: route answered %q, want 502", out)
+	}
+	select {
+	case <-elsewhere:
+		t.Error("the route followed the redirect")
+	default:
 	}
 }
 

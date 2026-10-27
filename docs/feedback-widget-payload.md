@@ -12,7 +12,7 @@ POST  {FITT_FEEDBACK_URL}
 Content-Type: application/json
 ```
 
-- **endpoint อ่านจาก RUNTIME env `FITT_FEEDBACK_URL`** — widget POST เข้า route ของแอปเอง (`/api/fitt-feedback`) แล้ว server ของแอปส่ง body เดิมต่อไป `FITT_FEEDBACK_URL` ที่อ่านตอนมี feedback เข้ามาแต่ละครั้ง → operator ตั้งค่าเองต่อ deployment **ไม่ต้อง rebuild** (ตั้งใน Run demo Environment เหมือน `DATABASE_URL`). เบราว์เซอร์คุยกับแอปเท่านั้น; เครื่องที่รันแอปต้องต่อถึง receiver ได้
+- **endpoint อ่านจาก RUNTIME env `FITT_FEEDBACK_URL`** — widget POST เข้า route ของแอปเอง (`/api/fitt-feedback`) แล้ว server ของแอปส่ง body เดิมต่อไป `FITT_FEEDBACK_URL` ที่อ่านตอนมี feedback เข้ามาแต่ละครั้ง → operator ตั้งค่าเองต่อ deployment **ไม่ต้อง rebuild** (ตั้งใน Run demo Environment เหมือน `DATABASE_URL`). เบราว์เซอร์คุยกับแอปเท่านั้น; เครื่องที่รันแอปต้องต่อถึง receiver ได้ · route รับ body ได้ไม่เกิน **25 MB** (เกิน = `413` ไม่ส่งต่อ) และ **ไม่ตาม redirect** (receiver ตอบ 3xx = `502`)
   ```
   FITT_FEEDBACK_URL=http://172.168.1.247:3101/api/ingest/feedback
   ```
@@ -141,7 +141,7 @@ curl -sS -X POST "http://172.168.1.247:3101/api/ingest/feedback" \
 ## 4. Receiver checklist (ฝั่ง FTC DV)
 
 - [ ] **required:** `project_id` (uuid) + อย่างน้อย `note` **หรือ** 1 pin (widget บังคับก่อนส่ง)
-- [ ] **body size limit** — `region_shot` เป็น base64 PNG ต่อ pin (ปกติหลัก KB–ร้อย KB, หน้าเต็มไปด้วยรูปอาจถึงหลาย MB) → กัน 413. แนะนำ ≥ 25MB
+- [ ] **body size limit** — `region_shot` เป็น base64 PNG ต่อ pin (ปกติหลัก KB–ร้อย KB, หน้าเต็มไปด้วยรูปอาจถึงหลาย MB) → กัน 413. แนะนำ ≥ 25MB (route ของแอปตัดที่ 25 MB อยู่แล้ว ใหญ่กว่านั้นไม่ถึง receiver)
 - [ ] ตอบ **200/201** เมื่อรับสำเร็จ (ไม่งั้น widget โชว์ "ส่งไม่สำเร็จ")
 - [ ] `note` อยู่ 2 ระดับ: top-level = คำอธิบายรวม · `payload.pins[].note` = ต่อจุด
 - [ ] validate enum: `category` ∈ {bug,feature,style} · `priority` ∈ {low,med,high}

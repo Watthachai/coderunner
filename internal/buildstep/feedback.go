@@ -177,35 +177,69 @@ const feedbackRoutePath = "/api/fitt-feedback"
 // feedbackRoute returns the path and source of the route that sends the widget's
 // reports on to FITT_FEEDBACK_URL, read when each report arrives; ingestURL is
 // the fallback when it is unset. appDir is the layout's directory and layoutExt
-// its extension, so a JavaScript app gets a JavaScript route.
+// its extension, so a JavaScript app gets a JavaScript route. The route refuses
+// a report over 25 MB with 413 and answers 502 when the receiver redirects.
 func feedbackRoute(appDir, layoutExt, ingestURL string) (string, string) {
 	fallback, _ := json.Marshal(ingestURL)
-	signature, ext := "request: Request): Promise<Response>", ".ts"
-	if layoutExt == ".jsx" {
-		signature, ext = "request)", ".js"
-	}
 	src := `// fitt-feedback: CRN adds this route with the 💬 feedback widget and removes it
 // with the widget. The widget posts here, on the app's own origin, and the server
 // sends the report on to the receiver FITT_FEEDBACK_URL names when the app runs.
+// Anyone who can open the app can post here, so a report over MAX_BYTES is refused
+// unread, and a receiver's redirect is not followed.
 const FALLBACK = ` + string(fallback) + `;
+const MAX_BYTES = 25 * 1024 * 1024;
 
-export async function POST(` + signature + ` {
+function tooLarge() {
+  return new Response("feedback report is larger than 25 MB", { status: 413 });
+}
+
+export async function POST(request: Request): Promise<Response> {
+  if (Number(request.headers.get("content-length")) > MAX_BYTES) return tooLarge();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (request.body) {
+    const reader = request.body.getReader();
+    for (let part = await reader.read(); !part.done; part = await reader.read()) {
+      size += part.value.byteLength;
+      if (size > MAX_BYTES) {
+        await reader.cancel();
+        return tooLarge();
+      }
+      chunks.push(part.value);
+    }
+  }
+  const body = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, at);
+    at += chunk.byteLength;
+  }
+
   const target = process.env.FITT_FEEDBACK_URL || FALLBACK;
   try {
     const res = await fetch(target, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: await request.text(),
+      body,
+      redirect: "manual",
       signal: AbortSignal.timeout(15000),
     });
     if (res.ok) return new Response(null, { status: 204 });
+    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+      return new Response("feedback receiver answered with a redirect, which is not followed", { status: 502 });
+    }
     return new Response(await res.text(), { status: res.status });
   } catch {
     return new Response("feedback receiver unreachable", { status: 502 });
   }
 }
 `
-	return filepath.Join(appDir, "api", "fitt-feedback", "route"+ext), src
+	if layoutExt == ".jsx" {
+		// The only TypeScript in src is these annotations.
+		return filepath.Join(appDir, "api", "fitt-feedback", "route.js"),
+			strings.NewReplacer("(request: Request): Promise<Response>", "(request)", ": Uint8Array[] =", " =").Replace(src)
+	}
+	return filepath.Join(appDir, "api", "fitt-feedback", "route.ts"), src
 }
 
 // feedbackRouteFiles are the routes feedbackRoute may have written under dir.
