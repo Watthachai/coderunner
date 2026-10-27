@@ -957,7 +957,14 @@ func (s *server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		projectID = id
 	}
 
-	_, err := s.store.GetProject(r.Context(), projectID)
+	existing, err := s.store.GetProject(r.Context(), projectID)
+	if err == nil && existing.OrgID != orgID {
+		// The build is the owning org's: the org picks the registry the image
+		// is pushed to, so a request naming another org must not move it.
+		s.logger.Warn("ingest names another org than the project's; building under the project's",
+			"project_id", projectID, "project_org", existing.OrgID, "request_org", orgID)
+		orgID = existing.OrgID
+	}
 	if errors.Is(err, domain.ErrNotFound) {
 		name := body.Name
 		if name == "" {

@@ -911,7 +911,7 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef st
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(filepath.Join(m.projectsDir, job.ProjectID.String())))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, meta.remote, meta.branch, envEx))
-	go m.ftcCallback(job.ID, job.BuildNo, imageRef, m.reusedDigest(ctx, imageRef, log), meta.remote, meta.branch, "released", "", envEx)
+	go m.ftcCallback(job.ID, job.BuildNo, imageRef, m.reusedDigest(ctx, job, imageRef, log), meta.remote, meta.branch, "released", "", envEx)
 
 	// A reused build is still a build the operator may need to inspect later.
 	m.saveTrace(ctx, job, meta)
@@ -1162,9 +1162,11 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 
 // reusedDigest is the registry digest of a reused build's image, read from the
 // local image store so the released callback carries it as for a fresh build.
-// Best-effort: "" when the image is no longer local or nothing was pushed.
-func (m *manager) reusedDigest(ctx context.Context, imageRef string, log *slog.Logger) string {
-	if !m.pushedTo(imageRef) {
+// Best-effort: "" when the image is no longer local, nothing was pushed, or it
+// was pushed to another registry than this build's org uses.
+func (m *manager) reusedDigest(ctx context.Context, job *domain.Job, imageRef string, log *slog.Logger) string {
+	registry := m.registryFor(job)
+	if registry == "" || !strings.HasPrefix(imageRef, registry+"/") {
 		return ""
 	}
 	digest, err := buildstep.PushedDigest(ctx, imageRef, log)
@@ -1172,20 +1174,6 @@ func (m *manager) reusedDigest(ctx context.Context, imageRef string, log *slog.L
 		log.Warn("reused image digest unknown; the callback goes without it", "err", err)
 	}
 	return digest
-}
-
-// pushedTo reports whether imageRef is in a registry CRN pushes to: the shared
-// one or an org's own. A reused build keeps the ref it was pushed under.
-func (m *manager) pushedTo(imageRef string) bool {
-	if m.imageRegistry != "" && strings.HasPrefix(imageRef, m.imageRegistry+"/") {
-		return true
-	}
-	for _, registry := range m.orgRegistries {
-		if strings.HasPrefix(imageRef, registry+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // writeArtifactBundle writes the air-gap delivery bundle for this build when
