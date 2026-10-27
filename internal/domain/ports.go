@@ -49,8 +49,8 @@ type Store interface {
 	// JobFailed; pass "" otherwise.
 	UpdateJobStatus(ctx context.Context, id uuid.UUID, status JobStatus, errMsg string) error
 	// FailOrphanedBuilds marks every job still in 'building' as failed (stamping
-	// error_msg + finished_at) and returns the reconciled rows with id, build_no,
-	// and docker_tag populated. A single-process server has no genuine in-flight
+	// error_msg + finished_at) and returns the reconciled rows with id, org_id,
+	// build_no and docker_tag populated. A single-process server has no genuine in-flight
 	// build at startup, so any lingering 'building' row is a ghost left by a
 	// restart/crash mid-build. Called once on boot.
 	FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*Job, error)

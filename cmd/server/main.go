@@ -98,7 +98,10 @@ func run() error {
 	// The environment's model/effort. The dashboard can save a different
 	// choice (build_settings); these apply until it does.
 	claudeDefaults := buildsettings.Defaults{Model: cfg.ClaudeModel, Effort: cfg.ClaudeEffort}
-	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry, cfg.OrgImageRegistries, cfg.MirrorRegistry, cfg.ArtifactDir, cfg.MaxConcurrentBuilds, claudeDefaults)
+	if cfg.FTCDVCallbackURL != "" && len(cfg.FTCDVCallbackOrgs) == 0 {
+		logger.Warn("CRN_FTC_DV_CALLBACK_URL is set but CRN_FTC_DV_CALLBACK_ORGS names no org: no build-status callback is sent")
+	}
+	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.FTCDVCallbackOrgs, cfg.BuildImage, cfg.ImageRegistry, cfg.OrgImageRegistries, cfg.MirrorRegistry, cfg.ArtifactDir, cfg.MaxConcurrentBuilds, claudeDefaults)
 	logger.Info("build concurrency", "max_concurrent_builds", cfg.MaxConcurrentBuilds)
 
 	// Reconcile ghost builds: any job still 'building' at boot was orphaned by a

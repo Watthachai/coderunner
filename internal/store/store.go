@@ -309,8 +309,8 @@ func (s *pgStore) UpdateJobStatus(ctx context.Context, id uuid.UUID, status doma
 }
 
 // FailOrphanedBuilds marks every job still in 'building' as failed — stamping
-// error_msg + finished_at — and returns the affected rows (id, build_no,
-// docker_tag). See the port doc: at boot any 'building' row is an orphan, since
+// error_msg + finished_at — and returns the affected rows (id, org_id,
+// build_no, docker_tag). See the port doc: at boot any 'building' row is an orphan, since
 // the process that ran it is gone. The UPDATE ... RETURNING is a single atomic
 // statement so no build can slip in between a read and the write.
 func (s *pgStore) FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*domain.Job, error) {
@@ -320,7 +320,7 @@ func (s *pgStore) FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*dom
 			error_msg = $1,
 			finished_at = now()
 		WHERE status = 'building'
-		RETURNING id, build_no, COALESCE(docker_tag, '')`
+		RETURNING id, org_id, build_no, COALESCE(docker_tag, '')`
 	rows, err := s.pool.Query(ctx, q, errMsg)
 	if err != nil {
 		return nil, mapErr(err, "store: fail orphaned builds")
@@ -330,7 +330,7 @@ func (s *pgStore) FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*dom
 	var jobs []*domain.Job
 	for rows.Next() {
 		j := &domain.Job{Status: domain.JobFailed, ErrorMsg: errMsg}
-		if err := rows.Scan(&j.ID, &j.BuildNo, &j.DockerTag); err != nil {
+		if err := rows.Scan(&j.ID, &j.OrgID, &j.BuildNo, &j.DockerTag); err != nil {
 			return nil, mapErr(err, "store: scan orphaned build")
 		}
 		jobs = append(jobs, j)

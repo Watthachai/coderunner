@@ -90,6 +90,11 @@ type Config struct {
 	// build_events fan-out). Empty URL disables the callback.
 	FTCDVCallbackURL   string
 	FTCDVCallbackToken string
+	// FTCDVCallbackOrgs are the orgs whose builds FTC DV orders: only their
+	// builds are reported to FTCDVCallbackURL, so another org's job ids, images
+	// and env never reach it. Set as CRN_FTC_DV_CALLBACK_ORGS="<org uuid>,...";
+	// empty sends no callback, and a malformed entry stops startup.
+	FTCDVCallbackOrgs map[uuid.UUID]bool
 
 	// BuildImage toggles the docker-image pipeline: after a successful build CRN
 	// runs `docker build` on the produced Next standalone app and (if
@@ -235,6 +240,12 @@ func Load() (*Config, error) {
 	}
 	cfg.OrgImageRegistries = orgRegistries
 
+	callbackOrgs, err := parseOrgList("CRN_FTC_DV_CALLBACK_ORGS", os.Getenv("CRN_FTC_DV_CALLBACK_ORGS"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.FTCDVCallbackOrgs = callbackOrgs
+
 	if !buildsettings.ValidEffort(cfg.ClaudeEffort) {
 		return nil, fmt.Errorf("config: CRN_CLAUDE_EFFORT must be one of %s, got %q",
 			strings.Join(buildsettings.Efforts, ", "), cfg.ClaudeEffort)
@@ -282,6 +293,23 @@ func parseOrgRegistries(raw string) (map[uuid.UUID]string, error) {
 			return nil, fmt.Errorf("config: CRN_ORG_IMAGE_REGISTRIES entry %q is not <org uuid>=<registry>", pair)
 		}
 		out[id] = registry
+	}
+	return out, nil
+}
+
+// parseOrgList reads a comma-separated list of org uuids from the env var key.
+func parseOrgList(key, raw string) (map[uuid.UUID]bool, error) {
+	out := map[uuid.UUID]bool{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		id, err := uuid.Parse(entry)
+		if err != nil {
+			return nil, fmt.Errorf("config: %s entry %q is not an org uuid", key, entry)
+		}
+		out[id] = true
 	}
 	return out, nil
 }

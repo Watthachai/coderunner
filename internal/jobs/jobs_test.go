@@ -144,8 +144,9 @@ func TestFTCCallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := &manager{ftcdvCallbackURL: srv.URL, ftcdvCallbackToken: "secret-tok", logger: slog.Default()}
-	m.ftcCallback(uuid.New(), 7, "reg.test/crn/app:v7", "sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682", "acme/repo", "main", "released", "", buildstep.NewDemoEnvExample(4123))
+	org := uuid.New()
+	m := &manager{ftcdvCallbackURL: srv.URL, ftcdvCallbackToken: "secret-tok", ftcdvCallbackOrgs: map[uuid.UUID]bool{org: true}, logger: slog.Default()}
+	m.ftcCallback(uuid.New(), org, 7, "reg.test/crn/app:v7", "sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682", "acme/repo", "main", "released", "", buildstep.NewDemoEnvExample(4123))
 
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
@@ -163,6 +164,44 @@ func TestFTCCallback(t *testing.T) {
 	}
 }
 
+// Fittcore's callback URL receives only the builds of the orgs it orders; every
+// other org's job id, image and env stay off it.
+func TestFTCCallbackGoesOnlyToTheOrgsListed(t *testing.T) {
+	got := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			JobID string `json:"job_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got <- body.JobID
+	}))
+	defer srv.Close()
+	ftc, other := uuid.New(), uuid.New()
+	m := &manager{
+		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ftcdvCallbackURL:  srv.URL,
+		ftcdvCallbackOrgs: map[uuid.UUID]bool{ftc: true},
+	}
+	ftcJob, otherJob := uuid.New(), uuid.New()
+
+	m.ftcCallback(otherJob, other, 1, "reg/other:v1", "", "", "", "released", "", map[string]string{"SECRET_NAME": ""})
+	m.ftcCallback(ftcJob, ftc, 2, "reg/ftc:v2", "", "", "", "released", "", nil)
+
+	select {
+	case id := <-got:
+		if id != ftcJob.String() {
+			t.Errorf("callback carried job %s, want only Fittcore's %s", id, ftcJob)
+		}
+	default:
+		t.Fatal("Fittcore's own build sent no callback")
+	}
+	select {
+	case id := <-got:
+		t.Errorf("another org's build reached the callback URL: %s", id)
+	default:
+	}
+}
+
 func TestFTCCallbackOmitsAnUnknownDigest(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,8 +210,9 @@ func TestFTCCallbackOmitsAnUnknownDigest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m := &manager{ftcdvCallbackURL: srv.URL, logger: slog.Default()}
-	m.ftcCallback(uuid.New(), 1, "branch:main", "", "", "", "building", "", nil)
+	org := uuid.New()
+	m := &manager{ftcdvCallbackURL: srv.URL, ftcdvCallbackOrgs: map[uuid.UUID]bool{org: true}, logger: slog.Default()}
+	m.ftcCallback(uuid.New(), org, 1, "branch:main", "", "", "", "building", "", nil)
 	if strings.Contains(gotBody, "image_digest") {
 		t.Errorf("building callback carries a digest: %s", gotBody)
 	}
@@ -204,7 +244,7 @@ func TestSourceHash(t *testing.T) {
 func TestFTCCallbackDisabledWhenNoURL(t *testing.T) {
 	m := &manager{logger: slog.Default()} // no URL configured
 	// Must be a silent no-op (no panic, no network).
-	m.ftcCallback(uuid.New(), 1, "", "", "", "", "building", "", nil)
+	m.ftcCallback(uuid.New(), uuid.New(), 1, "", "", "", "", "building", "", nil)
 }
 
 func TestDownloadZipBlocksLoopback(t *testing.T) {

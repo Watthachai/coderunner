@@ -98,6 +98,9 @@ type manager struct {
 	// build_events fan-out. Empty URL -> callback disabled.
 	ftcdvCallbackURL   string
 	ftcdvCallbackToken string
+	// ftcdvCallbackOrgs are the orgs FTC DV orders builds for; only their
+	// builds are reported to ftcdvCallbackURL.
+	ftcdvCallbackOrgs map[uuid.UUID]bool
 	// buildImage toggles the docker-image pipeline; imageRegistry is the push
 	// target prefix (empty -> build locally, no push); artifactDir, when set, is
 	// where the air-gap bundle (docker save tarball + compose + INSTALL) is written.
@@ -159,6 +162,7 @@ func NewManager(
 	feedbackIngestURL string,
 	ftcdvCallbackURL string,
 	ftcdvCallbackToken string,
+	ftcdvCallbackOrgs map[uuid.UUID]bool,
 	buildImage bool,
 	imageRegistry string,
 	orgRegistries map[uuid.UUID]string,
@@ -187,6 +191,7 @@ func NewManager(
 		feedbackIngestURL:  feedbackIngestURL,
 		ftcdvCallbackURL:   ftcdvCallbackURL,
 		ftcdvCallbackToken: ftcdvCallbackToken,
+		ftcdvCallbackOrgs:  ftcdvCallbackOrgs,
 		buildImage:         buildImage,
 		imageRegistry:      imageRegistry,
 		orgRegistries:      orgRegistries,
@@ -444,7 +449,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	job.Status = domain.JobBuilding
 	m.notify(ctx, job.ID, domain.EventBuildStarted, nil)
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "", "building", "", nil)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "building", "", nil)
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSBuildPhase,
 		Phase:     string(domain.JobBuilding),
@@ -861,7 +866,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, envEx))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, "released", "", envEx)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, "released", "", envEx)
 
 	// Cache this source → image so an identical resubmission reuses it (skips the AI
 	// conversion). srcHash is "" for edit builds, which clears the cache so a later
@@ -919,7 +924,7 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef st
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(filepath.Join(m.projectsDir, job.ProjectID.String())))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, meta.remote, meta.branch, envEx))
-	go m.ftcCallback(job.ID, job.BuildNo, imageRef, m.reusedDigest(ctx, job, imageRef, log), meta.remote, meta.branch, "released", "", envEx)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, imageRef, m.reusedDigest(ctx, job, imageRef, log), meta.remote, meta.branch, "released", "", envEx)
 
 	// A reused build is still a build the operator may need to inspect later.
 	m.saveTrace(ctx, job, meta)
@@ -944,7 +949,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "", "failed", errMsg, nil)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "failed", errMsg, nil)
 
 	// Persist the trace for the failed build too — the operator needs to see how
 	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
@@ -978,7 +983,7 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, meta tra
 	// "cancelled" not "failed"); the FTC HTTP callback maps to "failed" since its
 	// vocabulary is only building/released/failed.
 	m.notify(ctx, job.ID, domain.EventBuildCancelled, cancelledPayload(msg))
-	go m.ftcCallback(job.ID, job.BuildNo, job.DockerTag, "", "", "", "failed", msg, nil)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "failed", msg, nil)
 
 	m.saveTrace(ctx, job, meta)
 	m.closeSubscribers(job.ID)
@@ -1243,7 +1248,7 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 	}
 	for _, o := range orphans {
 		m.notify(ctx, o.ID, domain.EventBuildFailed, failedPayload(msg))
-		go m.ftcCallback(o.ID, o.BuildNo, o.DockerTag, "", "", "", "failed", msg, nil)
+		go m.ftcCallback(o.ID, o.OrgID, o.BuildNo, o.DockerTag, "", "", "", "failed", msg, nil)
 	}
 	if len(orphans) > 0 {
 		m.logger.Warn("reconciled orphaned builds on startup", "count", len(orphans))
@@ -1442,13 +1447,14 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 }
 
 // ftcCallback POSTs a build-status callback to FTC DV, IN ADDITION to the
-// build_events fan-out. Config-gated (no-op unless ftcdvCallbackURL is set) and
-// best-effort: failures are logged, never fatal. status is FTC DV's vocabulary
+// build_events fan-out. Config-gated (no-op unless ftcdvCallbackURL is set and
+// orgID is one FTC DV orders for) and best-effort: failures are logged, never
+// fatal. status is FTC DV's vocabulary
 // ("building" / "released" / "failed").
 // Takes job fields by value so callers can dispatch it in a goroutine (it is
 // best-effort telemetry — never block the build lifecycle on a slow FTC DV).
-func (m *manager) ftcCallback(jobID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, status, message string, env any) {
-	if m.ftcdvCallbackURL == "" {
+func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, status, message string, env any) {
+	if m.ftcdvCallbackURL == "" || !m.ftcdvCallbackOrgs[orgID] {
 		return
 	}
 	payload := map[string]any{

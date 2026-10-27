@@ -93,3 +93,24 @@ func TestTerminalIsOffUnlessEnabled(t *testing.T) {
 		}
 	}
 }
+
+func TestFTCDVCallbackOrgsComeFromEnv(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_FTC_DV_CALLBACK_ORGS", " 088c8070-3ec3-46a9-b53f-52dcff35c23e ,")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ftc := uuid.MustParse("088c8070-3ec3-46a9-b53f-52dcff35c23e")
+	if len(cfg.FTCDVCallbackOrgs) != 1 || !cfg.FTCDVCallbackOrgs[ftc] {
+		t.Errorf("FTCDVCallbackOrgs = %v, want only %s", cfg.FTCDVCallbackOrgs, ftc)
+	}
+}
+
+func TestFTCDVCallbackOrgsTypoStopsStartup(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_FTC_DV_CALLBACK_ORGS", "088c8070-3ec3-46a9-b53f")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_FTC_DV_CALLBACK_ORGS") {
+		t.Errorf("Load() err = %v, want one naming CRN_FTC_DV_CALLBACK_ORGS", err)
+	}
+}

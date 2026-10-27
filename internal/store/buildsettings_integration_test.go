@@ -182,3 +182,34 @@ func TestClaudeConfigReachesTheDashboardAndTheTrace(t *testing.T) {
 		t.Errorf("GetBuildTrace = model %q events %v", full.ClaudeModel, full.Events)
 	}
 }
+
+// A build left 'building' by a restart is closed out with its org, so the
+// failed callback reaches the receiver that org's builds report to.
+func TestOrphanedBuildsComeBackWithTheirOrg(t *testing.T) {
+	st := openScratchStore(t)
+	ctx := context.Background()
+
+	org := &domain.Org{Name: "it"}
+	if err := st.EnsureOrg(ctx, org); err != nil {
+		t.Fatal(err)
+	}
+	proj := &domain.Project{ID: uuid.New(), OrgID: org.ID, Name: "it-project", Status: domain.ProjectActive}
+	if err := st.CreateProject(ctx, proj); err != nil {
+		t.Fatal(err)
+	}
+	j := &domain.Job{ID: uuid.New(), ProjectID: proj.ID, OrgID: org.ID, Status: domain.JobQueued, BuildNo: 1, Payload: []byte(`{}`)}
+	if err := st.CreateJob(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateJobStatus(ctx, j.ID, domain.JobBuilding, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	orphans, err := st.FailOrphanedBuilds(ctx, "build orphaned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphans) != 1 || orphans[0].ID != j.ID || orphans[0].OrgID != org.ID {
+		t.Fatalf("orphans = %+v, want job %s of org %s", orphans, j.ID, org.ID)
+	}
+}
