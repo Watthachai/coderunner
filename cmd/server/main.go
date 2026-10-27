@@ -98,7 +98,7 @@ func run() error {
 	// The environment's model/effort. The dashboard can save a different
 	// choice (build_settings); these apply until it does.
 	claudeDefaults := buildsettings.Defaults{Model: cfg.ClaudeModel, Effort: cfg.ClaudeEffort}
-	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry, cfg.MirrorRegistry, cfg.ArtifactDir, cfg.MaxConcurrentBuilds, claudeDefaults)
+	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.BuildImage, cfg.ImageRegistry, cfg.OrgImageRegistries, cfg.MirrorRegistry, cfg.ArtifactDir, cfg.MaxConcurrentBuilds, claudeDefaults)
 	logger.Info("build concurrency", "max_concurrent_builds", cfg.MaxConcurrentBuilds)
 
 	// Reconcile ghost builds: any job still 'building' at boot was orphaned by a

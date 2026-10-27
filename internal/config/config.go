@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
 )
 
@@ -98,6 +100,11 @@ type Config struct {
 	// "registry.gitlab.local/fitt". Empty -> build the image locally only (no
 	// push). The full tag is "<registry>/crn-demo-<slug>:v<build_no>".
 	ImageRegistry string
+	// OrgImageRegistries sends an org's images to that org's own registry
+	// project instead of ImageRegistry, e.g. Fittcore's UAT pulls from
+	// fitt/ftcdv-uat, which it may read anonymously while the shared project stays
+	// closed. Set as CRN_ORG_IMAGE_REGISTRIES="<org uuid>=<registry>,...".
+	OrgImageRegistries map[uuid.UUID]string
 	// MirrorRegistry, when set (with ImageRegistry), receives a digest-identical
 	// copy of every pushed image, e.g. "asia-southeast1-docker.pkg.dev/<project>/<repo>"
 	// for the GCP deploy path. The host must be logged in to it (gcloud
@@ -216,6 +223,12 @@ func Load() (*Config, error) {
 	}
 	cfg.MaxConcurrentBuilds = maxBuilds
 
+	orgRegistries, err := parseOrgRegistries(os.Getenv("CRN_ORG_IMAGE_REGISTRIES"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.OrgImageRegistries = orgRegistries
+
 	if !buildsettings.ValidEffort(cfg.ClaudeEffort) {
 		return nil, fmt.Errorf("config: CRN_CLAUDE_EFFORT must be one of %s, got %q",
 			strings.Join(buildsettings.Efforts, ", "), cfg.ClaudeEffort)
@@ -244,6 +257,27 @@ func (c *Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// parseOrgRegistries reads "<org uuid>=<registry>" pairs separated by commas. A
+// malformed pair is an error: it would send that org's images to the shared
+// registry without a word.
+func parseOrgRegistries(raw string) (map[uuid.UUID]string, error) {
+	out := map[uuid.UUID]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		org, registry, ok := strings.Cut(pair, "=")
+		id, err := uuid.Parse(strings.TrimSpace(org))
+		registry = strings.TrimRight(strings.TrimSpace(registry), "/")
+		if !ok || err != nil || registry == "" {
+			return nil, fmt.Errorf("config: CRN_ORG_IMAGE_REGISTRIES entry %q is not <org uuid>=<registry>", pair)
+		}
+		out[id] = registry
+	}
+	return out, nil
 }
 
 func getEnv(key, def string) string {

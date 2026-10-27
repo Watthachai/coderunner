@@ -104,6 +104,9 @@ type manager struct {
 	buildImage    bool
 	imageRegistry string
 	artifactDir   string
+	// orgRegistries overrides imageRegistry for an org that has its own registry
+	// project (Fittcore's UAT pulls from fitt/ftcdv-uat).
+	orgRegistries map[uuid.UUID]string
 	// mirrorRegistry, when set, receives a digest-identical copy of every pushed
 	// image (Google Artifact Registry for the GCP deploy path).
 	mirrorRegistry string
@@ -157,6 +160,7 @@ func NewManager(
 	ftcdvCallbackToken string,
 	buildImage bool,
 	imageRegistry string,
+	orgRegistries map[uuid.UUID]string,
 	mirrorRegistry string,
 	artifactDir string,
 	maxConcurrent int,
@@ -184,6 +188,7 @@ func NewManager(
 		ftcdvCallbackToken: ftcdvCallbackToken,
 		buildImage:         buildImage,
 		imageRegistry:      imageRegistry,
+		orgRegistries:      orgRegistries,
 		mirrorRegistry:     mirrorRegistry,
 		artifactDir:        artifactDir,
 		claudeDefaults:     claudeDefaults,
@@ -1003,7 +1008,16 @@ func (m *manager) takeCancel(jobID uuid.UUID) context.CancelFunc {
 // imageTag returns the deterministic app image tag for this build. The app image
 // self-migrates on start, so there is no separate migrate image.
 func (m *manager) imageTag(spec payloadSpec, job *domain.Job) string {
-	return buildstep.DemoImageTag(m.imageRegistry, spec.Name, job.ProjectID.String(), job.BuildNo)
+	return buildstep.DemoImageTag(m.registryFor(job), spec.Name, job.ProjectID.String(), job.BuildNo)
+}
+
+// registryFor is where this build's image is pushed: the org's own registry
+// project when it has one, else the shared imageRegistry ("" = no push).
+func (m *manager) registryFor(job *domain.Job) string {
+	if registry, ok := m.orgRegistries[job.OrgID]; ok {
+		return registry
+	}
+	return m.imageRegistry
 }
 
 // sourceHash is a deterministic content hash of a build's materialized source
@@ -1037,7 +1051,7 @@ func (m *manager) writeImageBundle(workDir string, spec payloadSpec, job *domain
 	}
 	appTag := m.imageTag(spec, job)
 	port := buildstep.ScaffoldPort(workDir)
-	wrote, err := buildstep.WriteImageBundle(workDir, appTag, m.imageRegistry, port, log)
+	wrote, err := buildstep.WriteImageBundle(workDir, appTag, m.registryFor(job), port, log)
 	if err != nil {
 		log.Warn("write image bundle failed", "err", err)
 		return
@@ -1052,10 +1066,11 @@ func (m *manager) writeImageBundle(workDir string, spec payloadSpec, job *domain
 // holds the image the customer pulls, so a failed mirror is reported in the
 // build's stream and the build carries on.
 func (m *manager) mirrorImage(ctx context.Context, appTag string, job *domain.Job, log *slog.Logger) {
-	if m.mirrorRegistry == "" || m.imageRegistry == "" {
+	registry := m.registryFor(job)
+	if m.mirrorRegistry == "" || registry == "" {
 		return
 	}
-	dest := buildstep.MirrorTag(m.imageRegistry, m.mirrorRegistry, appTag)
+	dest := buildstep.MirrorTag(registry, m.mirrorRegistry, appTag)
 	text := ""
 	if digest, err := buildstep.MirrorImage(ctx, appTag, dest, log); err != nil {
 		log.Warn("image mirror failed", "dest", dest, "err", err)
@@ -1106,7 +1121,8 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	}
 	// App image must be PULLABLE for a registry consumer — push failure fails too.
 	digest := ""
-	if m.imageRegistry != "" {
+	registry := m.registryFor(job)
+	if registry != "" {
 		if err := buildstep.PushImage(ctx, appTag, log); err != nil {
 			m.publish(job.ID, domain.BuildEventMsg{
 				Kind: domain.WSError, Text: "docker push (app) failed: " + err.Error(),
@@ -1131,8 +1147,8 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	}
 	job.DockerTag = appTag
 	dest := "local"
-	if m.imageRegistry != "" {
-		dest = m.imageRegistry
+	if registry != "" {
+		dest = registry
 	}
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSAssistantText,
@@ -1140,7 +1156,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
-	log.Info("docker image ready", "app", appTag, "pushed", m.imageRegistry != "", "digest", digest)
+	log.Info("docker image ready", "app", appTag, "pushed", registry != "", "digest", digest)
 	return digest, nil
 }
 
@@ -1148,7 +1164,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 // local image store so the released callback carries it as for a fresh build.
 // Best-effort: "" when the image is no longer local or nothing was pushed.
 func (m *manager) reusedDigest(ctx context.Context, imageRef string, log *slog.Logger) string {
-	if m.imageRegistry == "" || !strings.HasPrefix(imageRef, m.imageRegistry+"/") {
+	if !m.pushedTo(imageRef) {
 		return ""
 	}
 	digest, err := buildstep.PushedDigest(ctx, imageRef, log)
@@ -1156,6 +1172,20 @@ func (m *manager) reusedDigest(ctx context.Context, imageRef string, log *slog.L
 		log.Warn("reused image digest unknown; the callback goes without it", "err", err)
 	}
 	return digest
+}
+
+// pushedTo reports whether imageRef is in a registry CRN pushes to: the shared
+// one or an org's own. A reused build keeps the ref it was pushed under.
+func (m *manager) pushedTo(imageRef string) bool {
+	if m.imageRegistry != "" && strings.HasPrefix(imageRef, m.imageRegistry+"/") {
+		return true
+	}
+	for _, registry := range m.orgRegistries {
+		if strings.HasPrefix(imageRef, registry+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // writeArtifactBundle writes the air-gap delivery bundle for this build when

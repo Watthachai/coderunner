@@ -89,3 +89,32 @@ esac`)
 		t.Fatalf("stream: %q", got)
 	}
 }
+
+// Fittcore's UAT pulls from its own registry project: a build of an org that has
+// one is tagged and pushed there, mirrored under the same name, and every other
+// org's build stays in the shared registry.
+func TestAnOrgWithItsOwnRegistryIsPushedThere(t *testing.T) {
+	fakeDocker(t, `case "$*" in
+  "image inspect"*) echo '["reg.test/fitt/ftcdv-uat/crn-demo-hello-fitt-c0241b87@`+mirrorDigest+`"]';;
+  *"imagetools inspect"*) echo '{"digest":"`+mirrorDigest+`"}';;
+esac`)
+	ftc, other := uuid.New(), uuid.New()
+	m := mirrorManager("reg.test/fitt/demos", "asia-southeast1-docker.pkg.dev/proj/crn")
+	m.orgRegistries = map[uuid.UUID]string{ftc: "reg.test/fitt/ftcdv-uat"}
+	project := uuid.MustParse("c0241b87-01b9-4cf6-abda-028016d2908f")
+	spec := payloadSpec{Name: "Hello Fitt"}
+
+	ftcJob := &domain.Job{ID: uuid.New(), OrgID: ftc, ProjectID: project, BuildNo: 4}
+	if got := m.imageTag(spec, ftcJob); got != "reg.test/fitt/ftcdv-uat/crn-demo-hello-fitt-c0241b87:v4" {
+		t.Errorf("Fittcore tag = %q", got)
+	}
+	otherJob := &domain.Job{ID: uuid.New(), OrgID: other, ProjectID: project, BuildNo: 4}
+	if got := m.imageTag(spec, otherJob); got != "reg.test/fitt/demos/crn-demo-hello-fitt-c0241b87:v4" {
+		t.Errorf("other org tag = %q", got)
+	}
+
+	m.mirrorImage(context.Background(), "reg.test/fitt/ftcdv-uat/crn-demo-hello-fitt-c0241b87:v4", ftcJob, m.logger)
+	if got := streamText(m, ftcJob.ID); !strings.Contains(got, "asia-southeast1-docker.pkg.dev/proj/crn/crn-demo-hello-fitt-c0241b87:v4@") {
+		t.Errorf("mirror stream: %q", got)
+	}
+}
