@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  crnFetch,
   API_BASE,
   skillImproveUrl,
   skillUploadUrl,
@@ -205,7 +206,7 @@ export default function SkillsPage() {
   // stale list from a previous skill never lingers.
   const loadVersions = useCallback(async (name: string) => {
     try {
-      const res = await fetch(skillVersionsUrl(name), { cache: "no-store" });
+      const res = await crnFetch(skillVersionsUrl(name), { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as { versions: SkillVersion[] };
       setVersions(json.versions);
@@ -294,7 +295,7 @@ export default function SkillsPage() {
     setBusy(true);
     setStatus({ kind: "idle" });
     try {
-      const res = await fetch(skillUrl(name), {
+      const res = await crnFetch(skillUrl(name), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -335,7 +336,7 @@ export default function SkillsPage() {
     setImproving(true);
     setStatus({ kind: "idle" });
     try {
-      const res = await fetch(skillImproveUrl(name), {
+      const res = await crnFetch(skillImproveUrl(name), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body: draft.body }),
@@ -364,7 +365,7 @@ export default function SkillsPage() {
     if (draft.isNew) return; // not persisted yet; saved on Save
     setBusy(true);
     try {
-      const res = await fetch(skillUrl(draft.name), {
+      const res = await crnFetch(skillUrl(draft.name), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -399,7 +400,7 @@ export default function SkillsPage() {
     setBusy(true);
     setStatus({ kind: "idle" });
     try {
-      const res = await fetch(skillUrl(name), { method: "DELETE" });
+      const res = await crnFetch(skillUrl(name), { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       await refresh();
       setSelected(null);
@@ -423,7 +424,7 @@ export default function SkillsPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(skillUploadUrl(), {
+      const res = await crnFetch(skillUploadUrl(), {
         method: "POST",
         body: form,
       });

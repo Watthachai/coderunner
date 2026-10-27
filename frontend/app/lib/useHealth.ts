@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { healthUrl } from "./config";
+import { crnFetch, healthUrl } from "./config";
 import type { BuildInfo, Health } from "./types";
 
 /**
@@ -20,7 +20,7 @@ export function useHealth(): BuildInfo | null {
     alive.current = true;
     void (async () => {
       try {
-        const res = await fetch(healthUrl(), { cache: "no-store" });
+        const res = await crnFetch(healthUrl(), { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = (await res.json()) as Health;
         if (alive.current) setBuild(json.build ?? null);

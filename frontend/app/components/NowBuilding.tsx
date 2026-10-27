@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { BuildingJob, BuildTrace, FeedEvent } from "../lib/types";
-import { jobCancelUrl } from "../lib/config";
+import { crnFetch, jobCancelUrl } from "../lib/config";
 import { useJobStream } from "../lib/useJobStream";
 import { useTick } from "../lib/useTick";
 import { formatElapsed, formatDuration, formatRelative } from "../lib/format";
@@ -96,7 +96,7 @@ function BuildingCard({ job, nowMs }: { job: BuildingJob; nowMs: number }) {
     }
     setCancelling(true);
     try {
-      const res = await fetch(jobCancelUrl(job.job_id), { method: "POST" });
+      const res = await crnFetch(jobCancelUrl(job.job_id), { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch {
       // Reset so the operator can retry; the card stays until the poll updates.

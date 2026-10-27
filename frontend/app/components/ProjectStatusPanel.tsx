@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState, type FormEvent } from "react";
-import { projectStatusUrl } from "../lib/config";
+import { crnFetch, projectStatusUrl } from "../lib/config";
 import type { ProjectStatusView } from "../lib/types";
 import { StatusBadge, type BadgeStatus } from "./StatusBadge";
 
@@ -33,7 +33,7 @@ export function ProjectStatusPanel() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(projectStatusUrl(id), {
+        const res = await crnFetch(projectStatusUrl(id), {
           headers: apiKey.trim() ? { "X-API-Key": apiKey.trim() } : undefined,
         });
         if (!res.ok) {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { buildSettingsUrl } from "./config";
+import { crnFetch, buildSettingsUrl } from "./config";
 import type { BuildSettings } from "./types";
 
 /**
@@ -26,7 +26,7 @@ export function useBuildSettings(): {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(buildSettingsUrl(), { cache: "no-store" });
+      const res = await crnFetch(buildSettingsUrl(), { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as BuildSettings;
       if (!alive.current) return;
@@ -69,7 +69,7 @@ export function useBuildSettings(): {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(buildSettingsUrl(), {
+      const res = await crnFetch(buildSettingsUrl(), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model, effort }),

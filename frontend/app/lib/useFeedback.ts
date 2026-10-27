@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { feedbackUrl } from "./config";
+import { crnFetch, feedbackUrl } from "./config";
 import type { FeedbackRequest } from "./types";
 
 interface FeedbackResponse {
@@ -36,7 +36,7 @@ export function useFeedback(status = "new", intervalMs = 5000): FeedbackState {
 
     async function tick() {
       try {
-        const res = await fetch(feedbackUrl(status), { cache: "no-store" });
+        const res = await crnFetch(feedbackUrl(status), { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = (await res.json()) as FeedbackResponse;
         if (!alive.current) return;

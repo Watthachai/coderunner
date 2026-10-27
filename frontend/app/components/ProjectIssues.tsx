@@ -17,7 +17,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { projectIssuesUrl, projectIssueFixUrl } from "../lib/config";
+import { crnFetch, projectIssuesUrl, projectIssueFixUrl } from "../lib/config";
 import type { Issue } from "../lib/types";
 
 interface IssuesResponse {
@@ -61,7 +61,7 @@ export function ProjectIssues({
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch(projectIssuesUrl(projectId), {
+        const res = await crnFetch(projectIssuesUrl(projectId), {
           cache: "no-store",
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -88,7 +88,7 @@ export function ProjectIssues({
       return next;
     });
     try {
-      const res = await fetch(projectIssueFixUrl(projectId, number), {
+      const res = await crnFetch(projectIssueFixUrl(projectId, number), {
         method: "POST",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

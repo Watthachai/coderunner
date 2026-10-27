@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { skillsUrl } from "./config";
+import { crnFetch, skillsUrl } from "./config";
 import type { Skill, SkillDrift } from "./types";
 
 export interface SkillsState {
@@ -33,7 +33,7 @@ export function useSkills(): SkillsState {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch(skillsUrl(), { cache: "no-store" });
+      const res = await crnFetch(skillsUrl(), { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as SkillsResponse;
       if (!alive.current) return;

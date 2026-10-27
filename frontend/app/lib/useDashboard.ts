@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { dashboardUrl } from "./config";
+import { crnFetch, dashboardUrl } from "./config";
 import type { DashboardSnapshot } from "./types";
 
 export interface DashboardState {
@@ -27,7 +27,7 @@ export function useDashboard(intervalMs = 2500): DashboardState {
 
     async function tick() {
       try {
-        const res = await fetch(dashboardUrl(), { cache: "no-store" });
+        const res = await crnFetch(dashboardUrl(), { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = (await res.json()) as DashboardSnapshot;
         if (!alive.current) return;

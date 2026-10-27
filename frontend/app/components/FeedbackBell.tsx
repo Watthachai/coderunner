@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { useFeedback } from "../lib/useFeedback";
-import { feedbackApproveUrl, feedbackRejectUrl } from "../lib/config";
+import { crnFetch, feedbackApproveUrl, feedbackRejectUrl } from "../lib/config";
 import { FeedbackModal } from "./FeedbackModal";
 
 export function FeedbackBell() {
@@ -25,7 +25,7 @@ export function FeedbackBell() {
     setBusyId(id);
     setActionError(null);
     try {
-      const res = await fetch(url, { method: "POST" });
+      const res = await crnFetch(url, { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setHidden((h) => new Set(h).add(id));
       refresh();

@@ -13,7 +13,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { projectEditUrl } from "../lib/config";
+import { crnFetch, projectEditUrl } from "../lib/config";
 
 interface EditJob {
   job_id: string;
@@ -38,7 +38,7 @@ export function RequestEdit({ projectId }: { projectId: string }) {
     setError(null);
     setQueued(null);
     try {
-      const res = await fetch(projectEditUrl(projectId), {
+      const res = await crnFetch(projectEditUrl(projectId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ change: trimmed }),

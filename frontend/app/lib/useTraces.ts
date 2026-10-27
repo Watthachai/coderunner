@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { tracesUrl, traceUrl, projectBuildsUrl } from "./config";
+import { crnFetch, tracesUrl, traceUrl, projectBuildsUrl } from "./config";
 import type {
   BuildTrace,
   RecentTracesResponse,
@@ -32,7 +32,7 @@ export function useTraces(limit = 30, intervalMs = 4000): TracesState {
 
     async function tick() {
       try {
-        const res = await fetch(tracesUrl(limit), { cache: "no-store" });
+        const res = await crnFetch(tracesUrl(limit), { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = (await res.json()) as RecentTracesResponse;
         if (!alive.current) return;
@@ -61,7 +61,7 @@ export function useTraces(limit = 30, intervalMs = 4000): TracesState {
 
 /** One-shot fetch of a single trace WITH its full replayable event stream. */
 export async function fetchTrace(jobId: string): Promise<BuildTrace> {
-  const res = await fetch(traceUrl(jobId), { cache: "no-store" });
+  const res = await crnFetch(traceUrl(jobId), { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return (await res.json()) as BuildTrace;
 }
@@ -70,7 +70,7 @@ export async function fetchTrace(jobId: string): Promise<BuildTrace> {
 export async function fetchProjectBuilds(
   projectId: string,
 ): Promise<BuildTrace[]> {
-  const res = await fetch(projectBuildsUrl(projectId), { cache: "no-store" });
+  const res = await crnFetch(projectBuildsUrl(projectId), { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const json = (await res.json()) as ProjectBuildsResponse;
   return json.builds ?? [];

@@ -21,11 +21,57 @@ export const API_BASE = RAW_BASE.replace(/\/+$/, "");
 // http(s):// -> ws(s):// for the live-log WebSocket.
 export const WS_BASE = API_BASE.replace(/^http/, "ws");
 
+// Once CRN_INTERNAL_TOKEN_SHA256 is set, /internal/* wants a bearer key. The
+// operator types it once when CRN first answers 401; it stays in this browser.
+const TOKEN_KEY = "crn-internal-token";
+let askedForToken = false;
+
+export function crnToken(): string {
+  try {
+    return window.localStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// fetch for CRN: sends the key on /internal/* and, on a 401 there, asks for it
+// once and reloads the page with it.
+export async function crnFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const internal = url.startsWith(`${API_BASE}/internal/`);
+  const headers = new Headers(init.headers);
+  const token = internal ? crnToken() : "";
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401 && internal && !askedForToken) {
+    askedForToken = true;
+    const entered = window.prompt("CRN key for this dashboard (asked once, kept in this browser):")?.trim();
+    if (entered) {
+      try {
+        window.localStorage.setItem(TOKEN_KEY, entered);
+      } catch {
+        // storage blocked: the key lasts for this page only
+      }
+      window.location.reload();
+    }
+  }
+  return res;
+}
+
+// A browser cannot set headers on a WebSocket handshake, so the key rides in
+// the query; CRN takes it there only on a handshake and never logs the query.
+function withToken(wsUrl: string): string {
+  const token = crnToken();
+  if (!token) return wsUrl;
+  const url = new URL(wsUrl);
+  url.searchParams.set("access_token", token);
+  return url.toString();
+}
+
 /**
  * Build the live-log WebSocket URL for a given project + build number.
  *
- * The dashboard connects to the NO-AUTH internal endpoint so it works without
- * an org API key (browsers cannot set the X-API-Key header on a WS handshake):
+ * The dashboard connects to the internal endpoint, with the operator's key in
+ * the query once one is set (browsers cannot set headers on a WS handshake):
  *   GET /internal/projects/{id}/jobs/{build_no}/logs
  *
  * The apiKey arg is kept for call-site compatibility but is unused here; the
@@ -37,12 +83,11 @@ export function jobLogsWsUrl(
   buildNo: number,
   apiKey?: string,
 ): string {
-  void apiKey; // unused: internal endpoint is no-auth
+  void apiKey; // unused: the internal endpoint takes the operator's key
   const path = `/internal/projects/${encodeURIComponent(
     projectId,
   )}/jobs/${buildNo}/logs`;
-  const url = new URL(WS_BASE + path);
-  return url.toString();
+  return withToken(WS_BASE + path);
 }
 
 /**
@@ -59,9 +104,9 @@ export function jobLogsWsUrl(
  *     { "type": "resize", "cols": <int>, "rows": <int> }
  */
 export function terminalWsUrl(projectId: string): string {
-  return `${WS_BASE}/internal/projects/${encodeURIComponent(
-    projectId,
-  )}/terminal`;
+  return withToken(
+    `${WS_BASE}/internal/projects/${encodeURIComponent(projectId)}/terminal`,
+  );
 }
 
 export function projectStatusUrl(projectId: string): string {
