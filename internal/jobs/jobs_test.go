@@ -1,18 +1,27 @@
 package jobs
 
 import (
+	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -251,6 +260,253 @@ func TestFTCCallbackOmitsAnUnknownDigest(t *testing.T) {
 	m.ftcCallback(uuid.New(), org, 1, "branch:main", "", "", "", "building", "", nil)
 	if strings.Contains(gotBody, "image_digest") {
 		t.Errorf("building callback carries a digest: %s", gotBody)
+	}
+}
+
+// fastRetry is the agreed callback retry schedule shrunk to test time.
+var fastRetry = callbackRetry{window: 2 * time.Second, waits: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond}, attempt: 300 * time.Millisecond}
+
+func callbackManager(url string, org uuid.UUID) *manager {
+	return &manager{
+		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ftcdvCallbackURL:  url,
+		ftcdvCallbackOrgs: map[uuid.UUID]bool{org: true},
+		cbRetry:           fastRetry,
+	}
+}
+
+// callbackRecorder answers callbacks with codes in turn (the last one repeats)
+// and keeps what each send carried.
+type callbackRecorder struct {
+	codes      []int
+	retryAfter string
+	mu         sync.Mutex
+	sends      []recordedSend
+}
+
+type recordedSend struct {
+	body, correlation string
+	at                time.Time
+}
+
+func (c *callbackRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b, _ := io.ReadAll(r.Body)
+	c.mu.Lock()
+	code := c.codes[min(len(c.sends), len(c.codes)-1)]
+	c.sends = append(c.sends, recordedSend{string(b), r.Header.Get("X-Correlation-Id"), time.Now()})
+	c.mu.Unlock()
+	if c.retryAfter != "" {
+		w.Header().Set("Retry-After", c.retryAfter)
+	}
+	if code >= 300 && code < 400 {
+		w.Header().Set("Location", "/elsewhere")
+	}
+	w.WriteHeader(code)
+}
+
+func (c *callbackRecorder) got() []recordedSend {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]recordedSend(nil), c.sends...)
+}
+
+// sendTo sends one "building" callback for a new job through m to rec.
+func sendTo(t *testing.T, rec *callbackRecorder, tune func(*manager)) []recordedSend {
+	t.Helper()
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	org := uuid.New()
+	m := callbackManager(srv.URL, org)
+	if tune != nil {
+		tune(m)
+	}
+	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	return rec.got()
+}
+
+// An answer that may change on a second try is sent again, three sends at most,
+// each with the same body and the same correlation id.
+func TestFTCCallbackRetriesWhatMayPass(t *testing.T) {
+	for _, code := range []int{408, 429, 500, 502, 503, 504} {
+		sends := sendTo(t, &callbackRecorder{codes: []int{code, code, 200}}, nil)
+		if len(sends) != 3 {
+			t.Errorf("%d: %d sends, want 3", code, len(sends))
+			continue
+		}
+		if sends[0].correlation == "" {
+			t.Errorf("%d: no X-Correlation-Id", code)
+		}
+		for _, s := range sends[1:] {
+			if s.body != sends[0].body || s.correlation != sends[0].correlation {
+				t.Errorf("%d: a retry changed the body or correlation id:\n%+v\n%+v", code, sends[0], s)
+			}
+		}
+	}
+}
+
+func TestFTCCallbackSendsAtMostThreeTimes(t *testing.T) {
+	if sends := sendTo(t, &callbackRecorder{codes: []int{503}}, nil); len(sends) != 3 {
+		t.Errorf("%d sends to an endpoint that keeps answering 503, want 3", len(sends))
+	}
+}
+
+func TestFTCCallbackDoesNotRetryAnAnswerThatWillNotChange(t *testing.T) {
+	for _, code := range []int{400, 401, 403, 404, 409, 422, 302} {
+		if sends := sendTo(t, &callbackRecorder{codes: []int{code, 200}}, nil); len(sends) != 1 {
+			t.Errorf("%d: %d sends, want 1", code, len(sends))
+		}
+	}
+}
+
+// After 409 CRN sends nothing more for that build until the two sides agree;
+// other builds are not affected.
+func TestFTCCallbackStopsTheBuildAt409(t *testing.T) {
+	rec := &callbackRecorder{codes: []int{409, 200}}
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+	org := uuid.New()
+	m := callbackManager(srv.URL, org)
+	job := uuid.New()
+	m.ftcCallback(job, org, 1, "", "", "", "", "building", "", nil)
+	m.ftcCallback(job, org, 1, "", "", "", "", "released", "", nil)
+	if n := len(rec.got()); n != 1 {
+		t.Fatalf("%d sends for a build that got 409, want 1", n)
+	}
+	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	if n := len(rec.got()); n != 2 {
+		t.Errorf("another build's callback was held back by the 409 (%d sends, want 2)", n)
+	}
+}
+
+func TestFTCCallbackWaitsForRetryAfterWithinTheMinute(t *testing.T) {
+	window := func(m *manager) { m.cbRetry.window = 3 * time.Second }
+	sends := sendTo(t, &callbackRecorder{codes: []int{429, 200}, retryAfter: "1"}, window)
+	if len(sends) != 2 {
+		t.Fatalf("%d sends after 429 with Retry-After: 1, want 2", len(sends))
+	}
+	if gap := sends[1].at.Sub(sends[0].at); gap < time.Second {
+		t.Errorf("sent again after %v, before Retry-After's 1s", gap)
+	}
+	if sends := sendTo(t, &callbackRecorder{codes: []int{429, 200}, retryAfter: "5"}, window); len(sends) != 1 {
+		t.Errorf("%d sends when Retry-After falls outside the window, want 1", len(sends))
+	}
+}
+
+func TestFTCCallbackRetriesATimeout(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body) // the server notices the client hang up only after the body
+		if calls.Add(1) == 1 {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}))
+	defer srv.Close()
+	org := uuid.New()
+	callbackManager(srv.URL, org).ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	if n := calls.Load(); n != 2 {
+		t.Errorf("%d sends after the first timed out, want 2", n)
+	}
+}
+
+func TestFTCCallbackRetriesARefusedConnection(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	var dials atomic.Int32
+	org := uuid.New()
+	m := callbackManager("http://"+addr+"/cb", org)
+	m.ftcdvClient = &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, a string) (net.Conn, error) {
+		dials.Add(1)
+		return (&net.Dialer{}).DialContext(ctx, network, a)
+	}}}
+	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	if n := dials.Load(); n != 3 {
+		t.Errorf("%d connection attempts to a refusing port, want 3", n)
+	}
+}
+
+func TestFTCCallbackDoesNotRetryAnUntrustedCertificate(t *testing.T) {
+	var conns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.StartTLS()
+	defer srv.Close()
+	org := uuid.New()
+	m := callbackManager(srv.URL, org)
+	m.ftcdvClient = callbackClient(nil)
+	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	if n := conns.Load(); n != 1 {
+		t.Errorf("%d connections to a server whose certificate does not verify, want 1", n)
+	}
+}
+
+// A build's callbacks reach FTC DV in the order they were sent: "released"
+// waits while "building" is still being retried.
+func TestFTCCallbacksOfABuildGoInOrder(t *testing.T) {
+	first := make(chan struct{})
+	var mu sync.Mutex
+	var statuses []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Status string `json:"status"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		statuses = append(statuses, body.Status)
+		n := len(statuses)
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			close(first)
+		}
+	}))
+	defer srv.Close()
+	org := uuid.New()
+	m := callbackManager(srv.URL, org)
+	m.cbRetry.waits = []time.Duration{200 * time.Millisecond, 200 * time.Millisecond}
+	job := uuid.New()
+	done := make(chan struct{}, 2)
+	go func() { m.ftcCallback(job, org, 1, "", "", "", "", "building", "", nil); done <- struct{}{} }()
+	<-first
+	go func() { m.ftcCallback(job, org, 1, "", "", "", "", "released", "", nil); done <- struct{}{} }()
+	<-done
+	<-done
+	if got := strings.Join(statuses, ","); got != "building,building,released" {
+		t.Errorf("FTC DV received %s, want building,building,released", got)
+	}
+}
+
+func TestRetryableSend(t *testing.T) {
+	post := func(err error) error { return &url.Error{Op: "Post", URL: "https://ftc.test/cb", Err: err} }
+	sys := func(e syscall.Errno) error {
+		return post(&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", e)})
+	}
+	for _, c := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"connection refused", sys(syscall.ECONNREFUSED), true},
+		{"connection reset", sys(syscall.ECONNRESET), true},
+		{"timeout", post(context.DeadlineExceeded), true},
+		{"no route to host", sys(syscall.EHOSTUNREACH), false},
+		{"EOF", post(io.EOF), false},
+		{"untrusted certificate", post(&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}), false},
+	} {
+		if got := retryableSend(c.err); got != c.want {
+			t.Errorf("%s: retryable = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

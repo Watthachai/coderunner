@@ -174,6 +174,15 @@ Content-Type: application/json
 - **โหมด image (`CRN_BUILD_IMAGE` เปิด — แนะนำ):** ใช้ `image_ref` → `docker pull` แล้วรันได้เลย **ไม่ต้อง clone git**. `image_ref` บน `released` เป็น image จริงที่ pull ได้เสมอ (build ล้มถ้า image สร้าง/push ไม่ได้)
 - **`git_remote`/`git_branch` ใส่มาเฉพาะตอน `released`** (โหมด git legacy — เมื่อ **ปิด** image pipeline) = repo/branch จริงที่ build push ไป (ถูกทั้งโหมด **shared** และ **owner**) → FTC DV clone จากค่านี้ ไม่ใช่ค่าใน `202` (โหมด owner ค่าใน 202 เป็น shared remote ซึ่งไม่ตรง). **เมื่อเปิด image pipeline ไม่ต้องใช้เส้นนี้**
 - **best-effort**: ยิงไม่ผ่าน (หรือได้ non-2xx) = log แล้วปล่อย ไม่ล้ม build — `build_events` ยังเป็นแหล่งความจริงเสมอ
+- **ส่งซ้ำ (ตกลงกับ FTC DV 30 ต.ค. 2026):**
+  - ส่งซ้ำเฉพาะเมื่อ timeout, connection reset หรือ refused, หรือได้ `408` / `429` / `5xx`
+  - ส่งไม่เกิน 3 ครั้ง รวมครั้งแรก ทุกครั้งเริ่มภายใน 1 นาทีนับจากครั้งแรก เว้นห่าง 5 วิ แล้ว 15 วิ แต่ละครั้งรอคำตอบไม่เกิน 10 วิ
+  - ทุกครั้งใช้ body เดิมทุก byte และ header `X-Correlation-Id` เดิม (ใหม่ต่อ event)
+  - `429` รอตาม `Retry-After` ถ้ายังอยู่ใน 1 นาที ถ้าไม่อยู่ก็หยุด
+  - ไม่ส่งซ้ำเมื่อได้คำตอบอื่น (`400` `401` `403` `404` `409` `422` `3xx` …) หรือเมื่อใบรับรอง TLS ตรวจไม่ผ่าน, no route to host, DNS ไม่เจอ ไม่ตาม redirect
+  - callback ของ job เดียวกันส่งทีละตัวตามลำดับ (`released` รอจน `building` ส่งเสร็จหรือเลิก)
+  - ได้ `409` → หยุด และไม่ส่งอะไรของ build นั้นอีก log `ERROR` พร้อม `job_id`, `build_no`, `status`, `payload_sha256` (sha256 ของ body) ให้แจ้ง FTC DV
+  - เลิกส่งแล้ว = ไม่ส่ง event นั้นอีกเลย ไม่มีคิวส่งย้อนหลัง
 - ไม่ set `CRN_FTC_DV_CALLBACK_URL` = ปิด callback (ใช้ `build_events` อย่างเดียว)
 
 **config**

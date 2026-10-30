@@ -47,6 +47,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -105,6 +106,13 @@ type manager struct {
 	ftcdvCallbackOrgs map[uuid.UUID]bool
 	// ftcdvClient posts the callbacks (callbackClient).
 	ftcdvClient *http.Client
+	// cbRetry is how a callback is retried; zero is the schedule agreed with
+	// FTC DV (agreedCallbackRetry). Tests shorten it.
+	cbRetry callbackRetry
+	// cbLanes holds one lane per job with a callback in flight (callbackLane),
+	// guarded by cbMu.
+	cbMu    sync.Mutex
+	cbLanes map[uuid.UUID]*callbackLane
 	// buildImage toggles the docker-image pipeline; imageRegistry is the push
 	// target prefix (empty -> build locally, no push); artifactDir, when set, is
 	// where the air-gap bundle (docker save tarball + compose + INSTALL) is written.
@@ -1459,6 +1467,9 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 // ("building" / "released" / "failed").
 // Takes job fields by value so callers can dispatch it in a goroutine (it is
 // best-effort telemetry — never block the build lifecycle on a slow FTC DV).
+// A job's callbacks go out one at a time, in order, each retried as agreed
+// (deliverCallback); once FTC DV answers 409 for a build, nothing more is sent
+// for it, and a callback that gave up is never sent again.
 func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, status, message string, env any) {
 	if m.ftcdvCallbackURL == "" || !m.ftcdvCallbackOrgs[orgID] {
 		return
@@ -1498,45 +1509,183 @@ func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, ima
 		m.logger.Warn("ftc callback marshal failed", "err", err, "job_id", jobID)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.ftcdvCallbackURL, bytes.NewReader(body))
-	if err != nil {
-		m.logger.Warn("ftc callback request build failed", "err", err, "job_id", jobID)
+	sum := sha256.Sum256(body)
+	log := m.logger.With("job_id", jobID, "build_no", buildNo, "status", status, "payload_sha256", hex.EncodeToString(sum[:]))
+
+	lane := m.callbackLane(jobID)
+	lane.mu.Lock()
+	defer lane.mu.Unlock()
+	if status == "released" || status == "failed" {
+		defer m.dropCallbackLane(jobID)
+	}
+	if lane.stopped[buildNo] {
+		log.Error("ftc callback not sent: FTC DV answered 409 for this build; agree with FTC DV before anything more is sent for it")
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if m.ftcdvCallbackToken != "" {
-		req.Header.Set("Authorization", "Bearer "+m.ftcdvCallbackToken)
+	if m.deliverCallback(log, body) == http.StatusConflict {
+		if lane.stopped == nil {
+			lane.stopped = map[int]bool{}
+		}
+		lane.stopped[buildNo] = true
+		log.Error("ftc callback 409: stopped this build's callbacks; report job_id, build_no, status and payload_sha256 to FTC DV")
+	}
+}
+
+// callbackLane serializes one job's callbacks, so "released" never overtakes a
+// "building" that is still being retried, and remembers the builds FTC DV
+// answered 409 for.
+type callbackLane struct {
+	mu      sync.Mutex
+	stopped map[int]bool
+}
+
+func (m *manager) callbackLane(jobID uuid.UUID) *callbackLane {
+	m.cbMu.Lock()
+	defer m.cbMu.Unlock()
+	if m.cbLanes == nil {
+		m.cbLanes = map[uuid.UUID]*callbackLane{}
+	}
+	l := m.cbLanes[jobID]
+	if l == nil {
+		l = &callbackLane{}
+		m.cbLanes[jobID] = l
+	}
+	return l
+}
+
+// dropCallbackLane forgets a job once its last callback has gone.
+func (m *manager) dropCallbackLane(jobID uuid.UUID) {
+	m.cbMu.Lock()
+	delete(m.cbLanes, jobID)
+	m.cbMu.Unlock()
+}
+
+// callbackRetry is how a callback is retried, as agreed with FTC DV
+// (2026-10-30): at most len(waits)+1 sends, the first included, every one
+// starting within window of the first, further apart each time, the same body
+// and X-Correlation-Id on each.
+type callbackRetry struct {
+	window  time.Duration
+	waits   []time.Duration // before the 2nd, 3rd... send
+	attempt time.Duration   // one send's limit
+}
+
+// Worst case 10+5+10+15+10 = 50s, inside the minute.
+var agreedCallbackRetry = callbackRetry{
+	window:  time.Minute,
+	waits:   []time.Duration{5 * time.Second, 15 * time.Second},
+	attempt: 10 * time.Second,
+}
+
+// deliverCallback POSTs body to FTC DV, sending again only after a timeout, a
+// connection reset or refused, or HTTP 408, 429 or 5xx (429 waits at least its
+// Retry-After). It returns the last HTTP status, 0 when none came.
+func (m *manager) deliverCallback(log *slog.Logger, body []byte) int {
+	r := m.cbRetry
+	if r.window == 0 {
+		r = agreedCallbackRetry
 	}
 	client := m.ftcdvClient
 	if client == nil {
-		client = http.DefaultClient
+		client = callbackClient(nil)
+	}
+	correlation := uuid.NewString()
+	log = log.With("correlation_id", correlation)
+	start := time.Now()
+	for n := 1; ; n++ {
+		code, retryAfter, err := m.postCallback(client, body, correlation, r.attempt)
+		if err == nil && code < 300 {
+			log.Info("ftc callback sent", "code", code, "attempt", n)
+			return code
+		}
+		if (err != nil && !retryableSend(err)) || (err == nil && !retryableCode(code)) {
+			log.Warn("ftc callback failed; not retried", "code", code, "err", err, "attempt", n)
+			return code
+		}
+		if n > len(r.waits) {
+			log.Warn("ftc callback failed; gave up", "code", code, "err", err, "attempt", n)
+			return code
+		}
+		wait := r.waits[n-1]
+		if code == http.StatusTooManyRequests {
+			wait = max(wait, retryAfter)
+		}
+		if time.Since(start)+wait >= r.window {
+			log.Warn("ftc callback failed; gave up, the next send would fall outside the window", "code", code, "err", err, "attempt", n, "wait", wait)
+			return code
+		}
+		log.Warn("ftc callback failed; sending again", "code", code, "err", err, "attempt", n, "wait", wait)
+		time.Sleep(wait)
+	}
+}
+
+// postCallback makes one send. retryAfter is the answer's Retry-After, 0 if none.
+func (m *manager) postCallback(client *http.Client, body []byte, correlation string, limit time.Duration) (code int, retryAfter time.Duration, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.ftcdvCallbackURL, bytes.NewReader(body))
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Correlation-Id", correlation)
+	if m.ftcdvCallbackToken != "" {
+		req.Header.Set("Authorization", "Bearer "+m.ftcdvCallbackToken)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		m.logger.Warn("ftc callback POST failed", "err", err, "job_id", jobID, "status", status)
-		return
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		m.logger.Warn("ftc callback non-2xx", "code", resp.StatusCode, "job_id", jobID, "status", status)
-		return
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	return resp.StatusCode, parseRetryAfter(resp.Header.Get("Retry-After")), nil
+}
+
+// retryableSend reports whether a send that got no answer may go again: a
+// timeout, or the connection reset or refused. A certificate that does not
+// verify, no route to the host, a name that does not resolve are not retried.
+func retryableSend(err error) bool {
+	var cert *tls.CertificateVerificationError
+	if errors.As(err, &cert) {
+		return false
 	}
-	m.logger.Info("ftc callback sent", "job_id", jobID, "status", status, "code", resp.StatusCode)
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+func retryableCode(code int) bool {
+	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500 && code <= 599
+}
+
+// parseRetryAfter reads Retry-After as seconds or an HTTP date; 0 if neither.
+func parseRetryAfter(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if s, err := strconv.Atoi(v); err == nil && s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return max(time.Until(t), 0)
+	}
+	return 0
 }
 
 // callbackClient is the client the FTC DV callbacks go out on. Given a CA pool
 // it trusts that pool alone (FTC DV's internal CA, for its HTTPS endpoint),
-// without touching the host's CAs or any other client; nil is the default
-// client and the system's CAs.
+// without touching the host's CAs or any other client; nil keeps the system's
+// CAs. It never follows a redirect: a 3xx is an answer, not a new address.
 func callbackClient(ca *x509.CertPool) *http.Client {
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if ca == nil {
-		return http.DefaultClient
+		return &http.Client{CheckRedirect: noRedirect}
 	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.TLSClientConfig = &tls.Config{RootCAs: ca, MinVersion: tls.VersionTLS12}
-	return &http.Client{Transport: t}
+	return &http.Client{Transport: t, CheckRedirect: noRedirect}
 }
 
 // --- internal: live subscriber fan-out -------------------------------------
