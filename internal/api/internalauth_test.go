@@ -109,3 +109,19 @@ func TestInternalWebSocketsPickTheBearerSubprotocol(t *testing.T) {
 		t.Errorf("subprotocol picked = %q, want crn-bearer", got)
 	}
 }
+
+// The dashboard sends its key in Authorization, which makes the browser ask
+// first; a preflight that does not list the header blocks every call.
+func TestPreflightAllowsTheAuthorizationHeader(t *testing.T) {
+	h := devCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	req := httptest.NewRequest(http.MethodOptions, "/internal/dashboard", nil)
+	req.Header.Set("Origin", "http://172.168.1.171:3000")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Headers", "authorization")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	allowed := strings.ToLower(rec.Header().Get("Access-Control-Allow-Headers"))
+	if !strings.Contains(allowed, "authorization") {
+		t.Errorf("preflight allows headers %q, want Authorization among them", allowed)
+	}
+}

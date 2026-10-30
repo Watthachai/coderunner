@@ -238,7 +238,7 @@ func devCORS(next http.Handler) http.Handler {
 		h.Set("Access-Control-Allow-Origin", origin)
 		h.Add("Vary", "Origin")
 		h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		h.Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+		h.Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
