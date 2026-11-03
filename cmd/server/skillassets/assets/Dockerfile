@@ -40,6 +40,7 @@ COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/package.json ./package.json
 COPY --from=builder --chown=node:node /runtime-config/ ./
 COPY --from=builder --chown=node:node /app/crn.schedule.json ./crn.schedule.json
+COPY --from=builder --chown=node:node /app/crn.runtime.json ./crn.runtime.json
 RUN mkdir -p /data/uploads && chown node:node /data/uploads
 RUN printf '#!/bin/sh\nset -eu\nif [ -f prisma/schema.prisma ]; then\n  npm run db:deploy\n  npm run db:seed\nfi\nexec node server.js\n' > /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 USER node

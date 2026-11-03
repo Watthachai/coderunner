@@ -14,7 +14,7 @@ A build is one unattended job with a bounded implement → verify → repair loo
 - `references/auth-and-bootstrap.md`: authenticated sessions, permissions and the once-only initial administrator. Required when the app has login or private data.
 - `references/delivery-checks.md`: executable validation contract and bounded repair. Required on every build and edit.
 - `references/service-status.md`: the FITT Billing suspension switch and the health route. Required on every build and edit.
-- `references/runs-anywhere.md`: one image for a customer's server and for Cloud Run — uploads, scheduled work, shared state, request length. Required on every build and edit.
+- `references/runs-anywhere.md`: one image for a customer's server and for Cloud Run — uploads, scheduled work, shared state, request length, declared environment (`crn.runtime.json`). Required on every build and edit.
 - `references/test-cases.md`: requirement-linked customer acceptance instructions. Keep results not actually executed blank.
 
 ## Establish scope before writing
@@ -41,6 +41,6 @@ For initial installs test an empty disposable database. For issue edits also tes
 
 ## Deliver evidence and instructions
 
-Ship `BUILD_NOTES.md`, `TEST_CASES.md`, `PORT_CHECKLIST.md`, `crn-delivery.json`, the lockfile, committed migrations, automated tests and the checker receipt. Document required environment variables, first-install account setup, backup, upgrade and recovery. Separate automated results from customer acceptance steps. Never include live secrets, bootstrap passwords or production database dumps in artifacts.
+Ship `BUILD_NOTES.md`, `TEST_CASES.md`, `PORT_CHECKLIST.md`, `crn-delivery.json`, `crn.runtime.json`, the lockfile, committed migrations, automated tests and the checker receipt. Document required environment variables, first-install account setup, backup, upgrade and recovery. Separate automated results from customer acceptance steps. Never include live secrets, bootstrap passwords or production database dumps in artifacts.
 
 CRN writes the Docker delivery bundle. It must apply committed migrations and run the once-only bootstrap before serving; it must fail visibly on migration/bootstrap error. Both source verification and image creation must succeed before an image can be called deliverable. Passing checks covers the tested scope, not every possible production scenario.

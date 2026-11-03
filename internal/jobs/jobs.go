@@ -463,7 +463,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	job.Status = domain.JobBuilding
 	m.notify(ctx, job.ID, domain.EventBuildStarted, nil)
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "building", "", nil)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "", "building", "", nil)
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSBuildPhase,
 		Phase:     string(domain.JobBuilding),
@@ -766,7 +766,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// satisfied by an authored claim of success. Run after widget/scaffold changes.
 	if m.runClaude || m.buildImage {
 		m.publishPhase(job.ID, "verify")
-		if err := buildstep.CheckMigrationHistory(workDir, priorMigrations); err != nil {
+		if err := releasePrep(workDir, priorMigrations); err != nil {
 			m.finishFailed(ctx, job, err.Error(), meta)
 			return
 		}
@@ -880,7 +880,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, envEx))
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, "released", "", envEx)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx)
 
 	// Cache this source → image so an identical resubmission reuses it (skips the AI
 	// conversion). srcHash is "" for edit builds, which clears the cache so a later
@@ -938,7 +938,7 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef st
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(filepath.Join(m.projectsDir, job.ProjectID.String())))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, meta.remote, meta.branch, envEx))
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, imageRef, m.reusedDigest(ctx, job, imageRef, log), meta.remote, meta.branch, "released", "", envEx)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, imageRef, m.reusedDigest(ctx, job, imageRef, log), meta.remote, meta.branch, meta.commit, "released", "", envEx)
 
 	// A reused build is still a build the operator may need to inspect later.
 	m.saveTrace(ctx, job, meta)
@@ -963,7 +963,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "failed", errMsg, nil)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "", "failed", errMsg, nil)
 
 	// Persist the trace for the failed build too — the operator needs to see how
 	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
@@ -997,7 +997,7 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, meta tra
 	// "cancelled" not "failed"); the FTC HTTP callback maps to "failed" since its
 	// vocabulary is only building/released/failed.
 	m.notify(ctx, job.ID, domain.EventBuildCancelled, cancelledPayload(msg))
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "failed", msg, nil)
+	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "", "failed", msg, nil)
 
 	m.saveTrace(ctx, job, meta)
 	m.closeSubscribers(job.ID)
@@ -1133,14 +1133,10 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	}
 	m.publishPhase(job.ID, "docker")
 	appTag := m.imageTag(spec, job)
-	schedule, err := buildstep.ReadSchedule(workDir)
+	labels, err := imageLabels(workDir, job, commitSHA)
 	if err != nil {
 		return "", err
 	}
-	labels := buildstep.ImageLabels{
-		ProjectID: job.ProjectID.String(), JobID: job.ID.String(), Commit: commitSHA,
-		BuildNo: job.BuildNo, Schedule: schedule,
-	}.Map()
 
 	// App image (opaque, self-migrating) — REQUIRED. Build failure fails the build.
 	if err := buildstep.BuildImage(ctx, workDir, "Dockerfile", appTag, labels, log); err != nil {
@@ -1189,6 +1185,34 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	})
 	log.Info("docker image ready", "app", appTag, "pushed", registry != "", "digest", digest)
 	return digest, nil
+}
+
+// releasePrep readies the tree for the independent release check: the existing
+// migrations must be untouched, and the app's crn.runtime.json is rewritten with
+// what CRN owns (and the widget's variable), so the checker validates the very
+// file the image will carry. Either failing stops the build.
+func releasePrep(workDir string, priorMigrations map[string][]byte) error {
+	if err := buildstep.CheckMigrationHistory(workDir, priorMigrations); err != nil {
+		return err
+	}
+	return buildstep.FinalizeRuntime(workDir)
+}
+
+// imageLabels are the labels a delivered image carries: project, build, commit,
+// scheduled work, and the hash of its crn.runtime.json.
+func imageLabels(workDir string, job *domain.Job, commitSHA string) (map[string]string, error) {
+	schedule, err := buildstep.ReadSchedule(workDir)
+	if err != nil {
+		return nil, err
+	}
+	runtimeSHA, err := buildstep.RuntimeSHA256(workDir)
+	if err != nil {
+		return nil, err
+	}
+	return buildstep.ImageLabels{
+		ProjectID: job.ProjectID.String(), JobID: job.ID.String(), Commit: commitSHA,
+		BuildNo: job.BuildNo, Schedule: schedule, RuntimeSHA256: runtimeSHA,
+	}.Map(), nil
 }
 
 // reusedDigest is the registry digest of a reused build's image, read from the
@@ -1262,7 +1286,7 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 	}
 	for _, o := range orphans {
 		m.notify(ctx, o.ID, domain.EventBuildFailed, failedPayload(msg))
-		go m.ftcCallback(o.ID, o.OrgID, o.BuildNo, o.DockerTag, "", "", "", "failed", msg, nil)
+		go m.ftcCallback(o.ID, o.OrgID, o.BuildNo, o.DockerTag, "", "", "", "", "failed", msg, nil)
 	}
 	if len(orphans) > 0 {
 		m.logger.Warn("reconciled orphaned builds on startup", "count", len(orphans))
@@ -1470,7 +1494,7 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 // A job's callbacks go out one at a time, in order, each retried as agreed
 // (deliverCallback); once FTC DV answers 409 for a build, nothing more is sent
 // for it, and a callback that gave up is never sent again.
-func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, status, message string, env any) {
+func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message string, env any) {
 	if m.ftcdvCallbackURL == "" || !m.ftcdvCallbackOrgs[orgID] {
 		return
 	}
@@ -1503,6 +1527,11 @@ func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, ima
 	}
 	if gitBranch != "" {
 		payload["git_branch"] = gitBranch
+	}
+	// The full commit the build pushed, so FTC DV records what the image was built
+	// from without asking in chat (agreed with Fittcore 3 Nov 2026).
+	if gitCommit != "" {
+		payload["git_commit"] = gitCommit
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

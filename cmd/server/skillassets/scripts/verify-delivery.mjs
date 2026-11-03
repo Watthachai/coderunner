@@ -71,6 +71,65 @@ export function validateSchedule(entries) {
   }
   return entries;
 }
+// crn.runtime.json (references/runs-anywhere.md): the app declares every variable it
+// reads at run time, so an installer can ask for them without reading the source.
+// CRN writes contract, migrations_first, port, health, volumes and writable itself;
+// when present they must hold its values. Shape agreed with Fittcore on 3 Nov 2026.
+const RUNTIME_KEYS = new Set(['contract', 'migrations_first', 'port', 'health', 'volumes', 'writable', 'env']);
+const RUNTIME_FIXED = { contract: 1, port: 3000, health: '/api/health', volumes: ['/data/uploads'], writable: ['/tmp', '/data/uploads'] };
+const RUNTIME_ENV_KEYS = new Set(['name', 'required', 'secret', 'min_length', 'note']);
+const RUNTIME_REQUIRED = ['always', 'first_start', 'no'];
+// Set by the image, Node, Next.js or the platform; never by whoever installs the app.
+export const PLATFORM_ENV = new Set(['NODE_ENV', 'NEXT_RUNTIME', 'NEXT_PHASE', 'NEXT_TELEMETRY_DISABLED', 'PORT', 'HOSTNAME', 'UPLOAD_DIR', 'CRN_SCHEDULER', 'CRN_FEEDBACK_INGEST_URL', 'CI', 'PATH', 'HOME']);
+export function validateRuntime(runtime, used = [], firstMigration = '') {
+  if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) throw new Error('crn.runtime.json must be an object');
+  for (const k of Object.keys(runtime)) if (!RUNTIME_KEYS.has(k)) throw new Error(`crn.runtime.json has unknown key "${k}"`);
+  for (const [k, v] of Object.entries(RUNTIME_FIXED)) {
+    if (runtime[k] !== undefined && JSON.stringify(runtime[k]) !== JSON.stringify(v)) throw new Error(`crn.runtime.json ${k} must be ${JSON.stringify(v)} (CRN writes it)`);
+  }
+  if (runtime.migrations_first !== undefined && runtime.migrations_first !== firstMigration) throw new Error(`crn.runtime.json migrations_first must be ${JSON.stringify(firstMigration)}, the first directory in prisma/migrations`);
+  if (!Array.isArray(runtime.env)) throw new Error('crn.runtime.json needs an "env" array');
+  const declared = new Set();
+  for (const e of runtime.env) {
+    const label = JSON.stringify(e);
+    if (!e || typeof e !== 'object' || Array.isArray(e)) throw new Error(`env entry is not an object: ${label}`);
+    for (const k of Object.keys(e)) if (!RUNTIME_ENV_KEYS.has(k)) throw new Error(`env entry has unknown key "${k}": ${label}`);
+    if (typeof e.name !== 'string' || !/^[A-Z][A-Z0-9_]*$/.test(e.name)) throw new Error(`env name must be upper-case letters, digits and _: ${label}`);
+    if (PLATFORM_ENV.has(e.name)) throw new Error(`${e.name} is set by the image or the platform; do not declare it`);
+    if (declared.has(e.name)) throw new Error(`env ${e.name} is declared twice`);
+    if (!RUNTIME_REQUIRED.includes(e.required)) throw new Error(`env required must be one of ${RUNTIME_REQUIRED.join(', ')}: ${label}`);
+    if (e.secret !== undefined && typeof e.secret !== 'boolean') throw new Error(`env secret must be true or false: ${label}`);
+    if (e.min_length !== undefined && !(Number.isInteger(e.min_length) && e.min_length > 0)) throw new Error(`env min_length must be a positive integer: ${label}`);
+    if (e.note !== undefined && typeof e.note !== 'string') throw new Error(`env note must be text: ${label}`);
+    declared.add(e.name);
+  }
+  const missing = [...new Set(used)].filter(n => !PLATFORM_ENV.has(n) && !declared.has(n)).sort();
+  if (missing.length) throw new Error(`crn.runtime.json does not declare ${missing.join(', ')}, which the app reads`);
+  return runtime;
+}
+// The variables app code reads: process.env.X, process.env['X'], and env.X where env
+// defaults to process.env (assets/bootstrap-once.mjs, assets/scheduler.mjs). Tests,
+// dependencies, build output and generated clients are not the app's runtime.
+const SCAN_SKIP_DIRS = new Set(['node_modules', '.next', '.git', '.claude', 'tests', 'test', 'e2e', '__tests__', 'coverage', 'playwright-report', 'test-results', 'generated', 'public']);
+const SCAN_SOURCE = /\.[cm]?[jt]sx?$/;
+const SCAN_TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$|^(?:playwright|vitest)\.config\./;
+const ENV_READ = /\benv(?:\.([A-Z][A-Z0-9_]*)|\[\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\])/g;
+export async function appEnvNames(cwd) {
+  const names = new Set();
+  async function walk(dir) {
+    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) { if (!SCAN_SKIP_DIRS.has(entry.name)) await walk(path.join(dir, entry.name)); continue; }
+      if (!entry.isFile() || !SCAN_SOURCE.test(entry.name) || SCAN_TEST_FILE.test(entry.name)) continue;
+      for (const m of (await fs.readFile(path.join(dir, entry.name), 'utf8')).matchAll(ENV_READ)) names.add(m[1] ?? m[2]);
+    }
+  }
+  await walk(cwd);
+  return [...names].sort();
+}
+async function firstMigration(cwd) {
+  const entries = await fs.readdir(path.join(cwd, 'prisma', 'migrations'), { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
+  return entries.filter(e => e.isDirectory()).map(e => e.name).sort()[0] ?? '';
+}
 export function isolatedEnvironment(source) {
   // CLI/browser runtime settings only. Never inherit host application credentials.
   const allowed = ['PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'PLAYWRIGHT_BROWSERS_PATH'];
@@ -125,6 +184,9 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     const schedule = await fs.readFile(path.join(cwd, 'crn.schedule.json'), 'utf8').catch(e => { if (e.code === 'ENOENT') return '[]'; throw e; });
     validateSchedule(JSON.parse(schedule));
     receipt.checks.push({ name: 'schedule', passed: true });
+    const runtime = await read('crn.runtime.json').catch(e => { if (e.code === 'ENOENT') throw new Error('Missing crn.runtime.json: declare the environment the app reads (references/runs-anywhere.md)'); throw e; });
+    validateRuntime(runtime, await appEnvNames(cwd), await firstMigration(cwd));
+    receipt.checks.push({ name: 'runtime contract', passed: true });
     receipt.lockfile_sha256 = createHash('sha256').update(await fs.readFile(path.join(cwd, 'package-lock.json'))).digest('hex');
     scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'crn-verify-'));
     await run('locked install', 'npm', ['ci', '--no-audit', '--no-fund']);

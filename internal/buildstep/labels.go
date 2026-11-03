@@ -26,6 +26,9 @@ type ImageLabels struct {
 	// Schedule is the app's crn.schedule.json as compact JSON (ReadSchedule):
 	// on Cloud Run, Cloud Scheduler calls these jobs instead of the app itself.
 	Schedule string
+	// RuntimeSHA256 is the hash of the crn.runtime.json the image carries
+	// (runtime.go), so an installer can check the file; empty labels nothing.
+	RuntimeSHA256 string
 }
 
 // Map is the labels as docker build takes them. A build pushed without a commit
@@ -40,6 +43,9 @@ func (l ImageLabels) Map() map[string]string {
 	}
 	if l.Commit != "" {
 		m["org.opencontainers.image.revision"] = l.Commit
+	}
+	if l.RuntimeSHA256 != "" {
+		m["fitt.crn.runtime_sha256"] = l.RuntimeSHA256
 	}
 	return m
 }

@@ -77,3 +77,66 @@ test('the checker runs the customer image read-only with no capabilities', async
   assert.ok(runs.length >= 3, 'migrations, app and switch runs');
   for (const l of runs) assert.ok(l.includes('...HARDENED_RUN'), l.trim());
 });
+
+// crn.runtime.json (agreed with Fittcore 3 Nov 2026): the installer fills in the
+// env the app declares, so every variable the app reads must be declared.
+import { validateRuntime, appEnvNames, PLATFORM_ENV } from '../internal/buildstep/verify-delivery.mjs';
+const ntcEnv = [
+  { name: 'DATABASE_URL', required: 'always', secret: true },
+  { name: 'AUTH_SECRET', required: 'always', secret: true, min_length: 32 },
+  { name: 'BOOTSTRAP_ADMIN_EMAIL', required: 'first_start' },
+  { name: 'BOOTSTRAP_ADMIN_PASSWORD', required: 'first_start', secret: true, min_length: 16 },
+  { name: 'ALLOW_INSECURE_COOKIES', required: 'no', note: 'true when served over http' },
+];
+const ntcReads = ['DATABASE_URL', 'AUTH_SECRET', 'BOOTSTRAP_ADMIN_EMAIL', 'BOOTSTRAP_ADMIN_PASSWORD', 'ALLOW_INSECURE_COOKIES', 'NODE_ENV', 'UPLOAD_DIR', 'PORT'];
+test('runtime file declares every variable the app reads', () => {
+  assert.doesNotThrow(() => validateRuntime({ env: ntcEnv }, ntcReads, '20261102000000_init'));
+  assert.throws(() => validateRuntime({ env: ntcEnv.slice(1) }, ntcReads), /does not declare DATABASE_URL, which the app reads/);
+  assert.throws(() => validateRuntime({ env: ntcEnv }, [...ntcReads, 'SMTP_URL', 'CRON_SECRET']), /CRON_SECRET, SMTP_URL/);
+});
+test('runtime file entries are well formed', () => {
+  const bad = [
+    [{ name: 'A', required: 'sometimes' }, /required/],
+    [{ name: 'A', required: 'no', secret: 'yes' }, /secret/],
+    [{ name: 'A', required: 'no', min_length: 0 }, /min_length/],
+    [{ name: 'A', required: 'no', note: 3 }, /note/],
+    [{ name: 'a_lower', required: 'no' }, /name/],
+    [{ name: 'A', required: 'no', secrett: true }, /unknown key "secrett"/],
+    [{ name: 'PORT', required: 'no' }, /set by the image/],
+  ];
+  for (const [entry, why] of bad) assert.throws(() => validateRuntime({ env: [entry] }, []), why, JSON.stringify(entry));
+  assert.throws(() => validateRuntime({ env: [{ name: 'A', required: 'no' }, { name: 'A', required: 'always' }] }, []), /twice/);
+  assert.throws(() => validateRuntime({ env: [], extra: 1 }, []), /unknown key "extra"/);
+  assert.throws(() => validateRuntime({}, []), /"env" array/);
+  assert.throws(() => validateRuntime([], []), /object/);
+});
+test('fields CRN writes must hold CRN values when present', () => {
+  const full = { contract: 1, migrations_first: '20261102000000_init', port: 3000, health: '/api/health', volumes: ['/data/uploads'], writable: ['/tmp', '/data/uploads'], env: [] };
+  assert.doesNotThrow(() => validateRuntime(full, [], '20261102000000_init'));
+  assert.throws(() => validateRuntime({ ...full, port: 8080 }, [], '20261102000000_init'), /port must be 3000/);
+  assert.throws(() => validateRuntime({ ...full, contract: 2 }, [], '20261102000000_init'), /contract/);
+  assert.throws(() => validateRuntime(full, [], '20261201000000_other'), /migrations_first must be "20261201000000_other"/);
+  assert.ok(PLATFORM_ENV.has('UPLOAD_DIR') && PLATFORM_ENV.has('NODE_ENV'));
+});
+test('the env scan reads app code, not tests, dependencies or build output', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'crn-env-scan-'));
+  const put = async (file, body) => { await fs.mkdir(path.dirname(path.join(dir, file)), { recursive: true }); await fs.writeFile(path.join(dir, file), body); };
+  try {
+    await put('lib/session.ts', 'const s = process.env.AUTH_SECRET; const i = process.env["ALLOW_INSECURE_COOKIES"];');
+    await put('prisma/bootstrap-once.mjs', 'export function b(p, x, env = process.env) { return env.BOOTSTRAP_ADMIN_EMAIL; }');
+    await put('app/api/x/route.tsx', "const u = process.env['FITT_FEEDBACK_URL'];");
+    await put('prisma.config.ts', 'url: process.env.DATABASE_URL');
+    for (const f of ['tests/e2e/a.spec.ts', 'node_modules/x/index.js', '.next/server/a.js', 'lib/a.test.ts', 'playwright.config.ts', 'prisma/generated/client.ts', 'README.md'])
+      await put(f, 'process.env.NOT_APP_CODE');
+    assert.deepEqual(await appEnvNames(dir), ['ALLOW_INSECURE_COOKIES', 'AUTH_SECRET', 'BOOTSTRAP_ADMIN_EMAIL', 'DATABASE_URL', 'FITT_FEEDBACK_URL']);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+test('the release checker checks the runtime file before building anything', async () => {
+  const src = await fs.readFile(new URL('../internal/buildstep/verify-delivery.mjs', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('export async function verify('));
+  const check = body.indexOf('validateRuntime(');
+  assert.ok(check > 0, 'verify() must call validateRuntime');
+  assert.ok(body.slice(check, check + 200).includes('appEnvNames(cwd)'), 'with the names the app reads');
+  assert.ok(check < body.indexOf("'locked install'"), 'before npm ci');
+  assert.match(body, /name: 'runtime contract'/);
+});

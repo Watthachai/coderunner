@@ -149,6 +149,7 @@ Content-Type: application/json
   "git_branch": "main",                                 // เฉพาะ released
   "image_ref": "…:v4",       // ใส่มาถ้ามี docker_tag
   "image_digest": "sha256:<64 hex>",  // เฉพาะ released ที่ push image แล้ว — digest ที่ registry ให้ image_ref นี้ ใช้ pull แบบ <repo>@<digest>
+  "git_commit": "<40 hex>",  // เฉพาะ released ที่ push git แล้ว — commit เต็มที่ image นี้ build จาก (เพิ่ม 3 พ.ย. 2026)
   "env": {                    // เฉพาะ released — example runtime env ของ image
     "DATABASE_URL": "postgresql://USER:PASSWORD@HOST:5432/DB?schema=public",
     "PORT": "3000",           // port ที่ app listen ใน container (fixed)
@@ -163,6 +164,7 @@ Content-Type: application/json
   "message": "…" }           // ใส่มาเฉพาะตอน failed
 ```
 - แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
+- **`crn.runtime.json` (ตกลงกับ Fittcore 3 พ.ย. 2026):** image มีไฟล์ `/app/crn.runtime.json` และ label `fitt.crn.runtime_sha256` = SHA-256 ของไฟล์นั้น · ไฟล์บอก `contract`, `migrations_first` (ชื่อ migration แรก ไม่มีถ้าแอปไม่มีฐาน), `port`, `health`, `volumes`, `writable` และ `env` = รายการ `{name, required: always|first_start|no, secret?, min_length?, note?}` ของทุกตัวแปรที่แอปอ่านตอนรัน (ขั้นตรวจก่อนปล่อยไล่โค้ดแอปแล้วไม่ปล่อยถ้าขาดตัวไหน) · ใช้ไฟล์นี้แทน `env` ด้านบน ซึ่งเป็นแค่ค่าตัวอย่าง
 - **`env` (เฉพาะ `released`)** = **example** runtime env ที่ image ต้องใช้ — operator inject ค่าจริงตอนรัน (ไม่มี bake ในภาพ). `DATABASE_URL` บังคับ — image **apply migration ที่ commit ไว้** (`db:deploy` แล้วตามด้วย `db:seed`) ยิงไป DB ภายนอกนี้ตอน start **และ fail ให้เห็นถ้า migration ไม่ผ่าน** (ไม่ start ต่อ); app listen container port `3000`, host เปิด `APP_PORT` (ต่อ-project). ตรงกับ `docker-compose.customer.yml` ที่ CRN เขียน
 - **`AUTH_SECRET` + `BOOTSTRAP_ADMIN_EMAIL` + `BOOTSTRAP_ADMIN_PASSWORD`** = ตัวที่ต้องส่งจริง. บัญชีผู้ดูแลคนแรกถูกสร้าง **ครั้งเดียวต่อฐานข้อมูล** ผ่าน advisory lock + marker ถาวรในตาราง `SystemBootstrap` → รันพร้อมกันหลายตัวได้ admin คนเดียว · ฐานข้อมูลที่มี user อยู่แล้วจะไม่สร้างเพิ่ม · ลบ user ทิ้งแล้ว restart ไม่ฟื้นคืนมา · **ไม่มีรหัส fallback**
   - ติดตั้งครั้งแรกโดยไม่ส่ง (หรืออีเมลผิดรูปแบบ / รหัสสั้นกว่า 16 ตัวอักษร) → `db:seed` ล้ม และ **container ไม่ start** (ถ้าตั้ง restart ไว้จะวน restart) — ไม่ใช่ start ขึ้นมาแบบไม่มี admin

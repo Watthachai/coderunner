@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
+	"github.com/Watthachai/fitt-coderunner/internal/domain"
 )
 
 func TestResetWorkspace(t *testing.T) {
@@ -156,7 +157,7 @@ func TestFTCCallback(t *testing.T) {
 
 	org := uuid.New()
 	m := &manager{ftcdvCallbackURL: srv.URL, ftcdvCallbackToken: "secret-tok", ftcdvCallbackOrgs: map[uuid.UUID]bool{org: true}, logger: slog.Default()}
-	m.ftcCallback(uuid.New(), org, 7, "reg.test/crn/app:v7", "sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682", "acme/repo", "main", "released", "", buildstep.NewDemoEnvExample(4123))
+	m.ftcCallback(uuid.New(), org, 7, "reg.test/crn/app:v7", "sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682", "acme/repo", "main", "8bec6f20d6fe7af3e269ac4c05890cbbd40dbb63", "released", "", buildstep.NewDemoEnvExample(4123))
 
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
@@ -167,7 +168,7 @@ func TestFTCCallback(t *testing.T) {
 	if gotCT != "application/json" {
 		t.Errorf("content-type = %q", gotCT)
 	}
-	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`, `"image_ref":"reg.test/crn/app:v7"`, `"image_digest":"sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682"`, `"git_remote":"acme/repo"`, `"git_branch":"main"`, `"env"`, `"DATABASE_URL"`, `"APP_PORT":"4123"`, `"DEV_EMAIL"`} {
+	for _, want := range []string{`"status":"released"`, `"build_no":7`, `"job_id"`, `"image_ref":"reg.test/crn/app:v7"`, `"image_digest":"sha256:714a220cd8777936c0e67865c20a9340f2494de2d4fc732332e366e3e0448682"`, `"git_remote":"acme/repo"`, `"git_branch":"main"`, `"git_commit":"8bec6f20d6fe7af3e269ac4c05890cbbd40dbb63"`, `"env"`, `"DATABASE_URL"`, `"APP_PORT":"4123"`, `"DEV_EMAIL"`} {
 		if !strings.Contains(gotBody, want) {
 			t.Errorf("body missing %q\n%s", want, gotBody)
 		}
@@ -194,8 +195,8 @@ func TestFTCCallbackGoesOnlyToTheOrgsListed(t *testing.T) {
 	}
 	ftcJob, otherJob := uuid.New(), uuid.New()
 
-	m.ftcCallback(otherJob, other, 1, "reg/other:v1", "", "", "", "released", "", map[string]string{"SECRET_NAME": ""})
-	m.ftcCallback(ftcJob, ftc, 2, "reg/ftc:v2", "", "", "", "released", "", nil)
+	m.ftcCallback(otherJob, other, 1, "reg/other:v1", "", "", "", "", "released", "", map[string]string{"SECRET_NAME": ""})
+	m.ftcCallback(ftcJob, ftc, 2, "reg/ftc:v2", "", "", "", "", "released", "", nil)
 
 	select {
 	case id := <-got:
@@ -231,7 +232,7 @@ func TestFTCCallbackTrustsTheCAItIsGiven(t *testing.T) {
 			ftcdvCallbackOrgs: map[uuid.UUID]bool{org: true},
 			ftcdvClient:       client,
 		}
-		m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+		m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "", "building", "", nil)
 		select {
 		case <-got:
 			return true
@@ -257,7 +258,7 @@ func TestFTCCallbackOmitsAnUnknownDigest(t *testing.T) {
 
 	org := uuid.New()
 	m := &manager{ftcdvCallbackURL: srv.URL, ftcdvCallbackOrgs: map[uuid.UUID]bool{org: true}, logger: slog.Default()}
-	m.ftcCallback(uuid.New(), org, 1, "branch:main", "", "", "", "building", "", nil)
+	m.ftcCallback(uuid.New(), org, 1, "branch:main", "", "", "", "", "building", "", nil)
 	if strings.Contains(gotBody, "image_digest") {
 		t.Errorf("building callback carries a digest: %s", gotBody)
 	}
@@ -320,7 +321,7 @@ func sendTo(t *testing.T, rec *callbackRecorder, tune func(*manager)) []recorded
 	if tune != nil {
 		tune(m)
 	}
-	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "", "building", "", nil)
 	return rec.got()
 }
 
@@ -367,12 +368,12 @@ func TestFTCCallbackStopsTheBuildAt409(t *testing.T) {
 	org := uuid.New()
 	m := callbackManager(srv.URL, org)
 	job := uuid.New()
-	m.ftcCallback(job, org, 1, "", "", "", "", "building", "", nil)
-	m.ftcCallback(job, org, 1, "", "", "", "", "released", "", nil)
+	m.ftcCallback(job, org, 1, "", "", "", "", "", "building", "", nil)
+	m.ftcCallback(job, org, 1, "", "", "", "", "", "released", "", nil)
 	if n := len(rec.got()); n != 1 {
 		t.Fatalf("%d sends for a build that got 409, want 1", n)
 	}
-	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "", "building", "", nil)
 	if n := len(rec.got()); n != 2 {
 		t.Errorf("another build's callback was held back by the 409 (%d sends, want 2)", n)
 	}
@@ -405,7 +406,7 @@ func TestFTCCallbackRetriesATimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 	org := uuid.New()
-	callbackManager(srv.URL, org).ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	callbackManager(srv.URL, org).ftcCallback(uuid.New(), org, 1, "", "", "", "", "", "building", "", nil)
 	if n := calls.Load(); n != 2 {
 		t.Errorf("%d sends after the first timed out, want 2", n)
 	}
@@ -425,7 +426,7 @@ func TestFTCCallbackRetriesARefusedConnection(t *testing.T) {
 		dials.Add(1)
 		return (&net.Dialer{}).DialContext(ctx, network, a)
 	}}}
-	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "", "building", "", nil)
 	if n := dials.Load(); n != 3 {
 		t.Errorf("%d connection attempts to a refusing port, want 3", n)
 	}
@@ -445,7 +446,7 @@ func TestFTCCallbackDoesNotRetryAnUntrustedCertificate(t *testing.T) {
 	org := uuid.New()
 	m := callbackManager(srv.URL, org)
 	m.ftcdvClient = callbackClient(nil)
-	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "building", "", nil)
+	m.ftcCallback(uuid.New(), org, 1, "", "", "", "", "", "building", "", nil)
 	if n := conns.Load(); n != 1 {
 		t.Errorf("%d connections to a server whose certificate does not verify, want 1", n)
 	}
@@ -477,9 +478,9 @@ func TestFTCCallbacksOfABuildGoInOrder(t *testing.T) {
 	m.cbRetry.waits = []time.Duration{200 * time.Millisecond, 200 * time.Millisecond}
 	job := uuid.New()
 	done := make(chan struct{}, 2)
-	go func() { m.ftcCallback(job, org, 1, "", "", "", "", "building", "", nil); done <- struct{}{} }()
+	go func() { m.ftcCallback(job, org, 1, "", "", "", "", "", "building", "", nil); done <- struct{}{} }()
 	<-first
-	go func() { m.ftcCallback(job, org, 1, "", "", "", "", "released", "", nil); done <- struct{}{} }()
+	go func() { m.ftcCallback(job, org, 1, "", "", "", "", "", "released", "", nil); done <- struct{}{} }()
 	<-done
 	<-done
 	if got := strings.Join(statuses, ","); got != "building,building,released" {
@@ -536,7 +537,7 @@ func TestSourceHash(t *testing.T) {
 func TestFTCCallbackDisabledWhenNoURL(t *testing.T) {
 	m := &manager{logger: slog.Default()} // no URL configured
 	// Must be a silent no-op (no panic, no network).
-	m.ftcCallback(uuid.New(), uuid.New(), 1, "", "", "", "", "building", "", nil)
+	m.ftcCallback(uuid.New(), uuid.New(), 1, "", "", "", "", "", "building", "", nil)
 }
 
 func TestDownloadZipBlocksLoopback(t *testing.T) {
@@ -605,4 +606,44 @@ func fmtBoolPtr(b *bool) string {
 		return "<not asked>"
 	}
 	return fmt.Sprint(*b)
+}
+
+// Before the release check, CRN rewrites the app's crn.runtime.json with what it
+// owns, so the checker and the image see the same file; without one the build stops.
+func TestReleasePrepFinalizesTheRuntimeFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := releasePrep(dir, nil); err == nil || !strings.Contains(err.Error(), "crn.runtime.json") {
+		t.Fatalf("missing runtime file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "crn.runtime.json"), []byte(`{"env": []}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := releasePrep(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "crn.runtime.json"))
+	if !strings.Contains(string(raw), `"contract": 1`) {
+		t.Fatalf("not finalized:\n%s", raw)
+	}
+	if err := releasePrep(dir, map[string][]byte{"prisma/migrations/1_init/migration.sql": []byte("x")}); err == nil || !strings.Contains(err.Error(), "migration") {
+		t.Fatalf("a rewritten migration must still stop the build: %v", err)
+	}
+}
+
+// The image is labelled with the hash of the runtime file it carries.
+func TestImageLabelsCarryTheRuntimeHash(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "crn.runtime.json"), []byte("{}\n"), 0o644)
+	job := &domain.Job{ID: uuid.New(), ProjectID: uuid.New(), BuildNo: 2}
+	labels, err := imageLabels(dir, job, "8bec6f20d6fe7af3e269ac4c05890cbbd40dbb63")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := buildstep.RuntimeSHA256(dir)
+	if labels["fitt.crn.runtime_sha256"] != want || want == "" {
+		t.Fatalf("labels: %v", labels)
+	}
+	if labels["org.opencontainers.image.revision"] != "8bec6f20d6fe7af3e269ac4c05890cbbd40dbb63" || labels["fitt.crn.schedule"] != "[]" || labels["fitt.crn.build_no"] != "2" {
+		t.Fatalf("labels: %v", labels)
+	}
 }

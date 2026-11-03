@@ -61,6 +61,7 @@ COPY --from=builder --chown=node:node /app/prisma ./prisma
 COPY --from=builder --chown=node:node /app/package.json ./package.json
 COPY --from=builder --chown=node:node /runtime-config/ ./
 COPY --from=builder --chown=node:node /app/crn.schedule.json ./crn.schedule.json
+COPY --from=builder --chown=node:node /app/crn.runtime.json ./crn.runtime.json
 RUN mkdir -p /data/uploads && chown node:node /data/uploads
 RUN printf '#!/bin/sh\nset -eu\nif [ -f prisma/schema.prisma ]; then\n  npm run db:deploy\n  npm run db:seed\nfi\nexec node server.js\n' > /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 USER node
@@ -158,6 +159,9 @@ func NewDemoEnvExample(port int) DemoEnvExample {
 const installMD = `# INSTALL — Customer application
 
 The image contains compiled application output plus database tooling. Supply your own PostgreSQL connection through DATABASE_URL and run docker-compose.customer.yml. The app applies committed migrations with db:deploy and executes db:seed before serving; a failure stops startup.
+
+## What the image needs
+/app/crn.runtime.json in the image lists the port, health check, volumes and every environment variable the app reads (required always, only on the first start, or optional; secret; minimum length). The image label fitt.crn.runtime_sha256 is its SHA-256, so an installer can check the file before using it.
 
 ## First installation
 For a local-account application, supply a unique BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD (at least 16 characters), plus a strong AUTH_SECRET through deployment secrets. No shared password ships. The bootstrap transaction creates the first administrator and a durable completion marker. Existing users are adopted without creation. Change the initial password at first login, then remove the bootstrap variables from deployment.

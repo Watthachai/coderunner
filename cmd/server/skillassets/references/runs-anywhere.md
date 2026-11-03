@@ -21,4 +21,20 @@ Required on every build and edit. The same image is installed on a customer's ow
 3. **State shared across requests** — sessions, rate limits, carts, queues, idempotency keys — lives in the database. Module-level variables are only caches that may be empty on the next request.
 4. **No request runs longer than 5 minutes.** Split long imports, exports and batch updates into steps recorded in the database and continue them from a scheduled job.
 
-The release checker runs the customer image with a read-only root filesystem, writable `/tmp` and `/data/uploads` only, and no Linux capabilities, and validates `crn.schedule.json`. A write anywhere else, or an invalid schedule, fails the release.
+5. **The environment the app reads** is declared in `crn.runtime.json` at the project root, so whoever installs the image can ask for each value without reading the source. Write `{ "env": [ ... ] }` with one entry per variable the app's code reads at run time, including those read by the copied assets (`DATABASE_URL`, `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD`, `CRON_SECRET`, `FITT_STATUS_URL`, `FITT_LICENSE_KEY`):
+
+   ```json
+   { "env": [
+     { "name": "DATABASE_URL", "required": "always", "secret": true },
+     { "name": "AUTH_SECRET", "required": "always", "secret": true, "min_length": 32 },
+     { "name": "BOOTSTRAP_ADMIN_EMAIL", "required": "first_start" },
+     { "name": "BOOTSTRAP_ADMIN_PASSWORD", "required": "first_start", "secret": true, "min_length": 16 },
+     { "name": "ALLOW_INSECURE_COOKIES", "required": "no", "note": "true only when served over plain http" }
+   ] }
+   ```
+
+   - `required` is `always`, `first_start` (needed until the first start succeeds, ignored after) or `no` (the app works without it). `secret` marks values an installer must generate or keep private. `min_length` is the shortest value the app accepts. `note` says in one line when to set it.
+   - Do not declare what the image or platform sets: `NODE_ENV`, `PORT`, `HOSTNAME`, `UPLOAD_DIR`, `CRN_SCHEDULER`, `NEXT_RUNTIME`. CRN adds `FITT_FEEDBACK_URL` itself when the feedback widget is present, and writes `contract`, `migrations_first`, `port`, `health`, `volumes` and `writable`.
+   - Read configuration as `process.env.NAME` (or `env.NAME` with `env = process.env`), never through destructuring or computed names, so the checker can see it. A variable added in an edit is added here in the same change and noted in BUILD_NOTES.
+
+The release checker validates `crn.runtime.json` and refuses a release when app code reads a variable the file does not declare. It runs the customer image with a read-only root filesystem, writable `/tmp` and `/data/uploads` only, and no Linux capabilities, and validates `crn.schedule.json`. A write anywhere else, an invalid schedule or an undeclared variable fails the release.
