@@ -1,0 +1,17 @@
+{
+  "name": "crn-external-tls-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node tests/stub-playwright.mjs",
+    "typecheck": "node -e 0",
+    "test:unit": "node tests/unit.mjs",
+    "test:smoke": "node tests/smoke.mjs",
+    "build": "node -e 0",
+    "start": "node server.mjs",
+    "db:generate": "node -e 0",
+    "db:deploy": "node db/gate.mjs && prisma migrate deploy",
+    "db:seed": "node db/seed.mjs",
+    "db:check": "node db/check.mjs"
+  }
+}

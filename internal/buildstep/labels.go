@@ -29,6 +29,9 @@ type ImageLabels struct {
 	// RuntimeSHA256 is the hash of the crn.runtime.json the image carries
 	// (runtime.go), so an installer can check the file; empty labels nothing.
 	RuntimeSHA256 string
+	// DBMode is how the image reaches its database (ReadDBMode): set only for
+	// "external-tls-only", labelled fitt.db.mode; empty labels nothing.
+	DBMode string
 }
 
 // Map is the labels as docker build takes them. A build pushed without a commit
@@ -47,7 +50,37 @@ func (l ImageLabels) Map() map[string]string {
 	if l.RuntimeSHA256 != "" {
 		m["fitt.crn.runtime_sha256"] = l.RuntimeSHA256
 	}
+	if l.DBMode != "" {
+		m["fitt.db.mode"] = l.DBMode
+	}
 	return m
+}
+
+// ReadDBMode is the app's crn-delivery.json database_mode when it is
+// "external-tls-only" — the image only talks to an external PostgreSQL over TLS
+// (references/delivery-checks.md) — and "" otherwise. The release checker has
+// already validated the file; an unknown mode is refused here too.
+func ReadDBMode(workDir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(workDir, "crn-delivery.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read crn-delivery.json: %w", err)
+	}
+	var d struct {
+		DatabaseMode string `json:"database_mode"`
+	}
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return "", fmt.Errorf("crn-delivery.json: %w", err)
+	}
+	switch d.DatabaseMode {
+	case "", "local":
+		return "", nil
+	case "external-tls-only":
+		return d.DatabaseMode, nil
+	}
+	return "", fmt.Errorf("crn-delivery.json database_mode %q is not local or external-tls-only", d.DatabaseMode)
 }
 
 // ReadSchedule returns the app's crn.schedule.json compacted, or "[]" when the

@@ -1,0 +1,12 @@
+{
+  "env": [
+    { "name": "DATABASE_URL", "required": "always", "secret": true },
+    { "name": "MIGRATION_DATABASE_URL", "required": "always", "secret": true },
+    { "name": "DATABASE_CA_FILE", "required": "always", "note": "fixed path /run/fixture-ca/db-ca.pem (read-only mount)" },
+    { "name": "BOOTSTRAP_ADMIN_EMAIL", "required": "first_start" },
+    { "name": "BOOTSTRAP_ADMIN_PASSWORD", "required": "first_start", "secret": true },
+    { "name": "FITT_STATUS_URL", "required": "no" },
+    { "name": "FITT_LICENSE_KEY", "required": "no", "secret": true },
+    { "name": "FIXTURE_WEAK", "required": "no", "note": "test fixture only: a deliberately broken helper" }
+  ]
+}

@@ -157,3 +157,37 @@ func TestCustomerImageShipsTheRuntimeFile(t *testing.T) {
 		t.Fatal("runner stage does not copy crn.runtime.json to /app")
 	}
 }
+
+// fitt.db.mode tells an installer how the image reaches its database. Only an app
+// that declares external-tls-only in crn-delivery.json gets the label; others keep
+// the labels they had.
+func TestReadDBModeAndItsLabel(t *testing.T) {
+	for _, tc := range []struct{ delivery, want string }{
+		{`{"schema_version":1,"database":true,"database_mode":"external-tls-only","database_ca_file":"/run/fitt-ca/ntc-db-ca.pem"}`, "external-tls-only"},
+		{`{"schema_version":1,"database":true}`, ""},
+		{`{"schema_version":1,"database":true,"database_mode":"local"}`, ""},
+		{"", ""},
+	} {
+		dir := t.TempDir()
+		if tc.delivery != "" {
+			if err := os.WriteFile(filepath.Join(dir, "crn-delivery.json"), []byte(tc.delivery), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := ReadDBMode(dir)
+		if err != nil || got != tc.want {
+			t.Errorf("ReadDBMode(%s) = %q, %v; want %q", tc.delivery, got, err, tc.want)
+		}
+		labels := ImageLabels{ProjectID: "p", JobID: "j", BuildNo: 3, Schedule: "[]", DBMode: got}.Map()
+		if v, ok := labels["fitt.db.mode"]; ok != (tc.want != "") || v != tc.want {
+			t.Errorf("label fitt.db.mode = %q (present %v), want %q", v, ok, tc.want)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "crn-delivery.json"), []byte(`{"database_mode":"plaintext"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDBMode(dir); err == nil {
+		t.Error("an unknown database_mode was accepted")
+	}
+}

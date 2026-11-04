@@ -1221,7 +1221,7 @@ func releasePrep(workDir string, priorMigrations map[string][]byte) error {
 }
 
 // imageLabels are the labels a delivered image carries: project, build, commit,
-// scheduled work, and the hash of its crn.runtime.json.
+// scheduled work, the hash of its crn.runtime.json, and its database mode.
 func imageLabels(workDir string, job *domain.Job, commitSHA string) (map[string]string, error) {
 	schedule, err := buildstep.ReadSchedule(workDir)
 	if err != nil {
@@ -1231,9 +1231,13 @@ func imageLabels(workDir string, job *domain.Job, commitSHA string) (map[string]
 	if err != nil {
 		return nil, err
 	}
+	dbMode, err := buildstep.ReadDBMode(workDir)
+	if err != nil {
+		return nil, err
+	}
 	return buildstep.ImageLabels{
 		ProjectID: job.ProjectID.String(), JobID: job.ID.String(), Commit: commitSHA,
-		BuildNo: job.BuildNo, Schedule: schedule, RuntimeSHA256: runtimeSHA,
+		BuildNo: job.BuildNo, Schedule: schedule, RuntimeSHA256: runtimeSHA, DBMode: dbMode,
 	}.Map(), nil
 }
 

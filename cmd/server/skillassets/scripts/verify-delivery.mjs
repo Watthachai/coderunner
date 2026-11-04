@@ -6,14 +6,20 @@ import { spawn } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+export const DB_MODES = ['local', 'external-tls-only'];
 export function validateContract(contract, pkg, lock, docs) {
   if (contract.schema_version !== 1 || typeof contract.database !== 'boolean') throw new Error('Invalid crn-delivery.json');
+  if (contract.database_mode !== undefined && !DB_MODES.includes(contract.database_mode)) throw new Error(`crn-delivery.json database_mode must be one of ${DB_MODES.join(', ')}`);
+  const tls = contract.database_mode === 'external-tls-only';
+  if (tls && contract.database !== true) throw new Error('database_mode external-tls-only needs "database": true');
+  if (tls && (typeof contract.database_ca_file !== 'string' || !/^\/run\/[A-Za-z0-9._/-]+\.pem$/.test(contract.database_ca_file) || contract.database_ca_file.includes('..'))) throw new Error('database_mode external-tls-only needs database_ca_file, an absolute .pem path under /run/');
+  if (!tls && contract.database_ca_file !== undefined) throw new Error('database_ca_file is only for database_mode external-tls-only');
   for (const key of ['BUILD_NOTES.md', 'TEST_CASES.md', 'PORT_CHECKLIST.md']) {
     if (!docs[key]?.trim()) throw new Error(`Missing or empty ${key}`);
   }
   if (docs['PORT_CHECKLIST.md'].split('\n').some(s => /^\s*[-*]\s*\[ \]/.test(s) && !s.includes('[orphan]'))) throw new Error('Required port checklist items remain open');
   if (!Number.isInteger(lock.lockfileVersion) || lock.lockfileVersion < 2 || !lock.packages?.['']) throw new Error('An npm v2+ lockfile is required');
-  const required = ['typecheck', 'test:unit', 'test:smoke', 'build', 'start', ...(contract.database ? ['db:generate', 'db:deploy', 'db:seed'] : [])];
+  const required = ['typecheck', 'test:unit', 'test:smoke', 'build', 'start', ...(contract.database ? ['db:generate', 'db:deploy', 'db:seed'] : []), ...(tls ? ['db:check'] : [])];
   for (const key of required) if (!pkg.scripts?.[key]) throw new Error(`Missing npm script ${key}`);
   for (const group of ['dependencies', 'devDependencies']) for (const [name, version] of Object.entries(pkg[group] ?? {})) {
     if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error(`Pin an exact version for ${name}`);
@@ -130,47 +136,148 @@ async function firstMigration(cwd) {
   const entries = await fs.readdir(path.join(cwd, 'prisma', 'migrations'), { withFileTypes: true }).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
   return entries.filter(e => e.isDirectory()).map(e => e.name).sort()[0] ?? '';
 }
+// External PostgreSQL over TLS only (crn-delivery.json "database_mode": "external-tls-only",
+// references/delivery-checks.md). The app never talks to a database without TLS:
+// node-postgres (runtime: db:check, seed: db:seed) verifies the server with the CA file in
+// DATABASE_CA_FILE and its IP/name; Prisma's schema engine (migrate: db:deploy) uses
+// sslaccept=strict&sslcert=<CA file>. The checker runs every step against PostgreSQL 17
+// stand-ins it creates with a throwaway CA — never a plaintext database, never a real one.
+export const TLS_SCHEMA = 'crn_verify';
+export const TLS_ROLE = 'crn_app';
+export const TLS_SCRIPTS = { migrate: 'db:deploy', seed: 'db:seed', runtime: 'db:check' };
+export function tlsUrls({ user, password, host, port = 5432, database, schema = TLS_SCHEMA, caFile }) {
+  const base = `postgresql://${user}:${password}@${host}:${port}/${database}?schema=${schema}`;
+  return { runtime: `${base}&sslmode=verify-full`, migration: `${base}&sslmode=require&sslaccept=strict&sslcert=${caFile}` };
+}
+// Every case that must FAIL. tls: the server side is wrong (bad CA, name, expiry, no TLS);
+// gate: the configuration is wrong, so the app must stop before it opens any connection —
+// those point at a tripwire that records every connection it receives.
+export function tlsFailurePlan({ ips, user, password, database, caFile }) {
+  const at = (host, extra = {}) => ({ ...tlsUrls({ user, password, host, database, caFile }), ...extra });
+  const env = u => ({ DATABASE_URL: u.runtime, MIGRATION_DATABASE_URL: u.migration, DATABASE_CA_FILE: caFile });
+  const plan = [];
+  const each = (name, urls, ca, paths = Object.keys(TLS_SCRIPTS), noConnection = false, override = {}) => {
+    for (const path of paths) plan.push({ name, path, script: TLS_SCRIPTS[path], env: { ...env(urls), ...override }, ca, noConnection });
+  };
+  each('wrong CA', at(ips.ok), 'wrong');
+  each('no CA file', at(ips.tripwire), null, ['runtime', 'seed'], true);
+  each('no CA file', at(ips.tripwire), null, ['migrate']);
+  each('IP not in SAN', at(ips.otherName), 'right');
+  each('expired certificate', at(ips.expired), 'right');
+  each('server without TLS', at(ips.plain), 'right');
+  const t = at(ips.tripwire);
+  const swap = (url, from, to) => to === '' ? url.replace(from, '') : url.replace(from, to);
+  each('MIGRATION_DATABASE_URL missing', t, 'right', ['migrate'], true, { MIGRATION_DATABASE_URL: undefined });
+  for (const [label, to] of [['sslmode missing', ''], ['sslmode=prefer', '&sslmode=prefer'], ['sslmode=disable', '&sslmode=disable'], ['sslmode=no-verify', '&sslmode=no-verify']]) {
+    each(`DATABASE_URL ${label}`, t, 'right', ['runtime', 'seed'], true, { DATABASE_URL: swap(t.runtime, '&sslmode=verify-full', to) });
+  }
+  for (const [label, from, to] of [['sslaccept=accept_invalid_certs', 'sslaccept=strict', 'sslaccept=accept_invalid_certs'], ['sslaccept missing', '&sslaccept=strict', ''], ['sslcert missing', `&sslcert=${caFile}`, '']]) {
+    each(`MIGRATION_DATABASE_URL ${label}`, t, 'right', ['migrate'], true, { MIGRATION_DATABASE_URL: swap(t.migration, from, to) });
+  }
+  for (const schema of ['Film-Job', 'a;drop', 'public']) {
+    const bad = at(ips.tripwire);
+    each(`schema ${JSON.stringify(schema)}`, { runtime: bad.runtime.replace(`schema=${TLS_SCHEMA}`, `schema=${encodeURIComponent(schema)}`), migration: bad.migration.replace(`schema=${TLS_SCHEMA}`, `schema=${encodeURIComponent(schema)}`) }, 'right', Object.keys(TLS_SCRIPTS), true);
+  }
+  each('runtime and migration targets differ', t, 'right', ['migrate'], true, { MIGRATION_DATABASE_URL: t.migration.replace(`/${database}?`, `/${database}_other?`) });
+  return plan;
+}
+// What a failure may print: never a credential, a connection URL or its query string.
+export function leaks(output, secrets = []) {
+  const found = [];
+  for (const secret of secrets) if (secret && output.includes(secret)) found.push('a secret value');
+  if (/postgres(?:ql)?:\/\//i.test(output)) found.push('a connection URL');
+  if (/[?&](?:sslmode|sslcert|sslaccept|schema)=/.test(output)) found.push('a URL query string');
+  if (/[A-Za-z0-9_.-]+:[^\s@/]+@[A-Za-z0-9_.-]+:\d+/.test(output)) found.push('user:password@host');
+  return [...new Set(found)];
+}
+export function sanitizedTail(output, secrets = [], length = 300) {
+  let text = output;
+  for (const secret of secrets) if (secret) text = text.split(secret).join('[redacted]');
+  return text.replace(/postgres(?:ql)?:\/\/\S+/gi, '[url]').replace(/\s+/g, ' ').trim().slice(-length);
+}
+// A listener on 5432 that counts the connections it receives (run under node in the image).
+export const TRIPWIRE = `let n=0;require('net').createServer(s=>{n++;console.log('CONNECT '+n);s.destroy()}).listen(5432);`;
 export function isolatedEnvironment(source) {
   // CLI/browser runtime settings only. Never inherit host application credentials.
   const allowed = ['PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'PLAYWRIGHT_BROWSERS_PATH'];
   return Object.fromEntries(allowed.filter(key => source[key] !== undefined).map(key => [key, source[key]]));
 }
-export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new URL('../assets/Dockerfile', import.meta.url))) {
+// Run inside the customer image (WORKDIR /app): the database packages it really ships,
+// and the SHA-256 of every migration file it carries (Prisma's checksum).
+const IMAGE_VERSIONS_JS = `const p=require('path');const v={node:process.version};for(const n of ['pg','pg-connection-string','@prisma/adapter-pg','@prisma/client','prisma','@prisma/engines']){try{v[n]=require(p.join(process.cwd(),'node_modules',n,'package.json')).version}catch{v[n]=null}}console.log(JSON.stringify(v))`;
+const IMAGE_MIGRATIONS_JS = `const fs=require('fs'),c=require('crypto');const d='prisma/migrations';const o={};for(const n of fs.existsSync(d)?fs.readdirSync(d).sort():[]){const f=d+'/'+n+'/migration.sql';if(fs.existsSync(f))o[n]=c.createHash('sha256').update(fs.readFileSync(f)).digest('hex')}console.log(JSON.stringify(o))`;
+// Every object the app owns lives in its schema, owned by its role; nothing in public.
+const ISOLATION_SQL = `SELECT json_build_object(
+ 'public_objects', (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public')
+   + (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typrelid=0 AND t.typelem=0)
+   + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public'),
+ 'journal_in_schema', to_regclass('${TLS_SCHEMA}._prisma_migrations') IS NOT NULL,
+ 'schema_owner', (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='${TLS_SCHEMA}'),
+ 'objects_not_owned_by_app', (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='${TLS_SCHEMA}' AND pg_get_userbyid(c.relowner)<>'${TLS_ROLE}')
+   + (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='${TLS_SCHEMA}' AND t.typrelid=0 AND t.typelem=0 AND pg_get_userbyid(t.typowner)<>'${TLS_ROLE}')
+   + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='${TLS_SCHEMA}' AND pg_get_userbyid(p.proowner)<>'${TLS_ROLE}'),
+ 'objects_by_kind', (SELECT coalesce(json_object_agg(k, v), '{}'::json) FROM (SELECT c.relkind::text k, count(*) v FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='${TLS_SCHEMA}' GROUP BY 1) s),
+ 'journal', (SELECT json_agg(json_build_object('name', migration_name, 'checksum', checksum, 'finished', finished_at IS NOT NULL, 'rolled_back', rolled_back_at IS NOT NULL) ORDER BY migration_name) FROM ${TLS_SCHEMA}._prisma_migrations)
+)`;
+// options.image: run the whole check against an image that already exists (a candidate
+// pushed by CRN) instead of building one, so acceptance runs on the real image.
+export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new URL('../assets/Dockerfile', import.meta.url)), options = {}) {
   const receipt = { schema_version: 1, status: 'failed', checks: [], started_at: new Date().toISOString() };
+  if (options.image) receipt.image = options.image;
   const children = new Set();
-  let stopped = false, dbName, appName, operationName, networkName, imageName, scratch, statusName, switchName;
+  const containers = new Set();
+  let stopped = false, networkName, imageName, scratch;
   const stop = () => { stopped = true; for (const child of children) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } };
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
-  const timeout = setTimeout(stop, 15 * 60_000);
+  let timeout = setTimeout(stop, 15 * 60_000);
   // Do not forward runtime customer credentials to test setup. DB URL and bootstrap
   // values are always isolated below. Other integration tests must use mocks.
   const env = { ...isolatedEnvironment(process.env), CI: '1', NEXT_TELEMETRY_DISABLED: '1', DATABASE_URL: 'postgresql://build:build@127.0.0.1:1/build', AUTH_SECRET: randomBytes(32).toString('hex'), BOOTSTRAP_ADMIN_EMAIL: 'initial@example.test', BOOTSTRAP_ADMIN_PASSWORD: randomBytes(24).toString('hex'), FITT_FEEDBACK_URL: '' };
   env.CRN_TEST_ADMIN_EMAIL = env.BOOTSTRAP_ADMIN_EMAIL;
   env.CRN_TEST_ADMIN_PASSWORD = env.BOOTSTRAP_ADMIN_PASSWORD;
   const secrets = new Set([env.AUTH_SECRET, env.BOOTSTRAP_ADMIN_PASSWORD]);
-  const redact = value => { for (const secret of secrets) value = value.split(secret).join('[redacted]'); return value; };
-  function start(command, args, extra = {}) {
+  const redact = value => { for (const secret of secrets) value = value.split(secret).join('[redacted]'); return value.replace(/postgres(?:ql)?:\/\/\S+/gi, '[url]'); };
+  const childEnv = extra => Object.fromEntries(Object.entries({ ...env, ...extra }).filter(([, v]) => v !== undefined));
+  function start(command, args, extra = {}, input) {
     if (stopped) throw new Error('Verification cancelled or timed out');
-    const child = spawn(command, args, { cwd, env: { ...env, ...extra }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd, env: childEnv(extra), detached: true, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     children.add(child); child.on('close', () => children.delete(child));
+    if (input !== undefined) child.stdin.end(input);
     return child;
   }
-  async function run(label, command, args, extra = {}) {
-    console.error(`CRN verify: ${label}`);
-    const child = start(command, args, extra);
+  // attempt runs a command and reports how it ended; it never fails the check itself.
+  async function attempt(command, args, extra = {}, { input, limitMs = 0, container } = {}) {
+    const child = start(command, args, extra, input);
     let stdout = '', stderr = '';
     child.stdout.on('data', b => { stdout = (stdout + b).slice(-12_000_000); });
     child.stderr.on('data', b => { stderr = (stderr + b).slice(-12000); });
+    let timer;
+    if (limitMs) timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} if (container) spawn('docker', ['rm', '-f', container], { env: isolatedEnvironment(process.env), stdio: 'ignore' }); }, limitMs);
     const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+    clearTimeout(timer);
+    return { code, stdout, stderr, output: stderr + '\n' + stdout };
+  }
+  async function run(label, command, args, extra = {}, input) {
+    console.error(`CRN verify: ${label}`);
+    const { code, stdout, stderr } = await attempt(command, args, extra, { input });
     receipt.checks.push({ name: label, passed: code === 0 });
     if (code !== 0) {
       let detail = (stderr + '\n' + stdout).slice(-3500);
-      for (const [key, value] of Object.entries(env)) if (/SECRET|TOKEN|PASSWORD|KEY|DATABASE_URL/.test(key) && value) detail = detail.split(value).join('[redacted]');
+      for (const [key, value] of Object.entries(env)) if (/SECRET|TOKEN|PASSWORD|KEY|DATABASE_URL|DATABASE_CA_FILE/.test(key) && value) detail = detail.split(value).join('[redacted]');
       throw new Error(`${label} failed (exit ${code}): ${redact(detail)}`);
     }
     return stdout;
   }
+  const check = (name, passed, problem) => { receipt.checks.push({ name, passed }); if (!passed) throw new Error(problem); };
   const npm = (label, script, args = []) => run(label, 'npm', ['--silent', 'run', script, '--', ...args]);
+  const waitReady = async (label, container, user) => {
+    for (let i = 0; i < 60 && !stopped; i++) {
+      const r = await attempt('docker', ['exec', container, 'pg_isready', '-U', user]);
+      if (r.code === 0) { receipt.checks.push({ name: label, passed: true }); return; }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    check(label, false, `${label}: the database did not start`);
+  };
   try {
     await fs.rm(path.join(cwd, 'CRN_VERIFICATION.json'), { force: true });
     receipt.node_version = process.versions.node;
@@ -181,6 +288,14 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     for (const file of ['BUILD_NOTES.md', 'TEST_CASES.md', 'PORT_CHECKLIST.md']) docs[file] = await fs.readFile(path.join(cwd, file), 'utf8');
     validateContract(contract, pkg, lock, docs);
     receipt.checks.push({ name: 'delivery contract', passed: true });
+    const tlsMode = contract.database_mode === 'external-tls-only';
+    receipt.database_mode = contract.database ? (contract.database_mode ?? 'local') : 'none';
+    if (tlsMode) {
+      // Every step talks TLS, the build included: it gets targets of the right shape on a
+      // port nothing listens on, never a plaintext URL.
+      clearTimeout(timeout); timeout = setTimeout(stop, 30 * 60_000);
+      Object.assign(env, { DATABASE_URL: `postgresql://build:build@127.0.0.1:1/build?schema=${TLS_SCHEMA}&sslmode=verify-full`, MIGRATION_DATABASE_URL: `postgresql://build:build@127.0.0.1:1/build?schema=${TLS_SCHEMA}&sslmode=require&sslaccept=strict&sslcert=${contract.database_ca_file}`, DATABASE_CA_FILE: contract.database_ca_file });
+    }
     const schedule = await fs.readFile(path.join(cwd, 'crn.schedule.json'), 'utf8').catch(e => { if (e.code === 'ENOENT') return '[]'; throw e; });
     validateSchedule(JSON.parse(schedule));
     receipt.checks.push({ name: 'schedule', passed: true });
@@ -195,46 +310,163 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     const unitFile = path.join(scratch, 'unit.json');
     await npm('unit tests', 'test:unit', ['--reporter=json', `--outputFile=${unitFile}`]);
     receipt.unit_tests = assertTestResults('unit', JSON.parse(await fs.readFile(unitFile, 'utf8')));
-    await npm('production build without DB', 'build');
-    await fs.access(path.join(cwd, '.next/standalone/server.js'));
     const suffix = randomBytes(8).toString('hex');
-    imageName = `crn-verify:${suffix}`;
+    if (options.image) {
+      imageName = options.image;
+      await run('customer image present', 'docker', ['image', 'inspect', '--format', '{{.Id}}', imageName]);
+    } else {
+      await npm('production build without DB', 'build');
+      await fs.access(path.join(cwd, '.next/standalone/server.js'));
+      imageName = `crn-verify:${suffix}`;
+      const runtimeDockerfile = path.join(scratch, 'Dockerfile');
+      await fs.copyFile(dockerfile, runtimeDockerfile);
+      await fs.writeFile(`${runtimeDockerfile}.dockerignore`, 'node_modules\n.next\n.git\n.env\n.env.*\n.claude\n');
+      await run('build customer runtime image', 'docker', ['build', '--tag', imageName, '--file', runtimeDockerfile, cwd]);
+    }
     networkName = `crn-verify-${suffix}`;
-    const runtimeDockerfile = path.join(scratch, 'Dockerfile');
-    await fs.copyFile(dockerfile, runtimeDockerfile);
-    await fs.writeFile(`${runtimeDockerfile}.dockerignore`, 'node_modules\n.next\n.git\n.env\n.env.*\n.claude\n');
-    await run('build customer runtime image', 'docker', ['build', '--tag', imageName, '--file', runtimeDockerfile, cwd]);
-    await run('isolated runtime network', 'docker', ['network', 'create', networkName]);
-    let runtimeDatabaseURL = '';
-    const runtimeEnv = ['-e', 'DATABASE_URL', '-e', 'AUTH_SECRET', '-e', 'BOOTSTRAP_ADMIN_EMAIL', '-e', 'BOOTSTRAP_ADMIN_PASSWORD'];
-    if (contract.database) {
-      dbName = `crn-verify-db-${suffix}`;
-      const pw = randomBytes(24).toString('hex');
-      secrets.add(pw);
-      await run('start isolated database', 'docker', ['run', '-d', '--name', dbName, '--network', networkName, '--network-alias', 'database', '-e', 'POSTGRES_USER=crn_test', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB=crn_test', '-p', '127.0.0.1::5432', 'postgres:16-alpine'], { POSTGRES_PASSWORD: pw });
-      const binding = (await run('database port', 'docker', ['port', dbName, '5432/tcp'])).trim().split(':').pop();
-      env.DATABASE_URL = `postgresql://crn_test:${pw}@127.0.0.1:${binding}/crn_test?schema=public`;
-      runtimeDatabaseURL = `postgresql://crn_test:${pw}@database:5432/crn_test?schema=public`;
-      let ready = false;
-      for (let i = 0; i < 40 && !stopped; i++) {
-        try { await run('database readiness', 'docker', ['exec', dbName, 'pg_isready', '-U', 'crn_test']); ready = true; break; } catch { await new Promise(r => setTimeout(r, 500)); }
-      }
-      // Failed readiness probes are retries, not failed release checks.
-      receipt.checks = receipt.checks.filter(c => c.name !== 'database readiness' || c.passed);
-      if (!ready) throw new Error('Isolated test database did not start');
-      operationName = `crn-verify-task-${suffix}`;
-      const inImage = (label, script) => run(label, 'docker', ['run', '--rm', '--name', operationName, '--network', networkName, ...HARDENED_RUN, ...runtimeEnv, '--entrypoint', 'npm', imageName, '--silent', 'run', script], { DATABASE_URL: runtimeDatabaseURL });
-      await inImage('apply migrations in customer image', 'db:deploy');
-      await inImage('first-install bootstrap in customer image', 'db:seed');
+    const operationName = `crn-verify-task-${suffix}`;
+    containers.add(operationName);
+    // containerEnv: the values the docker CLI hands to each "-e NAME" in runtimeEnv.
+    let containerEnv = { DATABASE_URL: '' };
+    let runtimeEnv = ['-e', 'DATABASE_URL', '-e', 'AUTH_SECRET', '-e', 'BOOTSTRAP_ADMIN_EMAIL', '-e', 'BOOTSTRAP_ADMIN_PASSWORD'];
+    const inImage = (label, script) => run(label, 'docker', ['run', '--rm', '--name', operationName, '--network', networkName, ...HARDENED_RUN, ...runtimeEnv, '--entrypoint', 'npm', imageName, '--silent', 'run', script], containerEnv);
+    const bootstrapTwice = async () => {
+      const outcomes = [await inImage('first-install bootstrap in customer image', 'db:seed')];
       env.BOOTSTRAP_ADMIN_EMAIL = 'changed@example.test'; env.BOOTSTRAP_ADMIN_PASSWORD = randomBytes(24).toString('hex');
       secrets.add(env.BOOTSTRAP_ADMIN_PASSWORD);
-      await inImage('repeat bootstrap with changed inputs', 'db:seed');
+      outcomes.push(await inImage('repeat bootstrap with changed inputs', 'db:seed'));
       delete env.BOOTSTRAP_ADMIN_EMAIL; delete env.BOOTSTRAP_ADMIN_PASSWORD;
-      await inImage('restart without bootstrap inputs', 'db:seed');
+      outcomes.push(await inImage('restart without bootstrap inputs', 'db:seed'));
+      return outcomes;
+    };
+    if (tlsMode) {
+      // --- PostgreSQL 17 stand-ins on a network of their own, one throwaway CA ---
+      const tlsDir = path.join(scratch, 'tls');
+      const openssl = await attempt('openssl', ['version']);
+      const [major, minor] = (openssl.stdout.match(/OpenSSL (\d+)\.(\d+)/) ?? []).slice(1).map(Number);
+      check('OpenSSL 3.4+ for test certificates', openssl.code === 0 && (major > 3 || (major === 3 && minor >= 4)), 'TLS stand-ins need OpenSSL 3.4 or newer on the build machine');
+      let prefix;
+      for (let i = 0; i < 8 && !prefix; i++) {
+        const candidate = `10.213.${randomBytes(1)[0]}`;
+        if ((await attempt('docker', ['network', 'create', '--subnet', `${candidate}.0/24`, networkName])).code === 0) prefix = candidate;
+      }
+      check('isolated runtime network', !!prefix, 'Could not create a test network for the TLS stand-ins');
+      const ips = { ok: `${prefix}.10`, otherName: `${prefix}.11`, expired: `${prefix}.12`, plain: `${prefix}.13`, tripwire: `${prefix}.14` };
+      const cnf = path.join(tlsDir, 'min.cnf');
+      await fs.mkdir(tlsDir, { recursive: true });
+      await fs.writeFile(cnf, '[req]\ndistinguished_name=dn\n[dn]\n');
+      const ossl = async args => { const r = await attempt('openssl', args, {}, { limitMs: 30_000 }); if (r.code !== 0) throw new Error(`test certificate failed: ${sanitizedTail(r.output, [...secrets])}`); };
+      const key = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes'];
+      for (const d of ['ok', 'wrong', 'otherName', 'expired', 'ca', 'wrongca']) await fs.mkdir(path.join(tlsDir, d));
+      // The production shape: one self-signed certificate is both the server's and the CA.
+      await ossl(['req', '-x509', '-config', cnf, ...key, '-keyout', path.join(tlsDir, 'ok/server.key'), '-out', path.join(tlsDir, 'ok/server.crt'), '-subj', '/CN=crn-verify-db', '-days', '2', '-addext', `subjectAltName=IP:${ips.ok},IP:127.0.0.1`, '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,digitalSignature,keyCertSign']);
+      await ossl(['req', '-x509', '-config', cnf, ...key, '-keyout', path.join(tlsDir, 'wrong/server.key'), '-out', path.join(tlsDir, 'wrong/server.crt'), '-subj', '/CN=crn-verify-db', '-days', '2', '-addext', `subjectAltName=IP:${ips.ok},IP:127.0.0.1`, '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,digitalSignature,keyCertSign']);
+      const leaf = async (dir, san, validity) => {
+        await ossl(['req', '-new', '-config', cnf, ...key, '-keyout', path.join(tlsDir, dir, 'server.key'), '-out', path.join(tlsDir, dir, 'server.csr'), '-subj', '/CN=crn-verify-db']);
+        await fs.writeFile(path.join(tlsDir, dir, 'ext'), `subjectAltName=${san}\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth\n`);
+        await ossl(['x509', '-req', '-in', path.join(tlsDir, dir, 'server.csr'), '-CA', path.join(tlsDir, 'ok/server.crt'), '-CAkey', path.join(tlsDir, 'ok/server.key'), '-set_serial', `0x${randomBytes(8).toString('hex')}`, ...validity, '-extfile', path.join(tlsDir, dir, 'ext'), '-out', path.join(tlsDir, dir, 'server.crt')]);
+      };
+      await leaf('otherName', 'IP:192.0.2.1', ['-days', '2']);
+      await leaf('expired', `IP:${ips.expired}`, ['-not_before', '20250101000000Z', '-not_after', '20250201000000Z']);
+      const caFile = path.join(tlsDir, 'ca/ca.pem'), wrongCaFile = path.join(tlsDir, 'wrongca/ca.pem');
+      await fs.copyFile(path.join(tlsDir, 'ok/server.crt'), caFile);
+      await fs.copyFile(path.join(tlsDir, 'wrong/server.crt'), wrongCaFile);
+      receipt.checks.push({ name: 'TLS test certificates', passed: true });
+      const adminPw = randomBytes(24).toString('hex'), appPw = randomBytes(24).toString('hex'), matrixPw = randomBytes(24).toString('hex');
+      for (const s of [adminPw, appPw, matrixPw]) secrets.add(s);
+      const standIns = [
+        { role: 'TLS server', ip: ips.ok, certs: 'ok', publish: true, san: [ips.ok, '127.0.0.1'] },
+        { role: 'certificate without this IP in its SAN', ip: ips.otherName, certs: 'otherName', san: ['192.0.2.1'] },
+        { role: 'expired certificate', ip: ips.expired, certs: 'expired', san: [ips.expired] },
+        { role: 'no TLS', ip: ips.plain, certs: null, san: [] },
+      ];
+      for (const s of standIns) {
+        s.name = `crn-verify-pg-${s.certs ?? 'plain'}-${suffix}`;
+        containers.add(s.name);
+        const args = ['run', '-d', '--name', s.name, '--network', networkName, '--ip', s.ip, '-e', 'POSTGRES_USER=crn_admin', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB=postgres', ...(s.publish ? ['-p', '127.0.0.1::5432'] : [])];
+        if (s.certs) args.push('-v', `${path.join(tlsDir, s.certs)}:/certs-ro:ro`, '--entrypoint', 'sh', 'postgres:17-alpine', '-c', 'mkdir -p /tmp/certs && cp /certs-ro/server.crt /certs-ro/server.key /tmp/certs/ && chown postgres:postgres /tmp/certs/server.crt /tmp/certs/server.key && chmod 600 /tmp/certs/server.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/certs/server.crt -c ssl_key_file=/tmp/certs/server.key');
+        else args.push('postgres:17-alpine');
+        await run(`start PostgreSQL 17 stand-in (${s.role})`, 'docker', args, { POSTGRES_PASSWORD: adminPw });
+      }
+      for (const s of standIns) await waitReady(`stand-in ready (${s.role})`, s.name, 'crn_admin');
+      const main = standIns[0].name;
+      const tripwireName = `crn-verify-tripwire-${suffix}`;
+      containers.add(tripwireName);
+      await run('start connection tripwire', 'docker', ['run', '-d', '--name', tripwireName, '--network', networkName, '--ip', ips.tripwire, ...HARDENED_RUN, '--entrypoint', 'node', imageName, '-e', TRIPWIRE]);
+      const tripwireCount = async () => ((await attempt('docker', ['logs', tripwireName])).stdout.match(/^CONNECT /gm) ?? []).length;
+      // The app's own role: not a superuser, a connection limit like the customer's.
+      await run('create application role and database on the stand-in', 'docker', ['exec', '-i', main, 'psql', '-U', 'crn_admin', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q'], {},
+        `CREATE ROLE ${TLS_ROLE} LOGIN PASSWORD '${appPw}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 20;\nCREATE DATABASE ${TLS_SCHEMA} OWNER ${TLS_ROLE};\n`);
+      const serverVersion = (await run('stand-in server version', 'docker', ['exec', main, 'psql', '-U', 'crn_admin', '-d', 'postgres', '-Atc', 'show server_version'])).trim();
+      const pgImage = (await attempt('docker', ['image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'postgres:17-alpine'])).stdout.trim();
+      check('stand-in is PostgreSQL 17', /^17\./.test(serverVersion), `The stand-in runs PostgreSQL ${serverVersion}, not 17`);
+      receipt.external_tls = {
+        attestation: 'Every database this check used is a container it created on its own network, with a CA it generated; no other host, credential or CA was given to the app.',
+        stand_ins: standIns.map(s => ({ role: s.role, ip: s.ip, tls: !!s.certs, san: s.san, image: pgImage, server_version: serverVersion })),
+        tripwire: { ip: ips.tripwire, purpose: 'counts connections; configuration errors must leave it at zero' },
+        schema: TLS_SCHEMA, app_role: TLS_ROLE, ca_mount: contract.database_ca_file,
+      };
+      const port = (await run('database port', 'docker', ['port', main, '5432/tcp'])).trim().split(':').pop();
+      const hostUrls = tlsUrls({ user: TLS_ROLE, password: appPw, host: '127.0.0.1', port, database: TLS_SCHEMA, caFile });
+      Object.assign(env, { DATABASE_URL: hostUrls.runtime, MIGRATION_DATABASE_URL: hostUrls.migration, DATABASE_CA_FILE: caFile });
+      const urls = tlsUrls({ user: TLS_ROLE, password: appPw, host: ips.ok, database: TLS_SCHEMA, caFile: contract.database_ca_file });
+      containerEnv = { DATABASE_URL: urls.runtime, MIGRATION_DATABASE_URL: urls.migration, DATABASE_CA_FILE: contract.database_ca_file };
+      runtimeEnv = ['-e', 'DATABASE_URL', '-e', 'MIGRATION_DATABASE_URL', '-e', 'DATABASE_CA_FILE', '-v', `${caFile}:${contract.database_ca_file}:ro`, '-e', 'AUTH_SECRET', '-e', 'BOOTSTRAP_ADMIN_EMAIL', '-e', 'BOOTSTRAP_ADMIN_PASSWORD'];
+      receipt.external_tls.versions = JSON.parse((await run('database packages in the image', 'docker', ['run', '--rm', ...HARDENED_RUN, '--entrypoint', 'node', imageName, '-e', IMAGE_VERSIONS_JS])).trim().split('\n').pop());
+      // --- the paths that must work: migrate, seed, runtime ---
+      await inImage('apply migrations in customer image (TLS)', 'db:deploy');
+      const outcomes = await bootstrapTwice();
+      check('seed reports already-complete once bootstrapped', outcomes.slice(1).every(o => o.includes('already-complete')), 'A repeated seed must print already-complete (contract §5)');
+      const who = JSON.parse((await inImage('runtime connection check (db:check, TLS)', 'db:check')).trim().split('\n').pop());
+      receipt.external_tls.runtime_identity = who;
+      check('runtime connects as the app role in its schema', who.current_user === TLS_ROLE && who.current_schema === TLS_SCHEMA, `db:check reported user ${who.current_user} and schema ${who.current_schema}, want ${TLS_ROLE} and ${TLS_SCHEMA}`);
+      const isolation = JSON.parse((await run('schema isolation query', 'docker', ['exec', main, 'psql', '-U', 'crn_admin', '-d', TLS_SCHEMA, '-Atc', ISOLATION_SQL])).trim());
+      receipt.external_tls.isolation = isolation;
+      check('schema isolation', isolation.public_objects === 0 && isolation.journal_in_schema && isolation.schema_owner === TLS_ROLE && isolation.objects_not_owned_by_app === 0, `Schema isolation: ${JSON.stringify({ public_objects: isolation.public_objects, journal_in_schema: isolation.journal_in_schema, schema_owner: isolation.schema_owner, objects_not_owned_by_app: isolation.objects_not_owned_by_app })}`);
+      const files = JSON.parse((await run('migration files in the image', 'docker', ['run', '--rm', ...HARDENED_RUN, '--entrypoint', 'node', imageName, '-e', IMAGE_MIGRATIONS_JS])).trim().split('\n').pop());
+      const journal = isolation.journal ?? [];
+      receipt.external_tls.migrations = { files, journal };
+      check('migration journal matches the image', JSON.stringify(journal.map(j => j.name)) === JSON.stringify(Object.keys(files)) && journal.every(j => j.finished && !j.rolled_back && j.checksum === files[j.name]), 'The migration journal must hold exactly the image\'s migrations, finished, with their file checksums');
+      // --- the cases that must fail, each through migrate, seed and runtime ---
+      const matrix = [];
+      const plan = tlsFailurePlan({ ips, user: TLS_ROLE, password: appPw, database: TLS_SCHEMA, caFile: contract.database_ca_file });
+      for (const [i, c] of plan.entries()) {
+        if (stopped) throw new Error('Verification cancelled or timed out');
+        const name = `${operationName}-m${i}`;
+        containers.add(name);
+        const before = c.noConnection ? await tripwireCount() : 0;
+        const mount = c.ca === 'right' ? ['-v', `${caFile}:${contract.database_ca_file}:ro`] : c.ca === 'wrong' ? ['-v', `${wrongCaFile}:${contract.database_ca_file}:ro`] : [];
+        console.error(`CRN verify: must fail — ${c.name} (${c.path})`);
+        const r = await attempt('docker', ['run', '--rm', '--name', name, '--network', networkName, ...HARDENED_RUN, '-e', 'DATABASE_URL', '-e', 'MIGRATION_DATABASE_URL', '-e', 'DATABASE_CA_FILE', '-e', 'AUTH_SECRET', '-e', 'BOOTSTRAP_ADMIN_EMAIL', '-e', 'BOOTSTRAP_ADMIN_PASSWORD', ...mount, '--entrypoint', 'npm', imageName, '--silent', 'run', c.script],
+          { ...c.env, BOOTSTRAP_ADMIN_EMAIL: 'matrix@example.test', BOOTSTRAP_ADMIN_PASSWORD: matrixPw }, { limitMs: 120_000, container: name });
+        const connections = c.noConnection ? (await tripwireCount()) - before : null;
+        const leaked = leaks(r.output, [...secrets]);
+        const ok = r.code !== 0 && (!c.noConnection || connections === 0) && leaked.length === 0;
+        matrix.push({ case: c.name, path: c.path, expected: 'fail', result: r.code === 0 ? 'passed' : 'failed', exit: r.code, connections, leaks: leaked, ok, error: sanitizedTail(r.output, [...secrets]) });
+      }
+      receipt.external_tls.must_fail = matrix;
+      const wrong = matrix.filter(m => !m.ok);
+      check('TLS and configuration failure matrix (runtime, seed, migrate)', wrong.length === 0, `Cases that did not fail as required: ${wrong.map(m => `${m.case} (${m.path}): ${m.result === 'passed' ? 'succeeded' : m.leaks.length ? `printed ${m.leaks.join(', ')}` : `opened ${m.connections} connection(s)`}`).join('; ')}`);
+    } else {
+      await run('isolated runtime network', 'docker', ['network', 'create', networkName]);
+      if (contract.database) {
+        const dbName = `crn-verify-db-${suffix}`;
+        containers.add(dbName);
+        const pw = randomBytes(24).toString('hex');
+        secrets.add(pw);
+        await run('start isolated database', 'docker', ['run', '-d', '--name', dbName, '--network', networkName, '--network-alias', 'database', '-e', 'POSTGRES_USER=crn_test', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB=crn_test', '-p', '127.0.0.1::5432', 'postgres:16-alpine'], { POSTGRES_PASSWORD: pw });
+        const binding = (await run('database port', 'docker', ['port', dbName, '5432/tcp'])).trim().split(':').pop();
+        env.DATABASE_URL = `postgresql://crn_test:${pw}@127.0.0.1:${binding}/crn_test?schema=public`;
+        containerEnv = { DATABASE_URL: `postgresql://crn_test:${pw}@database:5432/crn_test?schema=public` };
+        await waitReady('database readiness', dbName, 'crn_test');
+        await inImage('apply migrations in customer image', 'db:deploy');
+        await bootstrapTwice();
+      }
     }
     await run('browser installation', 'node', ['node_modules/@playwright/test/cli.js', 'install', 'chromium']);
-    appName = `crn-verify-app-${suffix}`;
-    await run('start customer image', 'docker', ['run', '-d', '--name', appName, '--network', networkName, '-p', '127.0.0.1::3000', ...HARDENED_RUN, ...runtimeEnv, imageName], { DATABASE_URL: runtimeDatabaseURL });
+    const appName = `crn-verify-app-${suffix}`;
+    containers.add(appName);
+    await run('start customer image', 'docker', ['run', '-d', '--name', appName, '--network', networkName, '-p', '127.0.0.1::3000', ...HARDENED_RUN, ...runtimeEnv, imageName], containerEnv);
     const port = (await run('application port', 'docker', ['port', appName, '3000/tcp'])).trim().split(':').pop();
     env.CRN_BASE_URL = `http://127.0.0.1:${port}`;
     let ready = false;
@@ -245,11 +477,13 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     if (!ready) throw new Error(`Customer image did not become ready: ${redact((await run('startup logs', 'docker', ['logs', '--tail', '30', appName])).slice(-3500))}`);
     const browser = await npm('browser smoke tests', 'test:smoke', ['--reporter=json', '--workers=1', '--retries=0']);
     receipt.browser_tests = assertTestResults('browser', JSON.parse(browser));
-    statusName = `crn-verify-status-${suffix}`;
+    const statusName = `crn-verify-status-${suffix}`;
+    containers.add(statusName);
     await run('start fake status server', 'docker', ['run', '-d', '--name', statusName, '--network', networkName, '--network-alias', 'fitt-status', '--entrypoint', 'node', imageName, '-e', FAKE_STATUS_SERVER]);
     for (const wanted of ['suspended', 'active']) {
-      switchName = `crn-verify-switch-${suffix}`;
-      await run(`start customer image while ${wanted}`, 'docker', ['run', '-d', '--name', switchName, '--network', networkName, '-p', '127.0.0.1::3000', ...HARDENED_RUN, ...runtimeEnv, '-e', `FITT_STATUS_URL=http://fitt-status:8080/${wanted}`, '-e', `FITT_LICENSE_KEY=${SWITCH_TEST_KEY}`, imageName], { DATABASE_URL: runtimeDatabaseURL });
+      const switchName = `crn-verify-switch-${suffix}`;
+      containers.add(switchName);
+      await run(`start customer image while ${wanted}`, 'docker', ['run', '-d', '--name', switchName, '--network', networkName, '-p', '127.0.0.1::3000', ...HARDENED_RUN, ...runtimeEnv, '-e', `FITT_STATUS_URL=http://fitt-status:8080/${wanted}`, '-e', `FITT_LICENSE_KEY=${SWITCH_TEST_KEY}`, imageName], containerEnv);
       const switchBase = `http://127.0.0.1:${(await run('switch application port', 'docker', ['port', switchName, '3000/tcp'])).trim().split(':').pop()}`;
       let verdict = `The customer image did not answer while ${wanted}`;
       for (let i = 0; i < 60 && !stopped; i++) {
@@ -265,7 +499,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
       receipt.checks.push({ name: `suspension switch while ${wanted}`, passed: !verdict });
       if (verdict) throw new Error(verdict);
       await run(`stop customer image while ${wanted}`, 'docker', ['rm', '-f', switchName]);
-      switchName = undefined;
+      containers.delete(switchName);
     }
     if (stopped) throw new Error('Verification cancelled or timed out');
     receipt.status = 'passed';
@@ -273,17 +507,22 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
   finally {
     stop(); clearTimeout(timeout); process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
     const cleanup = args => new Promise(resolve => { const c = spawn('docker', args, { env: isolatedEnvironment(process.env), stdio: 'ignore', timeout: 8000, killSignal: 'SIGKILL' }); c.on('error', resolve); c.on('close', resolve); });
-    const containers = [appName, switchName, statusName, operationName, dbName].filter(Boolean);
-    if (containers.length) await cleanup(['rm', '-f', ...containers]);
-    await Promise.all([networkName && cleanup(['network', 'rm', networkName]), imageName && cleanup(['image', 'rm', '-f', imageName])]);
+    if (containers.size) await cleanup(['rm', '-f', ...containers]);
+    await Promise.all([networkName && cleanup(['network', 'rm', networkName]), imageName && !options.image && cleanup(['image', 'rm', '-f', imageName])]);
     if (scratch) await fs.rm(scratch, { recursive: true, force: true });
     receipt.finished_at = new Date().toISOString();
     await fs.writeFile(path.join(cwd, 'CRN_VERIFICATION.json'), JSON.stringify(receipt, null, 2) + '\n');
   }
   return receipt;
 }
+// node verify-delivery.mjs <Dockerfile> [--image <ref>]
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  const result = await verify(process.cwd(), process.argv[2]);
+  const args = process.argv.slice(2);
+  const at = args.indexOf('--image');
+  const image = at >= 0 ? args[at + 1] : undefined;
+  if (at >= 0 && !image) throw new Error('--image needs an image reference');
+  const dockerfile = (at >= 0 ? args.filter((_, i) => i !== at && i !== at + 1) : args)[0];
+  const result = await verify(process.cwd(), dockerfile, { image });
   console.log(JSON.stringify(result));
   process.exitCode = result.status === 'passed' ? 0 : 1;
 }
