@@ -647,3 +647,23 @@ func TestImageLabelsCarryTheRuntimeHash(t *testing.T) {
 		t.Fatalf("labels: %v", labels)
 	}
 }
+
+// An edit of a project built before crn.runtime.json existed must add it, or
+// the release gate refuses the build after the agent has finished.
+func TestEditPromptAsksForTheRuntimeFileAndANarrowEdit(t *testing.T) {
+	p := editPrompt("Rename the sidebar label")
+	for _, want := range []string{
+		"fitt-build skill",
+		"crn.runtime.json",
+		"only the variables the app already reads",
+		"Keep the edit to what the change asks",
+		"Rename the sidebar label",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("edit prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if !strings.HasSuffix(p, "\n\nRename the sidebar label") {
+		t.Errorf("the change must end the prompt:\n%s", p)
+	}
+}

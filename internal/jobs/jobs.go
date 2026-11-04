@@ -569,9 +569,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			}
 		}
 
-		claudePrompt = "You are editing an existing project in the current directory. " +
-			"Use the fitt-build skill and its delivery checks for this edit. Preserve migration history, accounts and customer data. " +
-			"Apply this change and keep everything else working:\n\n" + spec.Change
+		claudePrompt = editPrompt(spec.Change)
 
 		// Resume the project's last Claude session so the edit has full context.
 		sid, err := m.store.LastSessionID(ctx, job.ProjectID)
@@ -1191,6 +1189,18 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 // migrations must be untouched, and the app's crn.runtime.json is rewritten with
 // what CRN owns (and the widget's variable), so the checker validates the very
 // file the image will carry. Either failing stops the build.
+// editPrompt is what an edit build asks of the agent, which resumes the
+// project's last session and so may carry rules older than the current skill.
+// A project built before crn.runtime.json existed must add it here, or the
+// release gate refuses the build after the agent has finished.
+func editPrompt(change string) string {
+	return "You are editing an existing project in the current directory. " +
+		"Use the fitt-build skill and its delivery checks for this edit. Preserve migration history, accounts and customer data. " +
+		"If the project has no crn.runtime.json yet, add it as the skill's references/runs-anywhere.md says, declaring only the variables the app already reads. " +
+		"Keep the edit to what the change asks: no unrelated refactors, dependency, schema or migration changes unless the change needs them. " +
+		"Apply this change and keep everything else working:\n\n" + change
+}
+
 func releasePrep(workDir string, priorMigrations map[string][]byte) error {
 	if err := buildstep.CheckMigrationHistory(workDir, priorMigrations); err != nil {
 		return err
