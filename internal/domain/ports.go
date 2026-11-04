@@ -68,6 +68,11 @@ type Store interface {
 	// Global FIFO order means no org starves another. This is the dispatcher's
 	// only queue read.
 	NextRunnableJob(ctx context.Context) (*Job, error)
+	// FreezeProject lets no queued job of the project run except allowJob,
+	// until UnfreezeProject. Other queued jobs wait; nothing is failed.
+	FreezeProject(ctx context.Context, id uuid.UUID, reason string, allowJob uuid.UUID) error
+	// UnfreezeProject lifts a freeze; a project that is not frozen is a no-op.
+	UnfreezeProject(ctx context.Context, id uuid.UUID) error
 	// NextQueuedJobForProject returns the project's oldest queued job, or
 	// (nil, nil) when it has none. Status read model only — it ignores whether
 	// the project is already building.
@@ -233,6 +238,10 @@ type JobManager interface {
 	// Enqueue records a new job (status=queued) and, if the org is idle, kicks
 	// off processing asynchronously. Returns the created job (with build_no).
 	Enqueue(ctx context.Context, projectID, orgID uuid.UUID, payload []byte) (*Job, error)
+
+	// EnqueueWith is Enqueue with the operator's choices for this one job: an
+	// id allocated in advance and/or the rehearsal switch (no FTC DV callbacks).
+	EnqueueWith(ctx context.Context, projectID, orgID uuid.UUID, payload []byte, opts EnqueueOptions) (*Job, error)
 
 	// HandleTrigger is invoked when FTC DV signals a queued job exists. It
 	// attempts to start the next queued job for the org, respecting the lock.

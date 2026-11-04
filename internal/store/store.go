@@ -221,19 +221,19 @@ func (s *pgStore) SetProjectBuildCache(ctx context.Context, projectID uuid.UUID,
 // CreateJob inserts a job and reads back DB-generated columns.
 func (s *pgStore) CreateJob(ctx context.Context, j *domain.Job) error {
 	const q = `
-		INSERT INTO project_jobs (id, project_id, org_id, status, build_no, payload)
+		INSERT INTO project_jobs (id, project_id, org_id, status, build_no, payload, rehearsal)
 		VALUES (
 			COALESCE(NULLIF($1, '00000000-0000-0000-0000-000000000000'::uuid), gen_random_uuid()),
 			$2, $3,
 			COALESCE(NULLIF($4, ''), 'queued'),
-			$5, $6
+			$5, $6, $7
 		)
 		RETURNING id, project_id, org_id, status, build_no,
 		          payload,
 		          COALESCE(session_id, ''), COALESCE(docker_tag, ''), COALESCE(error_msg, ''),
-		          queued_at, started_at, finished_at`
+		          queued_at, started_at, finished_at, rehearsal`
 	row := s.pool.QueryRow(ctx, q,
-		j.ID, j.ProjectID, j.OrgID, string(j.Status), j.BuildNo, []byte(j.Payload),
+		j.ID, j.ProjectID, j.OrgID, string(j.Status), j.BuildNo, []byte(j.Payload), j.Rehearsal,
 	)
 	return scanJob(row, j)
 }
@@ -244,7 +244,7 @@ func (s *pgStore) GetJob(ctx context.Context, id uuid.UUID) (*domain.Job, error)
 		SELECT id, project_id, org_id, status, build_no,
 		       payload,
 		       COALESCE(session_id, ''), COALESCE(docker_tag, ''), COALESCE(error_msg, ''),
-		       queued_at, started_at, finished_at
+		       queued_at, started_at, finished_at, rehearsal
 		FROM project_jobs WHERE id = $1`
 	j := &domain.Job{}
 	if err := scanJob(s.pool.QueryRow(ctx, q, id), j); err != nil {
@@ -261,7 +261,7 @@ func (s *pgStore) JobByBuildNo(ctx context.Context, projectID uuid.UUID, buildNo
 		SELECT id, project_id, org_id, status, build_no,
 		       payload,
 		       COALESCE(session_id, ''), COALESCE(docker_tag, ''), COALESCE(error_msg, ''),
-		       queued_at, started_at, finished_at
+		       queued_at, started_at, finished_at, rehearsal
 		FROM project_jobs WHERE project_id = $1 AND build_no = $2
 		ORDER BY queued_at DESC LIMIT 1`
 	j := &domain.Job{}
@@ -320,7 +320,7 @@ func (s *pgStore) FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*dom
 			error_msg = $1,
 			finished_at = now()
 		WHERE status = 'building'
-		RETURNING id, org_id, build_no, COALESCE(docker_tag, '')`
+		RETURNING id, org_id, build_no, COALESCE(docker_tag, ''), rehearsal`
 	rows, err := s.pool.Query(ctx, q, errMsg)
 	if err != nil {
 		return nil, mapErr(err, "store: fail orphaned builds")
@@ -330,7 +330,7 @@ func (s *pgStore) FailOrphanedBuilds(ctx context.Context, errMsg string) ([]*dom
 	var jobs []*domain.Job
 	for rows.Next() {
 		j := &domain.Job{Status: domain.JobFailed, ErrorMsg: errMsg}
-		if err := rows.Scan(&j.ID, &j.OrgID, &j.BuildNo, &j.DockerTag); err != nil {
+		if err := rows.Scan(&j.ID, &j.OrgID, &j.BuildNo, &j.DockerTag, &j.Rehearsal); err != nil {
 			return nil, mapErr(err, "store: scan orphaned build")
 		}
 		jobs = append(jobs, j)
@@ -390,12 +390,17 @@ func (s *pgStore) NextRunnableJob(ctx context.Context) (*domain.Job, error) {
 		SELECT j.id, j.project_id, j.org_id, j.status, j.build_no,
 		       j.payload,
 		       COALESCE(j.session_id, ''), COALESCE(j.docker_tag, ''), COALESCE(j.error_msg, ''),
-		       j.queued_at, j.started_at, j.finished_at
+		       j.queued_at, j.started_at, j.finished_at, j.rehearsal
 		FROM project_jobs j
 		WHERE j.status = 'queued'
 		  AND NOT EXISTS (
 		      SELECT 1 FROM project_jobs b
 		      WHERE b.project_id = j.project_id AND b.status = 'building'
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM projects p
+		      WHERE p.id = j.project_id AND p.frozen_reason IS NOT NULL
+		        AND p.frozen_allow_job IS DISTINCT FROM j.id
 		  )
 		ORDER BY j.queued_at ASC
 		LIMIT 1`
@@ -410,6 +415,35 @@ func (s *pgStore) NextRunnableJob(ctx context.Context) (*domain.Job, error) {
 	return j, nil
 }
 
+// FreezeProject lets no queued job of the project run except allowJob (see
+// NextRunnableJob) until UnfreezeProject. It refuses an unknown project.
+func (s *pgStore) FreezeProject(ctx context.Context, id uuid.UUID, reason string, allowJob uuid.UUID) error {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE projects SET frozen_reason = $2, frozen_allow_job = $3, frozen_at = now()
+		WHERE id = $1`, id, reason, allowJob)
+	if err != nil {
+		return mapErr(err, "store: freeze project")
+	}
+	if ct.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// UnfreezeProject lifts a freeze; a project that is not frozen is a no-op.
+func (s *pgStore) UnfreezeProject(ctx context.Context, id uuid.UUID) error {
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE projects SET frozen_reason = NULL, frozen_allow_job = NULL, frozen_at = NULL
+		WHERE id = $1`, id)
+	if err != nil {
+		return mapErr(err, "store: unfreeze project")
+	}
+	if ct.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 // NextQueuedJobForProject returns the project's oldest queued job, or
 // (nil, nil) when it has none. This is the status read model — unlike
 // NextRunnableJob it does not care whether the project is already building.
@@ -418,7 +452,7 @@ func (s *pgStore) NextQueuedJobForProject(ctx context.Context, projectID uuid.UU
 		SELECT id, project_id, org_id, status, build_no,
 		       payload,
 		       COALESCE(session_id, ''), COALESCE(docker_tag, ''), COALESCE(error_msg, ''),
-		       queued_at, started_at, finished_at
+		       queued_at, started_at, finished_at, rehearsal
 		FROM project_jobs
 		WHERE project_id = $1 AND status = 'queued'
 		ORDER BY queued_at ASC
@@ -1434,7 +1468,7 @@ func scanJob(r scannable, j *domain.Job) error {
 		&j.ID, &j.ProjectID, &j.OrgID, &status, &j.BuildNo,
 		&payload,
 		&j.SessionID, &j.DockerTag, &j.ErrorMsg,
-		&j.QueuedAt, &j.StartedAt, &j.FinishedAt,
+		&j.QueuedAt, &j.StartedAt, &j.FinishedAt, &j.Rehearsal,
 	); err != nil {
 		return mapErr(err, "store: scan job")
 	}

@@ -192,6 +192,8 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 	// project — Claude edits the project's existing repo instead of rebuilding
 	// from a zip.
 	r.Post("/internal/projects/{id}/edit", s.handleEditProject)
+	r.Put("/internal/projects/{id}/freeze", s.handleFreezeProject)
+	r.Delete("/internal/projects/{id}/freeze", s.handleUnfreezeProject)
 
 	// No-auth GitHub issues for a project (only meaningful under the "one repo per
 	// project" model, i.e. CRN_GITHUB_OWNER set). List the project repo's open
@@ -1091,6 +1093,11 @@ type editProjectBody struct {
 	// FeedbackWidget, when given, turns the 💬 widget on or off for this edit;
 	// absent keeps the project as it is.
 	FeedbackWidget *bool `json:"feedback_widget,omitempty"`
+	// JobID, when given, is the id the job is created with: an operator
+	// allocates it in advance (e.g. to freeze the project for exactly this job).
+	JobID string `json:"job_id,omitempty"`
+	// Rehearsal marks this one job as a rehearsal: it never reports to FTC DV.
+	Rehearsal bool `json:"rehearsal,omitempty"`
 }
 
 // editPayload is the edit build payload the jobs layer decodes: mode=edit routes
@@ -1136,6 +1143,17 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var opts domain.EnqueueOptions
+	if body.JobID != "" {
+		id, err := uuid.Parse(body.JobID)
+		if err != nil || id == uuid.Nil {
+			s.writeError(w, r, http.StatusBadRequest, "job_id must be a uuid")
+			return
+		}
+		opts.JobID = id
+	}
+	opts.Rehearsal = body.Rehearsal
+
 	payload, err := editPayload(body.Change, project.Name, body.FeedbackWidget)
 	if err != nil {
 		s.logger.Error("marshal edit payload failed", "err", err, "project_id", projectID)
@@ -1143,7 +1161,12 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := s.jm.Enqueue(r.Context(), project.ID, project.OrgID, payload)
+	var job *domain.Job
+	if opts == (domain.EnqueueOptions{}) {
+		job, err = s.jm.Enqueue(r.Context(), project.ID, project.OrgID, payload)
+	} else {
+		job, err = s.jm.EnqueueWith(r.Context(), project.ID, project.OrgID, payload, opts)
+	}
 	if err != nil {
 		s.logger.Error("enqueue edit job failed", "err", err, "project_id", projectID)
 		s.writeError(w, r, http.StatusInternalServerError, "could not enqueue build")
@@ -1155,7 +1178,66 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 		"build_no":   job.BuildNo,
 		"git_branch": "crn/" + branchSlug(project.Name) + "-" + project.ID.String()[:8],
 		"status":     job.Status,
+		"rehearsal":  job.Rehearsal,
 	})
+}
+
+// freezeBody is the PUT /internal/projects/{id}/freeze payload.
+type freezeBody struct {
+	Reason     string `json:"reason"`
+	AllowJobID string `json:"allow_job_id"`
+}
+
+// handleFreezeProject lets no queued job of the project run except the one the
+// freeze allows, until DELETE /internal/projects/{id}/freeze. Its other queued
+// jobs wait; none is failed, so nothing reports to FTC DV.
+func (s *server) handleFreezeProject(w http.ResponseWriter, r *http.Request) {
+	projectID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	var body freezeBody
+	if err := decodeJSON(r, &body); err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	allow, err := uuid.Parse(body.AllowJobID)
+	if strings.TrimSpace(body.Reason) == "" || err != nil || allow == uuid.Nil {
+		s.writeError(w, r, http.StatusBadRequest, "reason and allow_job_id (a uuid) are required")
+		return
+	}
+	if err := s.store.FreezeProject(r.Context(), projectID, body.Reason, allow); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "project not found")
+			return
+		}
+		s.logger.Error("freeze project failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not freeze project")
+		return
+	}
+	s.logger.Info("project frozen", "project_id", projectID, "allow_job_id", allow, "reason", body.Reason)
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"project_id": projectID, "frozen": true, "allow_job_id": allow, "reason": body.Reason})
+}
+
+// handleUnfreezeProject lifts a project's freeze.
+func (s *server) handleUnfreezeProject(w http.ResponseWriter, r *http.Request) {
+	projectID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, "invalid project id")
+		return
+	}
+	if err := s.store.UnfreezeProject(r.Context(), projectID); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			s.writeError(w, r, http.StatusNotFound, "project not found")
+			return
+		}
+		s.logger.Error("unfreeze project failed", "err", err, "project_id", projectID)
+		s.writeError(w, r, http.StatusInternalServerError, "could not unfreeze project")
+		return
+	}
+	s.logger.Info("project unfrozen", "project_id", projectID)
+	s.writeJSON(w, r, http.StatusOK, map[string]any{"project_id": projectID, "frozen": false})
 }
 
 // --- In-demo feedback (Edit Request Panel) ---

@@ -52,6 +52,16 @@ type Job struct {
 	QueuedAt   time.Time       `json:"queued_at"`
 	StartedAt  *time.Time      `json:"started_at,omitempty"`
 	FinishedAt *time.Time      `json:"finished_at,omitempty"`
+	// Rehearsal marks a build that never reports to FTC DV (migration 0013).
+	// It is set only when an operator enqueues the job as one; default false.
+	Rehearsal bool `json:"rehearsal,omitempty"`
+}
+
+// EnqueueOptions are the operator's choices for one job. JobID, when set, is
+// the id the job is created with (allocated in advance); otherwise a fresh one.
+type EnqueueOptions struct {
+	JobID     uuid.UUID
+	Rehearsal bool
 }
 
 // EditRequest is an external "please change X" request (CRN-architecture.md §6).

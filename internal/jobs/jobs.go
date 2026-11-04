@@ -222,26 +222,38 @@ func NewManager(
 // starts it right away if a build slot is free and the project is idle.
 // Returns the created job (with build_no).
 func (m *manager) Enqueue(ctx context.Context, projectID, orgID uuid.UUID, payload []byte) (*domain.Job, error) {
+	return m.EnqueueWith(ctx, projectID, orgID, payload, domain.EnqueueOptions{})
+}
+
+// EnqueueWith is Enqueue with the operator's choices for this one job: an id
+// allocated in advance (opts.JobID) and the rehearsal switch, which keeps every
+// FTC DV callback of this job unsent (reportToFTC).
+func (m *manager) EnqueueWith(ctx context.Context, projectID, orgID uuid.UUID, payload []byte, opts domain.EnqueueOptions) (*domain.Job, error) {
 	buildNo, err := m.store.BumpBuildNo(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("jobs: bump build no: %w", err)
 	}
 
+	id := opts.JobID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
 	job := &domain.Job{
-		ID:        uuid.New(),
+		ID:        id,
 		ProjectID: projectID,
 		OrgID:     orgID,
 		Status:    domain.JobQueued,
 		BuildNo:   buildNo,
 		Payload:   json.RawMessage(payload),
 		QueuedAt:  time.Now().UTC(),
+		Rehearsal: opts.Rehearsal,
 	}
 	if err := m.store.CreateJob(ctx, job); err != nil {
 		return nil, fmt.Errorf("jobs: create job: %w", err)
 	}
 
 	m.logger.Info("job enqueued",
-		"job_id", job.ID, "project_id", projectID, "org_id", orgID, "build_no", buildNo)
+		"job_id", job.ID, "project_id", projectID, "org_id", orgID, "build_no", buildNo, "rehearsal", job.Rehearsal)
 
 	// Kick off processing in the background. We do NOT inherit the request ctx
 	// (it is cancelled when the HTTP handler returns); a build outlives the
@@ -463,7 +475,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	job.Status = domain.JobBuilding
 	m.notify(ctx, job.ID, domain.EventBuildStarted, nil)
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "", "building", "", nil)
+	go m.reportToFTC(job, job.DockerTag, "", "", "", "", "building", "", nil)
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSBuildPhase,
 		Phase:     string(domain.JobBuilding),
@@ -878,7 +890,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, envEx))
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx)
+	go m.reportToFTC(job, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx)
 
 	// Cache this source → image so an identical resubmission reuses it (skips the AI
 	// conversion). srcHash is "" for edit builds, which clears the cache so a later
@@ -936,7 +948,7 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef st
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(filepath.Join(m.projectsDir, job.ProjectID.String())))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, meta.remote, meta.branch, envEx))
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, imageRef, m.reusedDigest(ctx, job, imageRef, log), meta.remote, meta.branch, meta.commit, "released", "", envEx)
+	go m.reportToFTC(job, imageRef, m.reusedDigest(ctx, job, imageRef, log), meta.remote, meta.branch, meta.commit, "released", "", envEx)
 
 	// A reused build is still a build the operator may need to inspect later.
 	m.saveTrace(ctx, job, meta)
@@ -961,7 +973,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		Timestamp: time.Now().UTC(),
 	})
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "", "failed", errMsg, nil)
+	go m.reportToFTC(job, job.DockerTag, "", "", "", "", "failed", errMsg, nil)
 
 	// Persist the trace for the failed build too — the operator needs to see how
 	// far it got and what Claude did before it broke. Save BEFORE closeSubscribers
@@ -995,7 +1007,7 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, meta tra
 	// "cancelled" not "failed"); the FTC HTTP callback maps to "failed" since its
 	// vocabulary is only building/released/failed.
 	m.notify(ctx, job.ID, domain.EventBuildCancelled, cancelledPayload(msg))
-	go m.ftcCallback(job.ID, job.OrgID, job.BuildNo, job.DockerTag, "", "", "", "", "failed", msg, nil)
+	go m.reportToFTC(job, job.DockerTag, "", "", "", "", "failed", msg, nil)
 
 	m.saveTrace(ctx, job, meta)
 	m.closeSubscribers(job.ID)
@@ -1296,7 +1308,7 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 	}
 	for _, o := range orphans {
 		m.notify(ctx, o.ID, domain.EventBuildFailed, failedPayload(msg))
-		go m.ftcCallback(o.ID, o.OrgID, o.BuildNo, o.DockerTag, "", "", "", "", "failed", msg, nil)
+		go m.reportToFTC(o, o.DockerTag, "", "", "", "", "failed", msg, nil)
 	}
 	if len(orphans) > 0 {
 		m.logger.Warn("reconciled orphaned builds on startup", "count", len(orphans))
@@ -1504,6 +1516,19 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 // A job's callbacks go out one at a time, in order, each retried as agreed
 // (deliverCallback); once FTC DV answers 409 for a build, nothing more is sent
 // for it, and a callback that gave up is never sent again.
+// reportToFTC is the one way a build reports to FTC DV. A rehearsal job
+// (domain.Job.Rehearsal, set by the operator for that job only) reports
+// nothing — no building, released or failed — and logs that it was withheld,
+// so its outbound record shows zero callback attempts.
+func (m *manager) reportToFTC(job *domain.Job, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message string, env any) {
+	if job.Rehearsal {
+		m.logger.Info("ftc callback withheld: rehearsal job",
+			"job_id", job.ID, "build_no", job.BuildNo, "status", status)
+		return
+	}
+	m.ftcCallback(job.ID, job.OrgID, job.BuildNo, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message, env)
+}
+
 func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message string, env any) {
 	if m.ftcdvCallbackURL == "" || !m.ftcdvCallbackOrgs[orgID] {
 		return
