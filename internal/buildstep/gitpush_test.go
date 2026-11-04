@@ -25,7 +25,7 @@ func TestGitCommitAndPushReturnsTheFullCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := GitCommitAndPush(context.Background(), dir, remote, "main", "build 1", nil)
+	got, err := GitCommitAndPush(context.Background(), dir, remote, "main", "build 1", true, nil)
 	if err != nil {
 		t.Fatalf("GitCommitAndPush: %v", err)
 	}
@@ -35,5 +35,62 @@ func TestGitCommitAndPushReturnsTheFullCommit(t *testing.T) {
 	}
 	if want := strings.TrimSpace(string(out)); got != want || len(got) != 40 {
 		t.Errorf("GitCommitAndPush = %q, want the pushed commit %q (40 characters)", got, want)
+	}
+}
+
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// An edit build pushes without --force: a fast-forward lands, and a remote that
+// moved underneath the build refuses the push instead of losing its commits.
+func TestGitCommitAndPushWithoutForceNeverRewritesTheRemote(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	gitIn(t, filepath.Dir(remote), "init", "--bare", "-q", remote)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base, err := GitCommitAndPush(context.Background(), dir, remote, "main", "build 1", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fast-forward: lands.
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ff, err := GitCommitAndPush(context.Background(), dir, remote, "main", "build 2", false, nil)
+	if err != nil {
+		t.Fatalf("fast-forward push refused: %v", err)
+	}
+	if got := gitIn(t, remote, "rev-parse", "refs/heads/main"); got != ff || ff == base {
+		t.Fatalf("remote main = %s, want the fast-forward %s", got, ff)
+	}
+
+	// The remote moves on elsewhere; a non-forced push of a diverged HEAD fails
+	// and the remote keeps its commit.
+	other := t.TempDir()
+	gitIn(t, other, "clone", "-q", "-b", "main", remote, ".")
+	gitIn(t, other, "-c", "user.email=x@x", "-c", "user.name=x", "commit", "-q", "--allow-empty", "-m", "elsewhere")
+	gitIn(t, other, "push", "-q", "origin", "HEAD:refs/heads/main")
+	moved := gitIn(t, remote, "rev-parse", "refs/heads/main")
+
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("v3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GitCommitAndPush(context.Background(), dir, remote, "main", "build 3", false, nil); err == nil {
+		t.Fatal("a non-forced push over a moved remote succeeded")
+	}
+	if got := gitIn(t, remote, "rev-parse", "refs/heads/main"); got != moved {
+		t.Fatalf("remote main = %s after a refused push, want it untouched at %s", got, moved)
 	}
 }

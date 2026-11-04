@@ -796,7 +796,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// Gated by CRN_BUILD_IMAGE; no-op for non-Next apps.
 	m.writeImageBundle(workDir, spec, job, log)
 
-	// --- success: git commit + force-push the build branch ---
+	// --- success: git commit + push the build branch (--force only for a new build) ---
 	// pushRemote/pushBranch were resolved above per git model: the owner model
 	// pushes the project's own repo "main"; the shared model pushes a
 	// "crn/<slug>-<id8>" branch to CRN_GIT_REMOTE. commitSHA is captured so the
@@ -806,7 +806,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		m.publishPhase(job.ID, "git")
 		m.publishPhase(job.ID, "push")
 		msg := commitMessage(spec, job)
-		commit, err := buildstep.GitCommitAndPush(runCtx, workDir, pushRemote, pushBranch, msg, m.logger)
+		commit, err := buildstep.GitCommitAndPush(runCtx, workDir, pushRemote, pushBranch, msg, spec.Mode != "edit", m.logger)
 		if err != nil {
 			log.Error("git push failed", "err", err)
 			if runCtx.Err() != nil && ctx.Err() == nil {

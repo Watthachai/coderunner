@@ -132,15 +132,18 @@ func InjectSkills(dir string, skills []SkillFile) error {
 	return nil
 }
 
-// GitCommitAndPush stages everything in dir, commits it, and force-pushes HEAD
-// to <remote> as refs/heads/<branch>. It initializes the repo (git init +
+// GitCommitAndPush stages everything in dir, commits it, and pushes HEAD to
+// <remote> as refs/heads/<branch> — with --force only when force is set (a new
+// build replacing a branch). An edit build passes false: it started from the
+// remote's branch, so its push is a fast-forward, and a remote that moved
+// underneath it refuses the push rather than losing commits. It initializes the repo (git init +
 // local user identity) and (re)points origin at remote on first use. The host's
 // ambient git credentials are used as-is; no tokens are injected. It returns the
 // full SHA of the pushed HEAD, which the image's revision label carries.
 //
 // A no-op commit (nothing staged) is tolerated: the push still publishes the
 // current HEAD so the remote branch is created/updated either way.
-func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, logger *slog.Logger) (string, error) {
+func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, force bool, logger *slog.Logger) (string, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -187,7 +190,11 @@ func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, 
 	}
 
 	refspec := "HEAD:refs/heads/" + branch
-	if _, err := runGit(ctx, dir, log, "push", "--force", "origin", refspec); err != nil {
+	push := []string{"push", "origin", refspec}
+	if force {
+		push = []string{"push", "--force", "origin", refspec}
+	}
+	if _, err := runGit(ctx, dir, log, push...); err != nil {
 		return "", err
 	}
 
