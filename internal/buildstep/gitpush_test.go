@@ -94,3 +94,47 @@ func TestGitCommitAndPushWithoutForceNeverRewritesTheRemote(t *testing.T) {
 		t.Fatalf("remote main = %s after a refused push, want it untouched at %s", got, moved)
 	}
 }
+
+// A build that stops before its first commit (cancelled, failed) leaves a working
+// directory without .git. The next edit must still clone the remote: the
+// leftovers are moved aside, not deleted, and not mixed into the checkout.
+func TestGitCloneOrPullMovesAsideAnUnfinishedWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	gitIn(t, filepath.Dir(remote), "init", "--bare", "-q", remote)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "app.txt"), []byte("pushed from a laptop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head, err := GitCommitAndPush(context.Background(), src, remote, "main", "code", true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "export.zip"), []byte("left by a cancelled build"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GitCloneOrPull(context.Background(), dir, remote, "main", nil); err != nil {
+		t.Fatalf("clone over an unfinished workspace: %v", err)
+	}
+	if got := gitIn(t, dir, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("workspace HEAD = %s, want the remote's %s", got, head)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "export.zip")); !os.IsNotExist(err) {
+		t.Error("the leftover file was mixed into the fresh checkout")
+	}
+	stale, _ := filepath.Glob(dir + ".stale-*")
+	if len(stale) != 1 {
+		t.Fatalf("moved-aside copies = %v, want exactly one", stale)
+	}
+	if b, err := os.ReadFile(filepath.Join(stale[0], "export.zip")); err != nil || string(b) != "left by a cancelled build" {
+		t.Errorf("the leftovers were not kept: %v", err)
+	}
+}

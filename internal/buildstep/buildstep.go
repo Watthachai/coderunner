@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // FileEntry is one file to materialize: a path relative to the project working
@@ -248,6 +249,17 @@ func GitCloneOrPull(ctx context.Context, dir, remote, branch string, logger *slo
 		writeGitExclude(gitDir)
 		return nil
 	case os.IsNotExist(err):
+		// A build that stopped before its first commit (cancelled, failed) leaves
+		// dir without .git; git refuses to clone into a non-empty directory. The
+		// remote is the source of truth, so move the leftovers aside (kept, never
+		// deleted) and clone fresh.
+		if entries, rerr := os.ReadDir(dir); rerr == nil && len(entries) > 0 {
+			aside := dir + ".stale-" + time.Now().Format("20060102-150405")
+			if err := os.Rename(dir, aside); err != nil {
+				return fmt.Errorf("buildstep: move aside unfinished workspace: %w", err)
+			}
+			log.Warn("workspace had no git checkout; moved it aside before cloning", "moved_to", aside)
+		}
 		// Fresh clone of the requested branch into dir.
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("buildstep: mkdir clone dir: %w", err)
