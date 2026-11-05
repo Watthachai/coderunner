@@ -31,7 +31,7 @@ Use this mode only when the request asks for it. The image then only talks to a 
 - `MIGRATION_DATABASE_URL`: `...?schema=<schema>&sslmode=require&sslaccept=strict&sslcert=<database_ca_file>`, used by `prisma migrate deploy` (Prisma's schema engine). `prisma.config.ts` reads only this variable.
 - `DATABASE_CA_FILE`: the CA path. node-postgres trusts only this CA, given as `ssl.ca` with `rejectUnauthorized: true`. Never use `NODE_EXTRA_CA_CERTS`, `rejectUnauthorized: false`, a lenient `checkServerIdentity` or `NODE_TLS_REJECT_UNAUTHORIZED`.
 
-One shared helper validates both URLs and the CA file before anything opens a connection. It refuses any other TLS parameter, a missing variable, a schema that is malformed or `public`, and two URLs that point at different host, port, database, user or schema. Errors leave out the URL, credentials and query string.
+One shared helper validates both URLs and the CA file before anything opens a connection, on every path including migrate: Prisma's schema engine reads the file itself, so check the file first. It refuses any other TLS parameter, a missing variable, a schema that is malformed or `public`, and two URLs that point at different host, port, database, user or schema. The CA file must be a regular file (check with `lstat`: a symlink is refused), readable, and hold exactly one PEM certificate. Errors leave out the URL, credentials and query string.
 
 Add `db:check`: through the runtime's own pool configuration, run `select current_user, current_schema()`. Print one JSON line `{"current_user":"…","current_schema":"…"}`, close the pool and exit 0. On any failure, exit non-zero with a sanitized message. `db:deploy` runs the helper's pre-migrate check and then `prisma migrate deploy`. `db:seed` uses the helper and prints `already-complete` once bootstrapped. These three scripts are the image's migrate-only, seed-only and connection-check commands:
 
@@ -39,14 +39,13 @@ Add `db:check`: through the runtime's own pool configuration, run `select curren
 docker run --rm -e ... -v <ca>:<database_ca_file>:ro --entrypoint npm <image> --silent run db:deploy
 ```
 
-In this mode the verifier never offers a plaintext database. It creates PostgreSQL 17 stand-ins on a private network and generates a throwaway CA whose server certificate carries the stand-in's IP. The app connects as a non-superuser role with a connection limit, to schema `crn_verify`; tests get the host-side URLs in `DATABASE_URL`, `MIGRATION_DATABASE_URL` and `DATABASE_CA_FILE`.
+In this mode the verifier never offers a plaintext database. It creates PostgreSQL 17.11 stand-ins, from one image pinned by digest, on a private network and generates a throwaway CA whose server certificate carries the stand-in's IP. The app connects as a non-superuser role with a connection limit, to schema `crn_verify`; tests get the host-side URLs in `DATABASE_URL`, `MIGRATION_DATABASE_URL` and `DATABASE_CA_FILE`.
 
 The verifier first runs migrate → seed (three times) → `db:check` → the app and the browser tests. It then checks that nothing of the app sits in `public`, that the role owns every object, and that `_prisma_migrations` matches the image's migration files.
 
 Every case below must FAIL, through runtime (`db:check`), seed and migrate:
 
 - a wrong CA
-- a missing CA file
 - the IP not in the SAN
 - an expired certificate
 - a server without TLS
@@ -57,6 +56,7 @@ These configuration errors must also fail, and must not open any connection (a t
 - `sslmode` missing, or set to `prefer`, `disable` or `no-verify`
 - `sslaccept=accept_invalid_certs`, or a missing `sslaccept` or `sslcert`
 - a schema of `Film-Job`, `a;drop` or `public`
-- mismatched targets
+- a CA file that is missing, a symlink, empty, unreadable, or holds more than one certificate (through runtime, seed and migrate)
+- two URLs that differ in any one of host, port, database, user or schema (stops `db:deploy`)
 
 No output may contain a secret, a connection URL, a query string or `user:password@host`. The budget in this mode is 30 minutes.

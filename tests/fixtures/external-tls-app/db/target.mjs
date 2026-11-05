@@ -5,8 +5,9 @@ import fs from 'node:fs';
 import pg from 'pg';
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
-// FIXTURE_WEAK=1 is a deliberately broken helper: it lets a plaintext URL through,
-// so the release checker's tests can show that it catches such an app.
+// FIXTURE_WEAK=1 is a deliberately broken helper: it lets a plaintext URL through, takes
+// any CA file or none, and compares only the database of the two URLs, so the release
+// checker's tests can show that it catches such an app.
 const weak = process.env.FIXTURE_WEAK === '1';
 
 export class TargetError extends Error {}
@@ -41,10 +42,12 @@ export function parseAndValidateDatabaseTarget(raw, kind) {
 function readCA() {
   const file = process.env.DATABASE_CA_FILE;
   if (!file) throw new TargetError('DATABASE_CA_FILE is not set');
+  if (weak) { try { return fs.readFileSync(file, 'utf8'); } catch { return undefined; } }
   let stat;
-  try { stat = fs.statSync(file); } catch { throw new TargetError('DATABASE_CA_FILE does not exist'); }
+  try { stat = fs.lstatSync(file); } catch (e) { throw new TargetError(e.code === 'ENOENT' ? 'DATABASE_CA_FILE does not exist' : 'DATABASE_CA_FILE cannot be read'); }
   if (!stat.isFile()) throw new TargetError('DATABASE_CA_FILE is not a regular file');
-  const ca = fs.readFileSync(file, 'utf8');
+  let ca;
+  try { ca = fs.readFileSync(file, 'utf8'); } catch { throw new TargetError('DATABASE_CA_FILE cannot be read'); }
   if ((ca.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length !== 1) throw new TargetError('DATABASE_CA_FILE must hold exactly one PEM certificate');
   return ca;
 }
@@ -64,12 +67,14 @@ export function runtimePool() {
   });
 }
 
-// Before migrate: both URLs valid and pointing at the same target.
+// Before migrate: both URLs valid and pointing at the same target, and a CA file the
+// schema engine can rely on. It reads sslcert itself, so the file is checked here.
 export function preMigrateCheck() {
   const runtime = parseAndValidateDatabaseTarget(process.env.DATABASE_URL, 'runtime');
   const migration = parseAndValidateDatabaseTarget(process.env.MIGRATION_DATABASE_URL, 'migration');
-  const differ = ['host', 'port', 'database', 'user', 'schema'].filter(k => runtime[k] !== migration[k]);
+  const differ = (weak ? ['database'] : ['host', 'port', 'database', 'user', 'schema']).filter(k => runtime[k] !== migration[k]);
   if (differ.length) throw new TargetError(`DATABASE_URL and MIGRATION_DATABASE_URL differ in: ${differ.join(', ')}`);
+  if (!weak) readCA();
 }
 
 export async function main(fn) {

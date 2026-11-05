@@ -140,11 +140,36 @@ async function firstMigration(cwd) {
 // references/delivery-checks.md). The app never talks to a database without TLS:
 // node-postgres (runtime: db:check, seed: db:seed) verifies the server with the CA file in
 // DATABASE_CA_FILE and its IP/name; Prisma's schema engine (migrate: db:deploy) uses
-// sslaccept=strict&sslcert=<CA file>. The checker runs every step against PostgreSQL 17
+// sslaccept=strict&sslcert=<CA file>. The checker runs every step against PostgreSQL 17.11
 // stand-ins it creates with a throwaway CA — never a plaintext database, never a real one.
 export const TLS_SCHEMA = 'crn_verify';
 export const TLS_ROLE = 'crn_app';
 export const TLS_SCRIPTS = { migrate: 'db:deploy', seed: 'db:seed', runtime: 'db:check' };
+// The stand-ins' image, pinned so every check runs on the same bytes; the version is checked again on each running stand-in.
+export const TLS_PG_IMAGE = 'postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b';
+export const isWantedPostgres = version => /^17\.11(?:\s|$)/.test(version);
+// The CA file must be a regular file, readable, holding exactly one PEM certificate. Each
+// way it can be wrong, and which file the checker mounts for it (null: none).
+export const BAD_CA_FILES = { 'no CA file': null, 'CA file is a symlink': 'symlink', 'CA file is empty': 'empty', 'CA file holds two certificates': 'two', 'CA file is unreadable': 'unreadable' };
+// A file bind mount follows a symlink, and Docker cannot bind a file it may not read: those
+// two reach the container inside a mounted directory that holds them under the CA file's name.
+export function caFileMount(ca, files, target) {
+  if (ca === null) return [];
+  if (ca === 'symlink' || ca === 'unreadable') return ['-v', `${files[ca]}:${path.dirname(target)}:ro`];
+  return ['-v', `${files[ca]}:${target}:ro`];
+}
+// Run inside the image, with the same mount a case gets: what the app will really find at the CA path.
+export const CA_PROBE_JS = `const fs=require('fs');const f=process.env.CRN_CA_PROBE;const o={exists:false,symlink:false,readable:false,certs:0,size:0};try{o.symlink=fs.lstatSync(f).isSymbolicLink();o.exists=true}catch(e){o.exists=e.code!=='ENOENT'}if(o.exists){try{o.size=fs.statSync(f).size}catch{}try{const t=fs.readFileSync(f,'utf8');o.readable=true;o.certs=(t.match(/-----BEGIN CERTIFICATE-----/g)||[]).length}catch{}}console.log(JSON.stringify(o))`;
+// A case proves nothing unless the file has its one defect: a lost symlink would pass as "no CA file".
+export function caShapeProblem(shape, p) {
+  const shapes = {
+    symlink: p.exists && p.symlink && p.readable && p.certs === 1,
+    empty: p.exists && !p.symlink && p.readable && p.size === 0,
+    two: p.exists && !p.symlink && p.readable && p.certs === 2,
+    unreadable: p.exists && !p.symlink && !p.readable,
+  };
+  return (shape === null ? !p.exists : shapes[shape]) ? null : `wanted ${shape ?? 'no file'}, found ${JSON.stringify(p)}`;
+}
 export function tlsUrls({ user, password, host, port = 5432, database, schema = TLS_SCHEMA, caFile }) {
   const base = `postgresql://${user}:${password}@${host}:${port}/${database}?schema=${schema}`;
   return { runtime: `${base}&sslmode=verify-full`, migration: `${base}&sslmode=require&sslaccept=strict&sslcert=${caFile}` };
@@ -160,8 +185,8 @@ export function tlsFailurePlan({ ips, user, password, database, caFile }) {
     for (const path of paths) plan.push({ name, path, script: TLS_SCRIPTS[path], env: { ...env(urls), ...override }, ca, noConnection });
   };
   each('wrong CA', at(ips.ok), 'wrong');
-  each('no CA file', at(ips.tripwire), null, ['runtime', 'seed'], true);
-  each('no CA file', at(ips.tripwire), null, ['migrate']);
+  // A wrong CA file stops every path before it opens a connection, migrate included.
+  for (const [name, ca] of Object.entries(BAD_CA_FILES)) each(name, at(ips.tripwire), ca, Object.keys(TLS_SCRIPTS), true);
   each('IP not in SAN', at(ips.otherName), 'right');
   each('expired certificate', at(ips.expired), 'right');
   each('server without TLS', at(ips.plain), 'right');
@@ -178,7 +203,12 @@ export function tlsFailurePlan({ ips, user, password, database, caFile }) {
     const bad = at(ips.tripwire);
     each(`schema ${JSON.stringify(schema)}`, { runtime: bad.runtime.replace(`schema=${TLS_SCHEMA}`, `schema=${encodeURIComponent(schema)}`), migration: bad.migration.replace(`schema=${TLS_SCHEMA}`, `schema=${encodeURIComponent(schema)}`) }, 'right', Object.keys(TLS_SCRIPTS), true);
   }
-  each('runtime and migration targets differ', t, 'right', ['migrate'], true, { MIGRATION_DATABASE_URL: t.migration.replace(`/${database}?`, `/${database}_other?`) });
+  // One field differs at a time. Only DATABASE_URL moves: the URL migrate would use stays
+  // on the tripwire, so an app that fails to compare that field is seen connecting.
+  const differs = { host: { host: ips.otherName }, port: { port: 5433 }, database: { database: `${database}_other` }, user: { user: `${user}_other` }, schema: { schema: `${TLS_SCHEMA}_other` } };
+  for (const [field, change] of Object.entries(differs)) {
+    each(`runtime and migration targets differ: ${field}`, t, 'right', ['migrate'], true, { DATABASE_URL: tlsUrls({ user, password, host: ips.tripwire, database, caFile, ...change }).runtime });
+  }
   return plan;
 }
 // What a failure may print: never a credential, a connection URL or its query string.
@@ -377,6 +407,16 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
       const caFile = path.join(tlsDir, 'ca/ca.pem'), wrongCaFile = path.join(tlsDir, 'wrongca/ca.pem');
       await fs.copyFile(path.join(tlsDir, 'ok/server.crt'), caFile);
       await fs.copyFile(path.join(tlsDir, 'wrong/server.crt'), wrongCaFile);
+      const caPem = await fs.readFile(caFile, 'utf8');
+      const caName = path.basename(contract.database_ca_file);
+      const caFiles = { right: caFile, wrong: wrongCaFile, empty: path.join(tlsDir, 'ca/empty.pem'), two: path.join(tlsDir, 'ca/two.pem'), symlink: path.join(tlsDir, 'calink'), unreadable: path.join(tlsDir, 'canoread') };
+      await fs.writeFile(caFiles.empty, '');
+      await fs.writeFile(caFiles.two, caPem + await fs.readFile(wrongCaFile, 'utf8'));
+      await fs.mkdir(caFiles.symlink);
+      await fs.writeFile(path.join(caFiles.symlink, 'real.pem'), caPem);
+      await fs.symlink('real.pem', path.join(caFiles.symlink, caName));
+      await fs.mkdir(caFiles.unreadable);
+      await fs.writeFile(path.join(caFiles.unreadable, caName), caPem, { mode: 0o000 });
       receipt.checks.push({ name: 'TLS test certificates', passed: true });
       const adminPw = randomBytes(24).toString('hex'), appPw = randomBytes(24).toString('hex'), matrixPw = randomBytes(24).toString('hex');
       for (const s of [adminPw, appPw, matrixPw]) secrets.add(s);
@@ -390,9 +430,9 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
         s.name = `crn-verify-pg-${s.certs ?? 'plain'}-${suffix}`;
         containers.add(s.name);
         const args = ['run', '-d', '--name', s.name, '--network', networkName, '--ip', s.ip, '-e', 'POSTGRES_USER=crn_admin', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB=postgres', ...(s.publish ? ['-p', '127.0.0.1::5432'] : [])];
-        if (s.certs) args.push('-v', `${path.join(tlsDir, s.certs)}:/certs-ro:ro`, '--entrypoint', 'sh', 'postgres:17-alpine', '-c', 'mkdir -p /tmp/certs && cp /certs-ro/server.crt /certs-ro/server.key /tmp/certs/ && chown postgres:postgres /tmp/certs/server.crt /tmp/certs/server.key && chmod 600 /tmp/certs/server.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/certs/server.crt -c ssl_key_file=/tmp/certs/server.key');
-        else args.push('postgres:17-alpine');
-        await run(`start PostgreSQL 17 stand-in (${s.role})`, 'docker', args, { POSTGRES_PASSWORD: adminPw });
+        if (s.certs) args.push('-v', `${path.join(tlsDir, s.certs)}:/certs-ro:ro`, '--entrypoint', 'sh', TLS_PG_IMAGE, '-c', 'mkdir -p /tmp/certs && cp /certs-ro/server.crt /certs-ro/server.key /tmp/certs/ && chown postgres:postgres /tmp/certs/server.crt /tmp/certs/server.key && chmod 600 /tmp/certs/server.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/certs/server.crt -c ssl_key_file=/tmp/certs/server.key');
+        else args.push(TLS_PG_IMAGE);
+        await run(`start PostgreSQL 17.11 stand-in (${s.role})`, 'docker', args, { POSTGRES_PASSWORD: adminPw });
       }
       for (const s of standIns) await waitReady(`stand-in ready (${s.role})`, s.name, 'crn_admin');
       const main = standIns[0].name;
@@ -403,12 +443,13 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
       // The app's own role: not a superuser, a connection limit like the customer's.
       await run('create application role and database on the stand-in', 'docker', ['exec', '-i', main, 'psql', '-U', 'crn_admin', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q'], {},
         `CREATE ROLE ${TLS_ROLE} LOGIN PASSWORD '${appPw}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 20;\nCREATE DATABASE ${TLS_SCHEMA} OWNER ${TLS_ROLE};\n`);
-      const serverVersion = (await run('stand-in server version', 'docker', ['exec', main, 'psql', '-U', 'crn_admin', '-d', 'postgres', '-Atc', 'show server_version'])).trim();
-      const pgImage = (await attempt('docker', ['image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'postgres:17-alpine'])).stdout.trim();
-      check('stand-in is PostgreSQL 17', /^17\./.test(serverVersion), `The stand-in runs PostgreSQL ${serverVersion}, not 17`);
+      for (const s of standIns) {
+        s.version = (await run(`stand-in server version (${s.role})`, 'docker', ['exec', s.name, 'psql', '-U', 'crn_admin', '-d', 'postgres', '-Atc', 'show server_version'])).trim();
+        check(`stand-in is PostgreSQL 17.11 (${s.role})`, isWantedPostgres(s.version), `The stand-in (${s.role}) runs PostgreSQL ${s.version}, not 17.11`);
+      }
       receipt.external_tls = {
         attestation: 'Every database this check used is a container it created on its own network, with a CA it generated; no other host, credential or CA was given to the app.',
-        stand_ins: standIns.map(s => ({ role: s.role, ip: s.ip, tls: !!s.certs, san: s.san, image: pgImage, server_version: serverVersion })),
+        stand_ins: standIns.map(s => ({ role: s.role, ip: s.ip, tls: !!s.certs, san: s.san, image: TLS_PG_IMAGE, server_version: s.version })),
         tripwire: { ip: ips.tripwire, purpose: 'counts connections; configuration errors must leave it at zero' },
         schema: TLS_SCHEMA, app_role: TLS_ROLE, ca_mount: contract.database_ca_file,
       };
@@ -433,6 +474,14 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
       const journal = isolation.journal ?? [];
       receipt.external_tls.migrations = { files, journal };
       check('migration journal matches the image', JSON.stringify(journal.map(j => j.name)) === JSON.stringify(Object.keys(files)) && journal.every(j => j.finished && !j.rolled_back && j.checksum === files[j.name]), 'The migration journal must hold exactly the image\'s migrations, finished, with their file checksums');
+      // --- each bad CA file really has its one defect, as the image sees it ---
+      receipt.external_tls.ca_shapes = {};
+      for (const [name, shape] of Object.entries(BAD_CA_FILES)) {
+        const found = JSON.parse((await run(`look at the CA file (${name})`, 'docker', ['run', '--rm', '--network', 'none', ...HARDENED_RUN, '-e', 'CRN_CA_PROBE', ...caFileMount(shape, caFiles, contract.database_ca_file), '--entrypoint', 'node', imageName, '-e', CA_PROBE_JS], { CRN_CA_PROBE: contract.database_ca_file })).trim().split('\n').pop());
+        receipt.external_tls.ca_shapes[name] = found;
+        const problem = caShapeProblem(shape, found);
+        check(`CA file prepared as intended (${name})`, !problem, `The checker could not prepare "${name}": ${problem}`);
+      }
       // --- the cases that must fail, each through migrate, seed and runtime ---
       const matrix = [];
       const plan = tlsFailurePlan({ ips, user: TLS_ROLE, password: appPw, database: TLS_SCHEMA, caFile: contract.database_ca_file });
@@ -441,7 +490,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
         const name = `${operationName}-m${i}`;
         containers.add(name);
         const before = c.noConnection ? await tripwireCount() : 0;
-        const mount = c.ca === 'right' ? ['-v', `${caFile}:${contract.database_ca_file}:ro`] : c.ca === 'wrong' ? ['-v', `${wrongCaFile}:${contract.database_ca_file}:ro`] : [];
+        const mount = caFileMount(c.ca, caFiles, contract.database_ca_file);
         console.error(`CRN verify: must fail — ${c.name} (${c.path})`);
         const r = await attempt('docker', ['run', '--rm', '--name', name, '--network', networkName, ...HARDENED_RUN, '-e', 'DATABASE_URL', '-e', 'MIGRATION_DATABASE_URL', '-e', 'DATABASE_CA_FILE', '-e', 'AUTH_SECRET', '-e', 'BOOTSTRAP_ADMIN_EMAIL', '-e', 'BOOTSTRAP_ADMIN_PASSWORD', ...mount, '--entrypoint', 'npm', imageName, '--silent', 'run', c.script],
           { ...c.env, BOOTSTRAP_ADMIN_EMAIL: 'matrix@example.test', BOOTSTRAP_ADMIN_PASSWORD: matrixPw }, { limitMs: 120_000, container: name });
