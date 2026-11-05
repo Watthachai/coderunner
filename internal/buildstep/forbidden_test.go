@@ -81,6 +81,25 @@ func TestPinRefusesAnythingButTheAgreedFile(t *testing.T) {
 	}
 }
 
+// A symlink or a directory is refused for what it is, whatever its mode happens to be.
+func TestPinNamesASymlinkOrADirectoryForWhatItIs(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(writeList(t, goodList, 0o600), link); err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Join(dir, "folder")
+	if err := os.Mkdir(folder, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{link, folder} {
+		_, err := PinForbiddenList(path)
+		if err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Errorf("%s: err = %v", path, err)
+		}
+	}
+}
+
 func TestPinRefusesAListSomeoneElseOwns(t *testing.T) {
 	was := listOwner
 	listOwner = func() int { return os.Getuid() + 1 }
