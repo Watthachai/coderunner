@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "postinstall": "node tests/stub-playwright.mjs",
     "typecheck": "node -e 0",
     "test:unit": "node tests/unit.mjs",
     "test:smoke": "node tests/smoke.mjs",
@@ -13,5 +12,8 @@
     "db:deploy": "node db/gate.mjs && prisma migrate deploy",
     "db:seed": "node db/seed.mjs",
     "db:check": "node db/check.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
   }
 }

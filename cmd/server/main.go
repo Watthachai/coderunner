@@ -137,6 +137,9 @@ func run() error {
 	// the console shows "logged out" before a build fails on it. It never holds
 	// or fails a build.
 	authMonitor := claude.NewAuthMonitor(cfg.ClaudeBinPath, cfg.ClaudeTokenExpires, logger)
+	if gated, ok := jobManager.(interface{ SetForbiddenValuesDir(string) }); ok {
+		gated.SetForbiddenValuesDir(cfg.ForbiddenValuesDir)
+	}
 	if hooked, ok := jobManager.(interface{ SetBeforeBuild(func(context.Context)) }); ok {
 		hooked.SetBeforeBuild(authMonitor.CheckStatus)
 	}

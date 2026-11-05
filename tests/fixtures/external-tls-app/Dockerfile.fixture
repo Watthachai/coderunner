@@ -6,9 +6,17 @@ RUN echo '{"name":"deps","private":true}' > package.json && npm install --no-aud
 COPY prisma.config.ts ./
 COPY prisma ./prisma
 COPY db ./db
+COPY public ./public
+# In a lower layer only: the release gate's scan must still see what a later layer deleted.
+COPY TEST_CASES.md ./removed-later.md
+RUN rm removed-later.md
 COPY server.mjs package.json ./
 ARG FIXTURE_WEAK=0
 ENV FIXTURE_WEAK=$FIXTURE_WEAK
+ARG FIXTURE_WEAK_WIDGET=
+ENV FIXTURE_WEAK_WIDGET=$FIXTURE_WEAK_WIDGET
+# "placeholder": a contract placeholder reaches the image, though the commit does not hold it.
+RUN if [ "$FIXTURE_WEAK_WIDGET" = placeholder ]; then echo "WITHHELD_""DB_HOST" > planted.txt; fi
 RUN chown -R node:node /app
 USER node
 EXPOSE 3000

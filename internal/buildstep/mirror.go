@@ -45,6 +45,32 @@ func RemoteDigest(ctx context.Context, ref string, logger *slog.Logger) (string,
 	return m.Digest, nil
 }
 
+// RegistryDigest asks the registry which manifest ref points at now. Unlike RemoteDigest
+// it works over plain http, as the on-prem delivery registry is.
+func RegistryDigest(ctx context.Context, ref string, logger *slog.Logger) (string, error) {
+	out, err := dockerOutput(ctx, logger, "manifest", "inspect", "--insecure", "--verbose", ref)
+	if err != nil {
+		return "", err
+	}
+	var m struct {
+		Descriptor struct {
+			Digest string `json:"digest"`
+		} `json:"Descriptor"`
+	}
+	if err := json.Unmarshal([]byte(out), &m); err != nil || !digestPattern.MatchString(m.Descriptor.Digest) {
+		return "", fmt.Errorf("buildstep: registry gave no single manifest digest for %s: %q", ref, tailLines(out, 3))
+	}
+	return m.Descriptor.Digest, nil
+}
+
+// DigestRef names the image of tag ref by digest: <repository>@<digest>.
+func DigestRef(ref, digest string) string { return repository(ref) + "@" + digest }
+
+// PullDigest fetches the image by digest, so what runs next is what the registry holds.
+func PullDigest(ctx context.Context, image string, logger *slog.Logger) error {
+	return runDocker(ctx, logger, "pull", "--platform", imagePlatform, image)
+}
+
 // PushedDigest is the manifest digest the registry gave ref when it was pushed,
 // from the local image's RepoDigests.
 func PushedDigest(ctx context.Context, ref string, logger *slog.Logger) (string, error) {

@@ -129,6 +129,10 @@ type manager struct {
 	// GCP deploy path).
 	mirrorRegistry string
 
+	// forbiddenValuesDir holds each project's list of forbidden value hashes
+	// (SetForbiddenValuesDir).
+	forbiddenValuesDir string
+
 	// claudeDefaults is the environment's model/effort, used until an operator
 	// saves a choice on the dashboard (internal/buildsettings).
 	claudeDefaults buildsettings.Defaults
@@ -1198,6 +1202,16 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	// Air-gap bundle (docker save tarball + compose + INSTALL) when configured.
 	m.writeArtifactBundle(ctx, workDir, appTag, log)
 
+	// v3 is pushed but not released: it reads as this build's image only once it passes.
+	digest, err = m.acceptCandidate(ctx, workDir, spec, job, appTag, digest, commitSHA, log)
+	if err != nil {
+		m.publish(job.ID, domain.BuildEventMsg{
+			Kind: domain.WSError, Text: err.Error(),
+			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
+		})
+		return "", err
+	}
+
 	if err := m.store.SetJobDockerTag(ctx, job.ID, appTag); err != nil {
 		log.Warn("persist image tag failed", "err", err)
 	}
@@ -1213,6 +1227,63 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		Timestamp: time.Now().UTC(),
 	})
 	log.Info("docker image ready", "app", appTag, "pushed", registry != "", "digest", digest)
+	return digest, nil
+}
+
+// SetForbiddenValuesDir says where each project's list of forbidden value hashes lives
+// (<dir>/<project id>.txt). Without a list an external-tls-only build cannot pass.
+func (m *manager) SetForbiddenValuesDir(dir string) { m.forbiddenValuesDir = dir }
+
+// acceptCandidate is the gate between the push and "released" for an external-tls-only
+// app. The release check before the commit ran on a build for this machine's CPU; this
+// one runs on the linux/amd64 image the registry holds, named by the digest the registry
+// gives, and returns that digest. Any other app keeps the path it had.
+func (m *manager) acceptCandidate(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, appTag, pushedDigest, commitSHA string, log *slog.Logger) (string, error) {
+	mode, err := buildstep.ReadDBMode(workDir)
+	if err != nil {
+		return "", err
+	}
+	if mode != buildstep.DBModeExternalTLS {
+		return pushedDigest, nil
+	}
+	if m.registryFor(job) == "" {
+		return "", errors.New("candidate acceptance: an external-tls-only build needs a registry to push to")
+	}
+	if commitSHA == "" {
+		return "", errors.New("candidate acceptance: this build has no commit to check")
+	}
+	m.publishPhase(job.ID, "accept")
+	digest, err := buildstep.RegistryDigest(ctx, appTag, log)
+	if err != nil {
+		return "", fmt.Errorf("candidate acceptance: %w", err)
+	}
+	if pushedDigest != "" && pushedDigest != digest {
+		return "", fmt.Errorf("candidate acceptance: pushed %s, but the registry says %s is %s", pushedDigest, appTag, digest)
+	}
+	image := buildstep.DigestRef(appTag, digest)
+	if err := buildstep.PullDigest(ctx, image, log); err != nil {
+		return "", fmt.Errorf("candidate acceptance: %w", err)
+	}
+	wantWidget := buildstep.HasFeedbackWidget(workDir)
+	if spec.FeedbackWidget != nil {
+		wantWidget = *spec.FeedbackWidget
+	}
+	acceptance := buildstep.Acceptance{
+		Image: image, Commit: commitSHA, ProjectID: job.ProjectID.String(), Widget: wantWidget,
+		ForbiddenFile: filepath.Join(m.forbiddenValuesDir, job.ProjectID.String()+".txt"),
+	}
+	if m.artifactDir != "" {
+		acceptance.ReceiptPath = filepath.Join(m.artifactDir, "acceptance", job.ID.String()+".json")
+	}
+	if err := buildstep.AcceptCandidate(ctx, workDir, acceptance, log); err != nil {
+		return "", err
+	}
+	m.publish(job.ID, domain.BuildEventMsg{
+		Kind:      domain.WSAssistantText,
+		Text:      "✓ candidate accepted: " + image,
+		JobID:     job.ID.String(),
+		Timestamp: time.Now().UTC(),
+	})
 	return digest, nil
 }
 

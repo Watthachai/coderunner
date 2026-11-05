@@ -6,11 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
-	"syscall"
-	"time"
 )
 
 //go:embed verify-delivery.mjs
@@ -36,25 +32,10 @@ func VerifyDelivery(ctx context.Context, dir string) error {
 	if err = os.WriteFile(dockerfile, []byte(productionDockerfile), 0o600); err != nil {
 		return err
 	}
-	node := os.Getenv("CRN_VERIFY_NODE")
-	if node == "" {
-		node = "node"
-	}
-	node, err = exec.LookPath(node)
+	cmd, err := verifierCommand(ctx, dir, script, dockerfile)
 	if err != nil {
-		return fmt.Errorf("verification Node runtime unavailable: %w", err)
+		return err
 	}
-	cmd := exec.CommandContext(ctx, node, script, dockerfile)
-	// npm and Playwright must use the same selected runtime as the verifier.
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "PATH=") {
-			cmd.Env = append(cmd.Env, value)
-		}
-	}
-	cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(node)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cmd.Dir = dir
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = 30 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("customer delivery verification failed: %w\n%s", err, tailLines(string(out), 30))

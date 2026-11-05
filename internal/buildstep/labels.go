@@ -77,7 +77,7 @@ func ReadDBMode(workDir string) (string, error) {
 	switch d.DatabaseMode {
 	case "", "local":
 		return "", nil
-	case "external-tls-only":
+	case DBModeExternalTLS:
 		return d.DatabaseMode, nil
 	}
 	return "", fmt.Errorf("crn-delivery.json database_mode %q is not local or external-tls-only", d.DatabaseMode)

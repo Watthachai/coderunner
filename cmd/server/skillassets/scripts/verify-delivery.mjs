@@ -265,7 +265,8 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
   let stopped = false, networkName, imageName, scratch;
   const stop = () => { stopped = true; for (const child of children) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } };
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
-  let timeout = setTimeout(stop, 15 * 60_000);
+  // A candidate built for another CPU runs under emulation, so it gets a longer budget.
+  let timeout = setTimeout(stop, (options.image ? 60 : 15) * 60_000);
   // Do not forward runtime customer credentials to test setup. DB URL and bootstrap
   // values are always isolated below. Other integration tests must use mocks.
   const env = { ...isolatedEnvironment(process.env), CI: '1', NEXT_TELEMETRY_DISABLED: '1', DATABASE_URL: 'postgresql://build:build@127.0.0.1:1/build', AUTH_SECRET: randomBytes(32).toString('hex'), BOOTSTRAP_ADMIN_EMAIL: 'initial@example.test', BOOTSTRAP_ADMIN_PASSWORD: randomBytes(24).toString('hex'), FITT_FEEDBACK_URL: '' };
@@ -329,7 +330,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     if (tlsMode) {
       // Every step talks TLS, the build included: it gets targets of the right shape on a
       // port nothing listens on, never a plaintext URL.
-      clearTimeout(timeout); timeout = setTimeout(stop, 30 * 60_000);
+      if (!options.image) { clearTimeout(timeout); timeout = setTimeout(stop, 30 * 60_000); }
       Object.assign(env, { DATABASE_URL: `postgresql://build:build@127.0.0.1:1/build?schema=${TLS_SCHEMA}&sslmode=verify-full`, MIGRATION_DATABASE_URL: `postgresql://build:build@127.0.0.1:1/build?schema=${TLS_SCHEMA}&sslmode=require&sslaccept=strict&sslcert=${contract.database_ca_file}`, DATABASE_CA_FILE: contract.database_ca_file });
     }
     const schedule = await fs.readFile(path.join(cwd, 'crn.schedule.json'), 'utf8').catch(e => { if (e.code === 'ENOENT') return '[]'; throw e; });
@@ -532,6 +533,8 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     if (!ready) throw new Error(`Customer image did not become ready: ${redact((await run('startup logs', 'docker', ['logs', '--tail', '30', appName])).slice(-3500))}`);
     const browser = await npm('browser smoke tests', 'test:smoke', ['--reporter=json', '--workers=1', '--retries=0']);
     receipt.browser_tests = assertTestResults('browser', JSON.parse(browser));
+    // options.whileAppRuns: what a caller checks against this running image before it stops.
+    if (options.whileAppRuns) await options.whileAppRuns({ baseUrl: env.CRN_BASE_URL, cwd, receipt, check });
     const statusName = `crn-verify-status-${suffix}`;
     containers.add(statusName);
     await run('start fake status server', 'docker', ['run', '-d', '--name', statusName, '--network', networkName, '--network-alias', 'fitt-status', '--entrypoint', 'node', imageName, '-e', FAKE_STATUS_SERVER]);

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -145,6 +146,11 @@ type Config struct {
 	// from the registry. Empty -> no tarball (registry delivery only).
 	ArtifactDir string
 
+	// ForbiddenValuesDir holds <project id>.txt: hashes of the values that may appear
+	// nowhere in that project's image or commit. An external-tls-only build cannot pass
+	// without its list. Default $HOME/crn-secrets/forbidden.
+	ForbiddenValuesDir string
+
 	// MaxConcurrentBuilds caps how many builds run at once, server-wide. Builds
 	// of different projects run in parallel (they share no working dir), so this
 	// is the resource brake, not a correctness rule: each build ends in a docker
@@ -226,6 +232,7 @@ func Load() (*Config, error) {
 		ImageRegistry:      strings.TrimRight(os.Getenv("CRN_IMAGE_REGISTRY"), "/"),
 		MirrorRegistry:     strings.TrimRight(os.Getenv("CRN_MIRROR_REGISTRY"), "/"),
 		ArtifactDir:        os.Getenv("CRN_ARTIFACT_DIR"),
+		ForbiddenValuesDir: getEnv("CRN_FORBIDDEN_VALUES_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "forbidden")),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),

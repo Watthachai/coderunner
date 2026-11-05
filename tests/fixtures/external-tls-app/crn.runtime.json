@@ -7,6 +7,7 @@
     { "name": "BOOTSTRAP_ADMIN_PASSWORD", "required": "first_start", "secret": true },
     { "name": "FITT_STATUS_URL", "required": "no" },
     { "name": "FITT_LICENSE_KEY", "required": "no", "secret": true },
-    { "name": "FIXTURE_WEAK", "required": "no", "note": "test fixture only: a deliberately broken helper" }
+    { "name": "FIXTURE_WEAK", "required": "no", "note": "test fixture only: a deliberately broken helper" },
+    { "name": "FIXTURE_WEAK_WIDGET", "required": "no", "note": "test fixture only: a deliberately broken widget" }
   ]
 }
