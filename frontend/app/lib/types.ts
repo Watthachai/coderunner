@@ -129,6 +129,22 @@ export interface DashboardSnapshot {
   projects: ProjectRow[];
   activity: ActivityRow[];
   generated_at: string;
+  claude_auth?: ClaudeAuthStatus;
+}
+
+// Mirrors internal/domain.ClaudeAuthStatus: the Claude Code login every build
+// runs on (internal/claude AuthMonitor).
+export interface ClaudeAuthStatus {
+  state: "ok" | "logged_out" | "token_expired" | "probe_failed" | "error" | "unknown";
+  logged_in: boolean;
+  auth_method?: string;
+  checked_at?: string;
+  detail?: string;
+  probe_at?: string;
+  probe_ok?: boolean;
+  token_expires_at?: string;
+  days_left?: number;
+  expiry_warning: boolean;
 }
 
 // --- build traces (durable per-build state history) ---

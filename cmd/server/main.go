@@ -130,10 +130,23 @@ func run() error {
 		logger.Info("feedback→issue watcher started", "interval", cfg.FeedbackIssuePollInterval)
 	}
 
+	// --- Claude login monitor ---
+	// Every build runs Claude Code on this machine's login. The monitor reads it
+	// every CRN_CLAUDE_AUTH_CHECK_INTERVAL (free), sends one minimal real request
+	// every CRN_CLAUDE_AUTH_PROBE_INTERVAL, and checks again before each build, so
+	// the console shows "logged out" before a build fails on it. It never holds
+	// or fails a build.
+	authMonitor := claude.NewAuthMonitor(cfg.ClaudeBinPath, cfg.ClaudeTokenExpires, logger)
+	if hooked, ok := jobManager.(interface{ SetBeforeBuild(func(context.Context)) }); ok {
+		hooked.SetBeforeBuild(authMonitor.CheckStatus)
+	}
+	go authMonitor.Run(rootCtx, cfg.ClaudeAuthCheckInterval, cfg.ClaudeAuthProbeInterval)
+	logger.Info("claude login monitor started", "check_every", cfg.ClaudeAuthCheckInterval, "probe_every", cfg.ClaudeAuthProbeInterval, "token_expires", cfg.ClaudeTokenExpires)
+
 	// --- HTTP / WebSocket server (chi router) ---
 	// api.NewServer registers all routes and returns an http.Handler. The git
 	// remote is echoed back to FBD in the ingest response.
-	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote, cfg.GithubOwner, cfg.ProjectsDir, cfg.TerminalShell, cfg.TerminalEnabled, cfg.ClaudeBinPath, claudeDefaults, cfg.InternalTokenHashes)
+	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote, cfg.GithubOwner, cfg.ProjectsDir, cfg.TerminalShell, cfg.TerminalEnabled, cfg.ClaudeBinPath, claudeDefaults, cfg.InternalTokenHashes, authMonitor.Status)
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,

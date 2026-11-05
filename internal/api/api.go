@@ -83,6 +83,8 @@ type server struct {
 
 	// claudeBin is the path to the `claude` CLI used by the improve-skill endpoint.
 	claudeBin string
+	// claudeAuth reports the Claude Code login builds use (nil: not shown).
+	claudeAuth func() domain.ClaudeAuthStatus
 	// claudeDefaults is the environment's model/effort. Both the settings
 	// endpoints and the improve-skill run resolve against it
 	// (internal/buildsettings), so every Claude call made here names a model
@@ -105,7 +107,7 @@ var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
 // + issues endpoints). projectsDir is the per-project working-dir root used by
 // the interactive terminal WS, and terminalShell is the optional shell override
 // for that terminal.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell string, terminalEnabled bool, claudeBin string, claudeDefaults buildsettings.Defaults, internalTokens map[string]string) http.Handler {
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell string, terminalEnabled bool, claudeBin string, claudeDefaults buildsettings.Defaults, internalTokens map[string]string, claudeAuth func() domain.ClaudeAuthStatus) http.Handler {
 	s := &server{
 		logger:         logger,
 		store:          store,
@@ -115,6 +117,7 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 		projectsDir:    projectsDir,
 		terminalShell:  terminalShell,
 		claudeBin:      claudeBin,
+		claudeAuth:     claudeAuth,
 		claudeDefaults: claudeDefaults,
 		internalTokens: internalTokens,
 	}
@@ -387,6 +390,10 @@ func (s *server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			"request_id", middleware.GetReqID(r.Context()))
 		s.writeError(w, r, http.StatusInternalServerError, "dashboard failed")
 		return
+	}
+	if s.claudeAuth != nil {
+		st := s.claudeAuth()
+		snap.ClaudeAuth = &st
 	}
 	s.writeJSON(w, r, http.StatusOK, snap)
 }

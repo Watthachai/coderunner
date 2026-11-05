@@ -18,6 +18,7 @@ import { ThemeToggle } from "./components/ThemeToggle";
 import { FeedbackBell } from "./components/FeedbackBell";
 import { BuildStamp } from "./components/BuildStamp";
 import { BuildSettingsPanel } from "./components/BuildSettingsPanel";
+import { ClaudeAuthBanner, ClaudeAuthChip } from "./components/ClaudeAuth";
 
 export default function Home() {
   const { data, error, loading } = useDashboard(2500);
@@ -39,6 +40,7 @@ export default function Home() {
           </div>
         </div>
         <div className="head-right">
+          <ClaudeAuthChip auth={data?.claude_auth} />
           <FeedbackBell />
           <ThemeToggle />
           <Link className="navlink" href="/skills">
@@ -59,6 +61,8 @@ export default function Home() {
           <code>make run</code> up?
         </p>
       ) : null}
+
+      <ClaudeAuthBanner auth={data?.claude_auth} />
 
       <VitalsRail vitals={data?.vitals ?? null} />
 

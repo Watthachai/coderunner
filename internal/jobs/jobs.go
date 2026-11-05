@@ -83,6 +83,8 @@ type manager struct {
 	// projectsDir is the absolute root under which each project's working dir
 	// (projectsDir/<project_id>) is materialized and git-pushed.
 	projectsDir string
+	// beforeBuild runs before every build (SetBeforeBuild); nil: nothing.
+	beforeBuild func(context.Context)
 	// gitRemote is the push target for every build's branch. Empty -> push skipped.
 	gitRemote string
 	// githubOwner opts into the "one repo per project" model: when non-empty each
@@ -444,9 +446,26 @@ func (m *manager) dispatch(ctx context.Context) {
 				// A slot just freed — the rest of the queue may now be runnable.
 				m.dispatch(ctx)
 			}()
+			m.checkBeforeBuild(ctx)
 			m.runJob(ctx, j)
 		}(job)
 	}
+}
+
+// SetBeforeBuild registers what runs before every build: the Claude login
+// check (internal/claude AuthMonitor.CheckStatus), so the console is fresh when
+// a build starts. It only reports; it never holds or fails a build.
+func (m *manager) SetBeforeBuild(fn func(context.Context)) { m.beforeBuild = fn }
+
+// checkBeforeBuild runs the before-build hook, bounded so it cannot delay a
+// build for long.
+func (m *manager) checkBeforeBuild(ctx context.Context) {
+	if m.beforeBuild == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	m.beforeBuild(ctx)
 }
 
 // freeSlot returns a build slot taken by dispatch.

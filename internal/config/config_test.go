@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -182,5 +183,36 @@ func TestInternalTokenHashThatIsNoSHA256StopsStartup(t *testing.T) {
 		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_INTERNAL_TOKEN_SHA256") {
 			t.Errorf("%q: Load() err = %v, want one naming CRN_INTERNAL_TOKEN_SHA256", raw, err)
 		}
+	}
+}
+
+// The Claude login monitor checks every 15 minutes and probes daily unless told
+// otherwise; a long-lived token's expiry is a date the operator sets.
+func TestClaudeAuthMonitorSettings(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_CLAUDE_TOKEN_EXPIRES", "")
+	t.Setenv("CRN_CLAUDE_AUTH_CHECK_INTERVAL", "")
+	t.Setenv("CRN_CLAUDE_AUTH_PROBE_INTERVAL", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClaudeAuthCheckInterval != 15*time.Minute || cfg.ClaudeAuthProbeInterval != 24*time.Hour || cfg.ClaudeTokenExpires != nil {
+		t.Fatalf("defaults: check %v probe %v expires %v", cfg.ClaudeAuthCheckInterval, cfg.ClaudeAuthProbeInterval, cfg.ClaudeTokenExpires)
+	}
+
+	t.Setenv("CRN_CLAUDE_TOKEN_EXPIRES", "2027-11-05")
+	t.Setenv("CRN_CLAUDE_AUTH_CHECK_INTERVAL", "5m")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClaudeTokenExpires == nil || !cfg.ClaudeTokenExpires.Equal(time.Date(2027, 11, 5, 0, 0, 0, 0, time.UTC)) || cfg.ClaudeAuthCheckInterval != 5*time.Minute {
+		t.Fatalf("set: expires %v check %v", cfg.ClaudeTokenExpires, cfg.ClaudeAuthCheckInterval)
+	}
+
+	t.Setenv("CRN_CLAUDE_TOKEN_EXPIRES", "5/11/2027")
+	if _, err := Load(); err == nil {
+		t.Fatal("a malformed expiry date was accepted")
 	}
 }

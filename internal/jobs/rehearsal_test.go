@@ -119,3 +119,28 @@ func TestEnqueueWithCarriesTheAllocatedIDAndTheRehearsalSwitch(t *testing.T) {
 		t.Errorf("plain Enqueue gave id %s rehearsal %v, want a fresh id and a normal job", job.ID, st.created.Rehearsal)
 	}
 }
+
+// Before each build the Claude login is checked again, so the console's state is
+// fresh when a build starts. It only reports: a build is never held or failed by it.
+func TestEveryBuildRefreshesTheClaudeLoginFirst(t *testing.T) {
+	m := &manager{logger: callbackManager("", uuid.New()).logger}
+	m.checkBeforeBuild(context.Background()) // no hook: nothing to do
+
+	calls := 0
+	var deadline bool
+	m.SetBeforeBuild(func(ctx context.Context) { calls++; _, deadline = ctx.Deadline() })
+	m.checkBeforeBuild(context.Background())
+	if calls != 1 || !deadline {
+		t.Fatalf("hook calls = %d, bounded = %v; want one bounded call", calls, deadline)
+	}
+
+	src, err := os.ReadFile("jobs.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	check, run := strings.Index(body, "m.checkBeforeBuild(ctx)"), strings.Index(body, "m.runJob(ctx, j)")
+	if check < 0 || run < 0 || check > run {
+		t.Fatal("dispatch must call checkBeforeBuild right before runJob")
+	}
+}

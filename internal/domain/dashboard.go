@@ -20,6 +20,31 @@ type DashboardSnapshot struct {
 	Projects    []ProjectRow    `json:"projects"`
 	Activity    []ActivityRow   `json:"activity"`
 	GeneratedAt time.Time       `json:"generated_at"`
+	// ClaudeAuth is the Claude Code login every build depends on (nil when the
+	// server has no monitor).
+	ClaudeAuth *ClaudeAuthStatus `json:"claude_auth,omitempty"`
+}
+
+// ClaudeAuthStatus is what the console shows about the Claude Code login the
+// builds use (internal/claude AuthMonitor). State is "ok", "logged_out",
+// "token_expired", "probe_failed", "error" or "unknown" (not checked yet).
+type ClaudeAuthStatus struct {
+	State      string     `json:"state"`
+	LoggedIn   bool       `json:"logged_in"`
+	AuthMethod string     `json:"auth_method,omitempty"`
+	CheckedAt  *time.Time `json:"checked_at,omitempty"`
+	// Detail says why the state is not ok, without credentials.
+	Detail string `json:"detail,omitempty"`
+	// ProbeAt/ProbeOK: the last real request, which proves the credentials are
+	// accepted, not just stored.
+	ProbeAt *time.Time `json:"probe_at,omitempty"`
+	ProbeOK *bool      `json:"probe_ok,omitempty"`
+	// TokenExpiresAt is the operator-set expiry of a long-lived token
+	// (CRN_CLAUDE_TOKEN_EXPIRES); DaysLeft counts down to it and ExpiryWarning
+	// turns on 30 days out.
+	TokenExpiresAt *time.Time `json:"token_expires_at,omitempty"`
+	DaysLeft       *int       `json:"days_left,omitempty"`
+	ExpiryWarning  bool       `json:"expiry_warning"`
 }
 
 // DashboardVitals are the headline counts shown at the top of the console.

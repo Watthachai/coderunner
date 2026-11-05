@@ -3727,3 +3727,46 @@ body {
   font-size: 0.72rem;
   color: var(--fg-dim);
 }
+
+/* Claude Code login (components/ClaudeAuth.tsx) */
+.claude-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--fg-muted);
+}
+.claude-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+.claude-chip--ok { color: var(--done); }
+.claude-chip--ok .claude-chip-dot { background: var(--done); }
+.claude-chip--warn { color: var(--queued); }
+.claude-chip--warn .claude-chip-dot { background: var(--queued); }
+.claude-chip--bad { color: var(--error); }
+.claude-chip--bad .claude-chip-dot { background: var(--error); box-shadow: 0 0 8px var(--error); animation: pulse 1.6s ease-in-out infinite; }
+.claude-banner {
+  font-size: 0.85rem;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin: 0 0 0.75rem;
+  line-height: 1.5;
+}
+.claude-banner--bad {
+  color: var(--error);
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+}
+.claude-banner--warn {
+  color: var(--queued);
+  background: rgba(251, 146, 60, 0.08);
+  border: 1px solid rgba(251, 146, 60, 0.35);
+}
+.claude-banner-detail { color: var(--fg-muted); }

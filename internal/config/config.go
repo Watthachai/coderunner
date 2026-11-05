@@ -83,6 +83,17 @@ type Config struct {
 	// the widget injection.
 	FeedbackIngestURL string
 
+	// ClaudeAuthCheckInterval / ClaudeAuthProbeInterval: how often the Claude
+	// login monitor reads the stored login (free) and sends one minimal real
+	// request (CRN_CLAUDE_AUTH_CHECK_INTERVAL, default 15m;
+	// CRN_CLAUDE_AUTH_PROBE_INTERVAL, default 24h).
+	ClaudeAuthCheckInterval time.Duration
+	ClaudeAuthProbeInterval time.Duration
+	// ClaudeTokenExpires is the expiry of a long-lived token from `claude
+	// setup-token` (CRN_CLAUDE_TOKEN_EXPIRES, YYYY-MM-DD); nil when unknown. The
+	// console counts down to it.
+	ClaudeTokenExpires *time.Time
+
 	// FeedbackIssuePollInterval is how often the feedback→issue watcher scans for
 	// un-mirrored feedback. Only used when GithubOwner is set.
 	FeedbackIssuePollInterval time.Duration
@@ -231,6 +242,20 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.ShutdownTimeout = timeout
+
+	if cfg.ClaudeAuthCheckInterval, err = getEnvDuration("CRN_CLAUDE_AUTH_CHECK_INTERVAL", 15*time.Minute); err != nil {
+		return nil, err
+	}
+	if cfg.ClaudeAuthProbeInterval, err = getEnvDuration("CRN_CLAUDE_AUTH_PROBE_INTERVAL", 24*time.Hour); err != nil {
+		return nil, err
+	}
+	if raw := os.Getenv("CRN_CLAUDE_TOKEN_EXPIRES"); raw != "" {
+		exp, perr := time.Parse("2006-01-02", raw)
+		if perr != nil {
+			return nil, fmt.Errorf("config: CRN_CLAUDE_TOKEN_EXPIRES must be a date like 2027-11-05: %w", perr)
+		}
+		cfg.ClaudeTokenExpires = &exp
+	}
 
 	pollInterval, err := getEnvDuration("CRN_FEEDBACK_ISSUE_POLL_INTERVAL", 20*time.Second)
 	if err != nil {
