@@ -18,7 +18,10 @@ function buildImage(weak) {
   const tag = `crn-tls-fixture:${weak ? 'weak' : 'ok'}`;
   const r = spawnSync('docker', ['build', '-q', '-f', path.join(fixture, 'Dockerfile.fixture'), '--build-arg', `FIXTURE_WEAK=${weak ? 1 : 0}`, '-t', tag, fixture], { encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
-  return tag;
+  // The checker takes images by digest only.
+  const id = spawnSync('docker', ['image', 'inspect', '--format', '{{.Id}}', tag], { encoding: 'utf8' }).stdout.trim();
+  assert.match(id, /^sha256:[0-9a-f]{64}$/);
+  return `crn-tls-fixture@${id}`;
 }
 async function copyFixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'crn-tls-e2e-'));

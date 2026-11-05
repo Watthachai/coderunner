@@ -75,3 +75,19 @@ test('a failure may not print a secret, a connection URL, its query string or us
   const tail = sanitizedTail('first line\nfailed: postgresql://app:pw@h:1/db?x=1 with s3cret', ['s3cret']);
   assert.equal(tail, 'first line failed: [url] with [redacted]');
 });
+
+import { requireDigestRef } from '../internal/buildstep/verify-delivery.mjs';
+import fs from 'node:fs/promises';
+
+test('--image takes an image by digest only, never a tag', () => {
+  const d = 'sha256:' + 'a'.repeat(64);
+  assert.equal(requireDigestRef(`172.168.1.234:5050/fitt/app@${d}`), `172.168.1.234:5050/fitt/app@${d}`);
+  for (const bad of ['172.168.1.234:5050/fitt/app:v3', 'app', `app@sha256:${'a'.repeat(63)}`, `app:v3@sha256:${'A'.repeat(64)}`, '']) {
+    assert.throws(() => requireDigestRef(bad), /digest/, bad);
+  }
+});
+
+test('cleanup removes the stand-ins\' anonymous volumes with their containers', async () => {
+  const src = await fs.readFile(new URL('../internal/buildstep/verify-delivery.mjs', import.meta.url), 'utf8');
+  assert.match(src, /cleanup\(\['rm', '-f', '-v', \.\.\.containers\]\)/);
+});

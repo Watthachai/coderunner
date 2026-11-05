@@ -219,6 +219,12 @@ const ISOLATION_SQL = `SELECT json_build_object(
  'objects_by_kind', (SELECT coalesce(json_object_agg(k, v), '{}'::json) FROM (SELECT c.relkind::text k, count(*) v FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='${TLS_SCHEMA}' GROUP BY 1) s),
  'journal', (SELECT json_agg(json_build_object('name', migration_name, 'checksum', checksum, 'finished', finished_at IS NOT NULL, 'rolled_back', rolled_back_at IS NOT NULL) ORDER BY migration_name) FROM ${TLS_SCHEMA}._prisma_migrations)
 )`;
+// An image given to --image is named by its registry digest, so the check runs on
+// exactly the image that will be deployed; a tag can move.
+export function requireDigestRef(ref) {
+  if (typeof ref !== 'string' || !/^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/.test(ref) || /:[^/@]*@/.test(ref.slice(ref.lastIndexOf('/') + 1))) throw new Error('--image must name the image by digest: <repository>@sha256:<64 hex>, not a tag');
+  return ref;
+}
 // options.image: run the whole check against an image that already exists (a candidate
 // pushed by CRN) instead of building one, so acceptance runs on the real image.
 export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new URL('../assets/Dockerfile', import.meta.url)), options = {}) {
@@ -312,7 +318,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     receipt.unit_tests = assertTestResults('unit', JSON.parse(await fs.readFile(unitFile, 'utf8')));
     const suffix = randomBytes(8).toString('hex');
     if (options.image) {
-      imageName = options.image;
+      imageName = requireDigestRef(options.image);
       await run('customer image present', 'docker', ['image', 'inspect', '--format', '{{.Id}}', imageName]);
     } else {
       await npm('production build without DB', 'build');
@@ -507,7 +513,8 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
   finally {
     stop(); clearTimeout(timeout); process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop);
     const cleanup = args => new Promise(resolve => { const c = spawn('docker', args, { env: isolatedEnvironment(process.env), stdio: 'ignore', timeout: 8000, killSignal: 'SIGKILL' }); c.on('error', resolve); c.on('close', resolve); });
-    if (containers.size) await cleanup(['rm', '-f', ...containers]);
+    // -v: the PostgreSQL containers' anonymous data volumes go with them.
+    if (containers.size) await cleanup(['rm', '-f', '-v', ...containers]);
     await Promise.all([networkName && cleanup(['network', 'rm', networkName]), imageName && !options.image && cleanup(['image', 'rm', '-f', imageName])]);
     if (scratch) await fs.rm(scratch, { recursive: true, force: true });
     receipt.finished_at = new Date().toISOString();
