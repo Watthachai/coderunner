@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { acceptCandidate, createScanner, forbiddenEntry, parseForbidden, scanBlob, scanTree, widgetTagProblem, PLACEHOLDERS } from '../internal/buildstep/accept-candidate.mjs';
 
 const entries = (...values) => values.map((v, i) => ({ label: `value #${i + 1}`, ...parseForbidden(forbiddenEntry(v))[0] }));
@@ -54,7 +55,7 @@ test('the scan reads the commit tree by path and a gzip layer through its compre
   const hits = [];
   const scanner = createScanner(entries('db_role_x'), hit => hits.push(hit));
   const scope = await scanTree(dir, scanner);
-  assert.deepEqual(scope, { files: 2, bytes: 25 });
+  assert.deepEqual(scope, { directories: 2, files: 2, symlinks: 1, bytes: 25 });
   assert.deepEqual(hits, [{ label: 'value #1', where: 'source a/b/notes.md', offset: 4 }]);
 
   hits.length = 0;
@@ -74,6 +75,53 @@ test('the scan reads the commit tree by path and a gzip layer through its compre
   await assert.rejects(scanBlob(zstd, 'layer z', scanner), /cannot read/, 'a layer it cannot read fails closed');
 });
 
+test('a forbidden value in a name or a symlink target is found, and the receipt never repeats it', async t => {
+  const value = 'db_role_x';
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'crn-accept-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  async function scan(build) {
+    const tree = await fs.mkdtemp(path.join(dir, 'tree-'));
+    await build(tree);
+    const hits = [];
+    await scanTree(tree, createScanner(entries(value), hit => hits.push(hit)));
+    assert.ok(!JSON.stringify(hits).includes(value), `a hit repeats the value: ${JSON.stringify(hits)}`);
+    return hits;
+  }
+  // A file's name, a directory's name and a symlink's own name.
+  assert.equal((await scan(tree => fs.writeFile(path.join(tree, `notes-${value}.md`), 'clean'))).length, 1);
+  assert.equal((await scan(async tree => { await fs.mkdir(path.join(tree, `${value}-dir`)); })).length, 1);
+  assert.equal((await scan(tree => fs.symlink('clean.txt', path.join(tree, `link-${value}`)))).length, 1);
+  // A symlink's target, which is never followed: it points nowhere here.
+  const target = await scan(tree => fs.symlink(`../outside/${value}`, path.join(tree, 'innocent-link')));
+  assert.deepEqual(target.map(h => h.where), ['symlink target of source innocent-link']);
+  // Content under a forbidden name is named by number, not by its path.
+  const under = await scan(async tree => {
+    await fs.mkdir(path.join(tree, `${value}-dir`));
+    await fs.writeFile(path.join(tree, `${value}-dir/notes.md`), `see ${value}`);
+  });
+  assert.equal(under.length, 3, 'the directory, the file below it, and its content');
+  assert.ok(under.every(h => /^(name of )?source entry #\d+$/.test(h.where)), JSON.stringify(under));
+  // Nothing forbidden, nothing reported, and the plain names stay readable.
+  assert.deepEqual(await scan(async tree => {
+    await fs.mkdir(path.join(tree, 'a'));
+    await fs.writeFile(path.join(tree, 'a/clean.txt'), 'clean');
+    await fs.symlink('a/clean.txt', path.join(tree, 'link'));
+  }), []);
+});
+
+test('a read that fails does not print a path that may hold the value', async t => {
+  const value = 'db_role_x';
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'crn-accept-'));
+  t.after(async () => { await fs.chmod(path.join(dir, `${value}.txt`), 0o600).catch(() => {}); await fs.rm(dir, { recursive: true, force: true }); });
+  await fs.writeFile(path.join(dir, `${value}.txt`), 'clean');
+  await fs.chmod(path.join(dir, `${value}.txt`), 0o000);
+  await assert.rejects(scanTree(dir, createScanner(entries(value), () => {})), e => {
+    assert.match(e.message, /could not read/);
+    assert.ok(!e.message.includes(value), e.message);
+    return true;
+  });
+});
+
 const project = '11111111-1111-4111-8111-111111111111';
 const tag = (p = project, ingest = '/api/fitt-feedback') => `<script src="/fitt-feedback.js" data-fitt-feedback="true" data-project="${p}" data-ingest="${ingest}"></script>`;
 
@@ -91,6 +139,7 @@ function world(overrides = {}) {
   const steps = [];
   const deps = {
     platform: async () => { steps.push('platform'); return 'linux/amd64'; },
+    revision: async () => 'c1',
     scanTree: async () => { steps.push('scan source'); return { files: 1, bytes: 1 }; },
     scanImage: async () => { steps.push('scan image'); return { blobs: [] }; },
     verify: async (_cwd, _df, options) => {
@@ -113,10 +162,24 @@ test('a candidate passes only when platform, scans, checker and widget all pass,
   assert.deepEqual(steps, ['platform', 'scan source', 'scan image', `checker reg/app@${digest}`, 'widget']);
   assert.equal(r.image, `reg/app@${digest}`);
   assert.equal(r.platform, 'linux/amd64');
+  assert.equal(r.revision, 'c1');
   assert.equal(r.artifact_scan.values.real, 1);
   assert.equal(r.artifact_scan.values.placeholders, PLACEHOLDERS.length);
+  assert.equal(r.artifact_scan.list_sha256, createHash('sha256').update(forbiddenEntry('real-value')).digest('hex'));
   assert.deepEqual(r.artifact_scan.hits, []);
+  assert.equal(r.widget.ran, true);
+  assert.equal(r.widget.expected, true);
   assert.ok(r.finished_at);
+});
+
+test('an image whose revision label is not this commit never reaches the scan', async () => {
+  for (const label of ['another-commit', '', undefined]) {
+    const { deps, steps } = world({ revision: async () => label });
+    const r = await acceptCandidate(request(deps));
+    assert.equal(r.status, 'failed');
+    assert.match(r.error, /revision/);
+    assert.deepEqual(steps, ['platform']);
+  }
 });
 
 test('a candidate named by a tag, or for another platform, never reaches the checker', async () => {

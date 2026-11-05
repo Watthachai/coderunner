@@ -147,8 +147,10 @@ type Config struct {
 	ArtifactDir string
 
 	// ForbiddenValuesDir holds <project id>.txt: hashes of the values that may appear
-	// nowhere in that project's image or commit. An external-tls-only build cannot pass
-	// without its list. Default $HOME/crn-secrets/forbidden.
+	// nowhere in that project's image, commits or build logs. Each file is a regular
+	// file, mode 600, owned by CRN's user, with exactly three values. A project with a
+	// list goes through the candidate gate; an external-tls-only build cannot pass
+	// without one. Default $HOME/crn-secrets/forbidden.
 	ForbiddenValuesDir string
 
 	// MaxConcurrentBuilds caps how many builds run at once, server-wide. Builds

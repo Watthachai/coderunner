@@ -18,6 +18,7 @@ import { forbiddenEntry } from '../internal/buildstep/accept-candidate.mjs';
 const fixture = fileURLToPath(new URL('./fixtures/external-tls-app/', import.meta.url));
 const skip = process.env.CRN_TLS_E2E === '1' ? false : 'set CRN_TLS_E2E=1 (needs Docker, OpenSSL 3.4+, Node 22/24)';
 
+const COMMIT = 'c0ffee';
 const WIDGET_JS = fileURLToPath(new URL('../internal/buildstep/fitt-feedback.js', import.meta.url));
 const AMD64 = 'linux/amd64';
 function buildImage({ weak = false, widget = '', platform = process.env.CRN_TLS_E2E_PLATFORM || 'native' } = {}) {
@@ -28,7 +29,7 @@ function buildImage({ weak = false, widget = '', platform = process.env.CRN_TLS_
     cpSync(fixture, context, { recursive: true });
     mkdirSync(path.join(context, 'public'));
     cpSync(WIDGET_JS, path.join(context, 'public/fitt-feedback.js'));
-    const r = spawnSync('docker', ['build', '-q', ...(platform === 'native' ? [] : ['--platform', platform]), '-f', path.join(context, 'Dockerfile.fixture'), '--build-arg', `FIXTURE_WEAK=${weak ? 1 : 0}`, '--build-arg', `FIXTURE_WEAK_WIDGET=${widget}`, '-t', tag, context], { encoding: 'utf8' });
+    const r = spawnSync('docker', ['build', '-q', ...(platform === 'native' ? [] : ['--platform', platform]), '-f', path.join(context, 'Dockerfile.fixture'), '--label', `org.opencontainers.image.revision=${COMMIT}`, '--build-arg', `FIXTURE_WEAK=${weak ? 1 : 0}`, '--build-arg', `FIXTURE_WEAK_WIDGET=${widget}`, '-t', tag, context], { encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
   } finally { rmSync(context, { recursive: true, force: true }); }
   // The checker takes images by digest only.
@@ -92,14 +93,15 @@ test('external-tls-only: an app that lets a plaintext URL through is refused', {
 const PROJECT = '11111111-1111-4111-8111-111111111111';
 const ACCEPT_SCRIPT = fileURLToPath(new URL('../internal/buildstep/accept-candidate.mjs', import.meta.url));
 // As CRN runs it: one process per candidate, in a clean tree, through the command line.
-async function accept(name, imageOptions, { widget = true, forbidden = forbiddenEntry('203.0.113.250') } = {}) {
+const THREE_VALUES = ['203.0.113.250', 'fixture_db_not_here', 'fixture_role_not_here'];
+async function accept(name, imageOptions, { widget = true, forbidden = THREE_VALUES.map(forbiddenEntry).join('\n'), commit = COMMIT, prepare } = {}) {
   const dir = await copyFixture();
   const work = await fs.mkdtemp(path.join(os.tmpdir(), 'crn-accept-e2e-'));
   try {
-    const list = path.join(work, 'forbidden'), receiptFile = path.join(work, 'receipt.json');
-    await fs.writeFile(list, `${forbidden}\n`);
+    const receiptFile = path.join(work, 'receipt.json');
+    if (prepare) await prepare(dir);
     const image = buildImage({ platform: AMD64, ...imageOptions });
-    const r = spawnSync(process.execPath, [ACCEPT_SCRIPT, '--image', image, '--commit', 'c0ffee', '--project', PROJECT, '--widget', widget ? 'on' : 'off', '--forbidden', list, '--receipt', receiptFile], { cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const r = spawnSync(process.execPath, [ACCEPT_SCRIPT, '--image', image, '--commit', commit, '--project', PROJECT, '--widget', widget ? 'on' : 'off', '--receipt', receiptFile], { cwd: dir, input: `${forbidden}\n`, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     const raw = await fs.readFile(receiptFile, 'utf8');
     const receipt = JSON.parse(raw);
     assert.equal(r.status, receipt.status === 'passed' ? 0 : 1, 'the exit code follows the receipt');
@@ -115,11 +117,14 @@ test('the gate passes a good amd64 candidate after every check', { skip, timeout
   const r = await accept('passed', {});
   assert.equal(r.status, 'passed', r.error);
   assert.equal(r.platform, AMD64);
+  assert.equal(r.revision, COMMIT);
+  assert.deepEqual(r.artifact_scan.values, { real: 3, placeholders: 3 });
   assert.deepEqual(r.artifact_scan.hits, []);
   assert.ok(r.artifact_scan.source.files > 5);
   assert.ok(r.artifact_scan.image.layers > 3 && r.artifact_scan.image.blobs.some(b => b.encoding === 'gzip'), JSON.stringify(r.artifact_scan.image));
   assert.ok(r.artifact_scan.image.config.env > 3 && r.artifact_scan.image.config.history > 3, JSON.stringify(r.artifact_scan.image.config));
   assert.equal(r.widget.expected, true);
+  assert.equal(r.widget.ran, true);
   assert.deepEqual(r.widget.outside_requests, []);
   assert.equal(r.checker.status, 'passed');
   assert.equal(r.checker.external_tls.must_fail.length, 53);
@@ -148,6 +153,29 @@ test('the gate refuses a placeholder left in the image', { skip, timeout: 20 * 6
   assert.ok(r.artifact_scan.hits.some(h => h.label === 'placeholder WITHHELD_DB_HOST' && h.where === 'source server.mjs') === false, 'the commit itself is clean here');
 });
 
+test('the gate finds a forbidden value in a file name and a symlink target of the commit', { skip, timeout: 20 * 60_000 }, async () => {
+  const value = 'value-only-in-names-9f3a';
+  const r = await accept('failed-name-and-symlink', {}, {
+    forbidden: forbiddenEntry(value),
+    prepare: async dir => {
+      await fs.writeFile(path.join(dir, `notes-${value}.md`), 'clean');
+      await fs.symlink(`../elsewhere/${value}`, path.join(dir, 'innocent-link'));
+    },
+  });
+  assert.equal(r.status, 'failed');
+  assert.equal(r.checker, undefined, 'stops before the long checks');
+  assert.equal(r.artifact_scan.hits.length, 2, JSON.stringify(r.artifact_scan.hits));
+  assert.ok(r.artifact_scan.hits.every(h => h.label === 'real value #1' && h.where.includes('source')), JSON.stringify(r.artifact_scan.hits));
+  assert.ok(!JSON.stringify(r).includes(value), 'the receipt repeats the value');
+});
+
+test('the gate refuses an image whose revision label is another commit', { skip, timeout: 20 * 60_000 }, async () => {
+  const r = await accept('failed-revision', {}, { commit: 'not-the-commit-built' });
+  assert.equal(r.status, 'failed');
+  assert.match(r.error, /revision label/);
+  assert.equal(r.artifact_scan, undefined, 'stops before the scan');
+});
+
 test('the gate refuses a widget loaded twice', { skip, timeout: 40 * 60_000 }, async () => {
   const r = await accept('failed-widget-twice', { widget: 'twice' });
   assert.equal(r.status, 'failed');
@@ -164,6 +192,21 @@ test('the gate refuses a widget on a build that must not carry one', { skip, tim
   const r = await accept('failed-widget-unwanted', {}, { widget: false });
   assert.equal(r.status, 'failed');
   assert.match(r.error, /must not carry the widget/);
+});
+
+test('the gate passes a build that must not carry the widget, and still reads its page in a browser', { skip, timeout: 40 * 60_000 }, async () => {
+  const r = await accept('passed-no-widget', { widget: 'absent' }, { widget: false });
+  assert.equal(r.status, 'passed', r.error);
+  assert.equal(r.widget.expected, false);
+  assert.equal(r.widget.ran, true);
+  assert.deepEqual(r.widget.outside_requests, []);
+  assert.ok(r.checker.checks.some(c => c.name === 'widget absent: none on the page' && c.passed));
+});
+
+test('the gate refuses a page that asks another origin on a build without the widget too', { skip, timeout: 40 * 60_000 }, async () => {
+  const r = await accept('failed-no-widget-outside', { widget: 'absent-outside' }, { widget: false });
+  assert.equal(r.status, 'failed');
+  assert.match(r.error, /192\.0\.2\.1/);
 });
 
 test('the gate refuses an image for this machine when that is not amd64', { skip: skip || (process.arch === 'x64' ? 'this machine is amd64' : false), timeout: 10 * 60_000 }, async () => {

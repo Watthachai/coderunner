@@ -37,6 +37,7 @@ func VerifyDelivery(ctx context.Context, dir string) error {
 		return err
 	}
 	out, err := cmd.CombinedOutput()
+	recordOutput(ctx, "the release checker", out)
 	if err != nil {
 		return fmt.Errorf("customer delivery verification failed: %w\n%s", err, tailLines(string(out), 30))
 	}
@@ -47,6 +48,7 @@ func VerifyDelivery(ctx context.Context, dir string) error {
 	if err != nil {
 		return fmt.Errorf("verification receipt missing: %w", err)
 	}
+	recordOutput(ctx, "the release checker's receipt", raw)
 	if err := json.Unmarshal(raw, &receipt); err != nil || receipt.Status != "passed" {
 		return fmt.Errorf("verification did not pass")
 	}

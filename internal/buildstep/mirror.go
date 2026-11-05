@@ -138,7 +138,9 @@ func dockerOutput(ctx context.Context, logger *slog.Logger, args ...string) (str
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	recordOutput(ctx, "docker "+args[0], append(stdout.Bytes(), stderr.Bytes()...))
+	if err != nil {
 		detail := strings.TrimSpace(stderr.String() + "\n" + stdout.String())
 		logger.Error("docker command failed", "args", strings.Join(args, " "), "output", detail)
 		return "", fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, tailLines(detail, 25))

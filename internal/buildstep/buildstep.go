@@ -289,6 +289,7 @@ func runGit(ctx context.Context, dir string, log *slog.Logger, args ...string) (
 	err := cmd.Run()
 	out := strings.TrimRight(stdout.String(), "\n")
 	errOut := strings.TrimRight(stderr.String(), "\n")
+	recordOutput(ctx, "git "+args[0], append(stdout.Bytes(), stderr.Bytes()...))
 	log.Info("git", "args", strings.Join(args, " "), "stdout", out, "stderr", errOut)
 	if err != nil {
 		return out, fmt.Errorf("buildstep: git %s: %w: %s", strings.Join(args, " "), err, errOut)

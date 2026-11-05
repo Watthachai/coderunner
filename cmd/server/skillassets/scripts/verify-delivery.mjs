@@ -147,6 +147,8 @@ export const TLS_ROLE = 'crn_app';
 export const TLS_SCRIPTS = { migrate: 'db:deploy', seed: 'db:seed', runtime: 'db:check' };
 // The stand-ins' image, pinned so every check runs on the same bytes; the version is checked again on each running stand-in.
 export const TLS_PG_IMAGE = 'postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b';
+// The database of an app with its own PostgreSQL, pinned for the same reason.
+export const LOCAL_PG_IMAGE = 'postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777';
 export const isWantedPostgres = version => /^17\.11(?:\s|$)/.test(version);
 // The CA file must be a regular file, readable, holding exactly one PEM certificate. Each
 // way it can be wrong, and which file the checker mounts for it (null: none).
@@ -510,7 +512,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
         containers.add(dbName);
         const pw = randomBytes(24).toString('hex');
         secrets.add(pw);
-        await run('start isolated database', 'docker', ['run', '-d', '--name', dbName, '--network', networkName, '--network-alias', 'database', '-e', 'POSTGRES_USER=crn_test', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB=crn_test', '-p', '127.0.0.1::5432', 'postgres:16-alpine'], { POSTGRES_PASSWORD: pw });
+        await run('start isolated database', 'docker', ['run', '-d', '--name', dbName, '--network', networkName, '--network-alias', 'database', '-e', 'POSTGRES_USER=crn_test', '-e', 'POSTGRES_PASSWORD', '-e', 'POSTGRES_DB=crn_test', '-p', '127.0.0.1::5432', LOCAL_PG_IMAGE], { POSTGRES_PASSWORD: pw });
         const binding = (await run('database port', 'docker', ['port', dbName, '5432/tcp'])).trim().split(':').pop();
         env.DATABASE_URL = `postgresql://crn_test:${pw}@127.0.0.1:${binding}/crn_test?schema=public`;
         containerEnv = { DATABASE_URL: `postgresql://crn_test:${pw}@database:5432/crn_test?schema=public` };

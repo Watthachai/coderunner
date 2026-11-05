@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"io"
 
 	"github.com/google/uuid"
 )
@@ -220,6 +221,10 @@ type RunSpec struct {
 	// (internal/buildsettings), passed as --model / --effort.
 	Model  string
 	Effort string
+	// StdoutTrace and StderrTrace, when set, also receive every byte the CLI prints,
+	// unparsed: the agent's whole output, for the check of what a build may not print.
+	StdoutTrace io.Writer
+	StderrTrace io.Writer
 }
 
 // RunResult is the terminal outcome of a Claude Code run, from its last result

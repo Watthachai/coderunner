@@ -230,6 +230,13 @@ func (r *runner) Run(ctx context.Context, spec domain.RunSpec, emit func(domain.
 	if err := cmd.Start(); err != nil {
 		return domain.RunResult{}, fmt.Errorf("claude: start %q: %w", r.binPath, err)
 	}
+	var out, errOut io.Reader = stdout, stderr
+	if spec.StdoutTrace != nil {
+		out = io.TeeReader(stdout, spec.StdoutTrace)
+	}
+	if spec.StderrTrace != nil {
+		errOut = io.TeeReader(stderr, spec.StderrTrace)
+	}
 	log.Info("claude started", "pid", cmd.Process.Pid)
 
 	// Drain stderr concurrently into the logger so a noisy/blocking stderr can
@@ -238,13 +245,13 @@ func (r *runner) Run(ctx context.Context, spec domain.RunSpec, emit func(domain.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		drainStderr(stderr, log)
+		drainStderr(errOut, log)
 	}()
 
 	// Scan stdout, translate, and emit. result keeps the last terminal line.
 	var result domain.RunResult
 	var sawResult bool
-	scanErr := scanStream(stdout, log, func(ev domain.ClaudeEvent) error {
+	scanErr := scanStream(out, log, func(ev domain.ClaudeEvent) error {
 		if ev.IsTerminal() {
 			sawResult = true
 			result = domain.RunResult{

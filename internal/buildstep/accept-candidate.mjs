@@ -1,7 +1,8 @@
 // The last gate before CRN reports "released" for an external-tls-only app. It runs on
 // the amd64 image the registry holds, named by digest, not on a build of the same source:
-//   1. the image is linux/amd64
-//   2. no forbidden value or placeholder in the commit's tree or anywhere in the image
+//   1. the image is linux/amd64 and its revision label names this commit
+//   2. no forbidden value or placeholder in the commit's tree (names, symlink targets and
+//      content) or anywhere in the image
 //   3. the whole release checker (verify-delivery.mjs) against that image
 //   4. the feedback widget, while the checker has the image running
 // Anything else, including a crash, leaves the receipt at status "failed".
@@ -65,8 +66,10 @@ export function createScanner(entries, onHit) {
     source(where) {
       let tail = Buffer.alloc(0), before = 0;
       return {
+        // How many hits these bytes held, so a caller can tell before it names them.
         push(chunk) {
-          if (!chunk.length) return;
+          let found = 0;
+          if (!chunk.length) return found;
           const buf = tail.length ? Buffer.concat([tail, chunk]) : chunk;
           const fresh = tail.length; // a window must end in the new bytes, or it was seen
           for (const g of list) {
@@ -77,33 +80,50 @@ export function createScanner(entries, onHit) {
               if (i >= length) h = (h + PRIME - (buf[i - length] * pow) % PRIME) % PRIME;
               if (i >= length - 1 && i >= fresh && targets.has(h)) {
                 const sha = createHash('sha256').update(buf.subarray(i - length + 1, i + 1)).digest('hex');
-                for (const e of targets.get(h)) if (e.sha256 === sha) onHit({ label: e.label, where, offset: before + i - length + 1 });
+                for (const e of targets.get(h)) if (e.sha256 === sha) { found++; onHit({ label: e.label, where, offset: before + i - length + 1 }); }
               }
             }
           }
           const cut = Math.max(0, buf.length - keep);
           before += cut;
           tail = Buffer.from(buf.subarray(cut));
+          return found;
         },
       };
     },
   };
 }
 
-// The commit's files, by path. Symlinks are not followed: their targets are in the tree or not ours.
+// The commit's tree: every name, every symlink's target as bytes (never followed) and every
+// file's content. A name holding a value must not reach the receipt or an error, so such an
+// entry, and anything below it, is named by its number.
 export async function scanTree(root, scanner) {
-  const scope = { files: 0, bytes: 0 };
-  async function walk(dir) {
-    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-      const file = path.join(dir, entry.name);
-      if (entry.isDirectory()) { await walk(file); continue; }
-      if (!entry.isFile()) continue;
-      const source = scanner.source(`source ${path.relative(root, file)}`);
-      for await (const chunk of createReadStream(file, { highWaterMark: 1 << 20 })) { source.push(chunk); scope.bytes += chunk.length; }
-      scope.files++;
+  const scope = { directories: 0, files: 0, symlinks: 0, bytes: 0 };
+  let entries = 0;
+  const reading = async (label, work) => {
+    try { return await work(); } catch { throw new Error(`The scan could not read ${label}`); }
+  };
+  async function walk(dir, label) {
+    for (const entry of await reading(label, () => fs.readdir(dir, { withFileTypes: true }))) {
+      const file = path.join(dir, entry.name), rel = path.relative(root, file), number = ++entries;
+      const held = scanner.source(`name of source entry #${number}`).push(Buffer.from(rel)) > 0;
+      const name = held ? `source entry #${number}` : `source ${rel}`;
+      if (entry.isDirectory()) {
+        scope.directories++;
+        await walk(file, name);
+      } else if (entry.isSymbolicLink()) {
+        scanner.source(`symlink target of ${name}`).push(await reading(name, () => fs.readlink(file, { encoding: 'buffer' })));
+        scope.symlinks++;
+      } else if (entry.isFile()) {
+        const source = scanner.source(name);
+        await reading(name, async () => {
+          for await (const chunk of createReadStream(file, { highWaterMark: 1 << 20 })) { source.push(chunk); scope.bytes += chunk.length; }
+        });
+        scope.files++;
+      } else throw new Error(`The commit's tree cannot hold ${name}: it is not a file, a directory or a symlink`);
     }
   }
-  await walk(root);
+  await walk(root, 'the commit\'s tree');
   return scope;
 }
 
@@ -185,19 +205,20 @@ export async function checkWidget({ baseUrl, cwd, project, expected, check }) {
   const script = await get('/fitt-feedback.js');
   const route = await get('/api/fitt-feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   const found = { login_status: page.status, script_status: script.status, route_status: route.status };
-  if (!expected) {
+  if (expected) {
+    check('login page answers', page.status === 200, `/login answered ${page.status}`);
+    const problem = widgetTagProblem(html, project);
+    check('one widget tag for this project, posting to the same origin', !problem, problem);
+    check('widget script loads', script.status === 200 && /javascript/.test(script.headers.get('content-type') ?? ''), `/fitt-feedback.js answered ${script.status} ${script.headers.get('content-type')}`);
+    // Nothing is listening behind the route here, so reaching it answers 502 from the route itself.
+    check('widget route answers on the same origin', route.ok || route.status === 502, `/api/fitt-feedback answered ${route.status}`);
+  } else {
     check('widget absent: no tag on /login', !/\/fitt-feedback\.js/.test(html.replace(/self\.__next_f[^<]*/g, '')), 'This build must not carry the widget, but /login loads it');
     check('widget absent: no script', script.status === 404, `This build must not carry the widget, but /fitt-feedback.js answered ${script.status}`);
     check('widget absent: no route', route.status === 404 || route.status === 405, `This build must not carry the widget, but its route answered ${route.status}`);
-    return found;
   }
-  check('login page answers', page.status === 200, `/login answered ${page.status}`);
-  const problem = widgetTagProblem(html, project);
-  check('one widget tag for this project, posting to the same origin', !problem, problem);
-  check('widget script loads', script.status === 200 && /javascript/.test(script.headers.get('content-type') ?? ''), `/fitt-feedback.js answered ${script.status} ${script.headers.get('content-type')}`);
-  // Nothing is listening behind the route here, so reaching it answers 502 from the route itself.
-  check('widget route answers on the same origin', route.ok || route.status === 502, `/api/fitt-feedback answered ${route.status}`);
 
+  // In a real browser, with or without the widget: no page may ask another origin.
   const { chromium } = createRequire(path.join(cwd, 'package.json'))('@playwright/test');
   const browser = await chromium.launch();
   try {
@@ -208,12 +229,16 @@ export async function checkWidget({ baseUrl, cwd, project, expected, check }) {
     tab.on('request', r => { const u = new URL(r.url()); if (!['data:', 'blob:'].includes(u.protocol) && u.origin !== origin) outside.add(u.origin); });
     await tab.goto(`${baseUrl}/login`, { waitUntil: 'load', timeout: 180_000 });
     const hosts = await tab.locator('#fitt-feedback-host').count();
-    check('one widget on the page', hosts === 1, `The page holds ${hosts} widgets`);
-    const openPanels = tab.locator('#fitt-feedback-host .panel:not([hidden])');
-    check('widget starts closed', await openPanels.count() === 0, 'The widget panel is open before anyone asked for it');
-    await tab.locator('#fitt-feedback-host .fab').click({ timeout: 60_000 });
-    await openPanels.first().waitFor({ state: 'visible', timeout: 30_000 });
-    check('widget opens', true);
+    if (expected) {
+      check('one widget on the page', hosts === 1, `The page holds ${hosts} widgets`);
+      const openPanels = tab.locator('#fitt-feedback-host .panel:not([hidden])');
+      check('widget starts closed', await openPanels.count() === 0, 'The widget panel is open before anyone asked for it');
+      await tab.locator('#fitt-feedback-host .fab').click({ timeout: 60_000 });
+      await openPanels.first().waitFor({ state: 'visible', timeout: 30_000 });
+      check('widget opens', true);
+    } else {
+      check('widget absent: none on the page', hosts === 0, `This build must not carry the widget, but the page holds ${hosts}`);
+    }
     await tab.waitForLoadState('networkidle', { timeout: 60_000 }).catch(() => {});
     found.outside_requests = [...outside].sort();
     check('no request leaves the app\'s origin', outside.size === 0, `The page asked ${found.outside_requests.join(', ')}`);
@@ -222,23 +247,28 @@ export async function checkWidget({ baseUrl, cwd, project, expected, check }) {
 }
 
 // --- the gate ----------------------------------------------------------------------------
+const REVISION_LABEL = 'org.opencontainers.image.revision';
 const REAL_DEPS = {
   platform: async image => (await command('docker', ['image', 'inspect', '--format', '{{.Os}}/{{.Architecture}}', image])).trim(),
+  revision: async image => (await command('docker', ['image', 'inspect', '--format', `{{index .Config.Labels "${REVISION_LABEL}"}}`, image])).trim(),
   scanTree, scanImage, verify, checkWidget,
 };
-// forbidden: the text of the hash list. widget: whether this build must carry the widget.
+// forbidden: the text of the hash list, as CRN pinned it before the agent ran.
+// widget: whether this build must carry the widget.
 export async function acceptCandidate({ image, commit, project, widget, forbidden, cwd = process.cwd(), deps = REAL_DEPS }) {
   const receipt = { schema_version: 1, status: 'failed', image, commit, project, started_at: new Date().toISOString() };
   try {
     requireDigestRef(image);
     receipt.platform = await deps.platform(image);
     if (receipt.platform !== REQUIRED_PLATFORM) throw new Error(`The candidate is ${receipt.platform}, want ${REQUIRED_PLATFORM}`);
+    receipt.revision = await deps.revision(image);
+    if (receipt.revision !== commit) throw new Error(`The candidate's revision label is "${receipt.revision ?? ''}", want ${commit}`);
 
     const real = parseForbidden(forbidden).map((e, i) => ({ ...e, label: `real value #${i + 1}` }));
     const planted = PLACEHOLDERS.map(p => ({ ...parseForbidden(forbiddenEntry(p))[0], label: `placeholder ${p}` }));
     const hits = [];
     const scanner = createScanner([...real, ...planted], hit => hits.push(hit));
-    receipt.artifact_scan = { scope: ['the commit\'s tree', 'image manifest', 'image config: Env, Labels, Cmd, history', 'every image layer, decompressed'], values: { real: real.length, placeholders: planted.length }, hits };
+    receipt.artifact_scan = { scope: ['the commit\'s tree: names, symlink targets and content', 'image manifest', 'image config: Env, Labels, Cmd, history', 'every image layer, decompressed'], list_sha256: createHash('sha256').update(forbidden).digest('hex'), values: { real: real.length, placeholders: planted.length }, hits };
     receipt.artifact_scan.source = await deps.scanTree(cwd, scanner);
     receipt.artifact_scan.image = await deps.scanImage(image, scanner);
     if (hits.length) throw new Error(`Forbidden content: ${hits.slice(0, 8).map(h => `${h.label} in ${h.where}`).join('; ')}`);
@@ -246,7 +276,7 @@ export async function acceptCandidate({ image, commit, project, widget, forbidde
     let widgetDone = false;
     const checker = await deps.verify(cwd, undefined, {
       image,
-      whileAppRuns: async ctx => { receipt.widget = { expected: widget, ...await deps.checkWidget({ ...ctx, project, expected: widget }) }; widgetDone = true; },
+      whileAppRuns: async ctx => { receipt.widget = { expected: widget, ran: true, ...await deps.checkWidget({ ...ctx, project, expected: widget }) }; widgetDone = true; },
     });
     receipt.checker = checker;
     if (checker.status !== 'passed') throw new Error(`Release checker: ${checker.error ?? 'did not pass'}`);
@@ -257,7 +287,8 @@ export async function acceptCandidate({ image, commit, project, widget, forbidde
   return receipt;
 }
 
-// node accept-candidate.mjs --image <repo>@sha256:… --commit <sha> --project <id> --widget on|off --forbidden <file> --receipt <file>
+// node accept-candidate.mjs --image <repo>@sha256:… --commit <sha> --project <id> --widget on|off --receipt <file>
+//   (the pinned hash list on stdin: this process never opens the list's file)
 // node accept-candidate.mjs --hash-values   (values on stdin, one per line; prints the list)
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const args = process.argv.slice(2);
@@ -265,7 +296,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     for (const value of readFileSync(0, 'utf8').split('\n')) if (value) console.log(forbiddenEntry(value));
   } else {
     const opt = name => { const at = args.indexOf(`--${name}`); if (at < 0 || !args[at + 1]) throw new Error(`--${name} is required`); return args[at + 1]; };
-    const receipt = await acceptCandidate({ image: opt('image'), commit: opt('commit'), project: opt('project'), widget: opt('widget') === 'on', forbidden: await fs.readFile(opt('forbidden'), 'utf8') });
+    const receipt = await acceptCandidate({ image: opt('image'), commit: opt('commit'), project: opt('project'), widget: opt('widget') === 'on', forbidden: readFileSync(0, 'utf8') });
     await fs.writeFile(opt('receipt'), JSON.stringify(receipt, null, 2) + '\n');
     process.exitCode = receipt.status === 'passed' ? 0 : 1;
   }

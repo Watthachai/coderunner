@@ -11,15 +11,18 @@ async function suspendedMessage() {
 }
 // The feedback widget, wired as CRN wires it into a Next app. FIXTURE_WEAK_WIDGET: "twice"
 // loads it twice, "outside" makes the page ask another origin, so the release gate's tests
-// can show that it catches them.
+// can show that it catches them. "absent" is a build without the widget, and "absent-outside"
+// one whose page asks another origin all the same.
 const PROJECT = '11111111-1111-4111-8111-111111111111';
 const weakWidget = process.env.FIXTURE_WEAK_WIDGET;
 const tag = `<script src="/fitt-feedback.js" data-fitt-feedback="true" data-project="${PROJECT}" data-ingest="/api/fitt-feedback"></script>`;
-const login = `<!doctype html><html><head><title>login</title></head><body><p>fixture login</p>${weakWidget === 'outside' ? '<img src="http://192.0.2.1/x.png" alt="">' : ''}${tag}${weakWidget === 'twice' ? tag : ''}</body></html>`;
+const noWidget = weakWidget === 'absent' || weakWidget === 'absent-outside';
+const login = `<!doctype html><html><head><title>login</title></head><body><p>fixture login</p>${weakWidget === 'outside' || weakWidget === 'absent-outside' ? '<img src="http://192.0.2.1/x.png" alt="">' : ''}${noWidget ? '' : tag}${weakWidget === 'twice' ? tag : ''}</body></html>`;
 http.createServer(async (req, res) => {
   if (req.url === '/api/health') { res.writeHead(200); return res.end('ok'); }
   const message = await suspendedMessage();
   if (message) { res.writeHead(503, { 'content-type': 'text/html' }); return res.end(`<p>${message}</p>`); }
+  if (noWidget && (req.url === '/fitt-feedback.js' || req.url === '/api/fitt-feedback')) { res.writeHead(404); return res.end('not found'); }
   if (req.url === '/fitt-feedback.js') { res.writeHead(200, { 'content-type': 'application/javascript' }); return res.end(fs.readFileSync(new URL('./public/fitt-feedback.js', import.meta.url))); }
   // Nothing listens behind the route in a test, as with an app whose receiver is not set.
   if (req.url === '/api/fitt-feedback' && req.method === 'POST') { res.writeHead(502); return res.end('feedback receiver unreachable'); }

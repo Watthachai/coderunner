@@ -148,6 +148,23 @@ func TestRunReadsToTheLastResult(t *testing.T) {
 	}
 }
 
+// The traces get the CLI's bytes as printed, whatever the parser makes of them.
+func TestRunHandsEveryPrintedByteToTheTraces(t *testing.T) {
+	bin := fakeClaude(t,
+		`not json at all, holding a value`,
+		`{"type":"result","subtype":"success","total_cost_usd":1,"session_id":"a786"}`,
+	)
+	r := NewRunner(bin, t.TempDir(), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var out, errOut strings.Builder
+	_, err := r.Run(context.Background(), domain.RunSpec{Prompt: "edit it", WorkDir: t.TempDir(), StdoutTrace: &out, StderrTrace: &errOut}, func(domain.ClaudeEvent) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "not json at all, holding a value") || !strings.Contains(out.String(), `"total_cost_usd":1`) {
+		t.Errorf("stdout trace = %q", out.String())
+	}
+}
+
 // The last result decides the outcome: a run that ends in an error failed,
 // whatever an earlier turn reported.
 func TestRunFailsWhenTheLastResultIsAnError(t *testing.T) {

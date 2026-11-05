@@ -370,6 +370,13 @@ func PushImage(ctx context.Context, tag string, logger *slog.Logger) error {
 	return err
 }
 
+// PushImageOnce is one `docker push tag` and no retry: a tag that must go up exactly once
+// is not tried again by a machine. If it fails, people decide, and the next round uses
+// the next tag.
+func PushImageOnce(ctx context.Context, tag string, logger *slog.Logger) error {
+	return runDocker(ctx, logger, "push", tag)
+}
+
 // SaveImages writes a `docker save` tarball of images to outPath — an air-gap
 // bundle a customer can `docker load < images.tar`. Requires a Docker daemon.
 func SaveImages(ctx context.Context, outPath string, images []string, logger *slog.Logger) error {
@@ -384,6 +391,7 @@ func SaveImages(ctx context.Context, outPath string, images []string, logger *sl
 func runDocker(ctx context.Context, logger *slog.Logger, args ...string) error {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.CombinedOutput()
+	recordOutput(ctx, "docker "+args[0], out)
 	if err != nil {
 		trimmed := strings.TrimSpace(string(out))
 		logger.Error("docker command failed", "args", strings.Join(args, " "), "output", trimmed)

@@ -132,6 +132,10 @@ type manager struct {
 	// forbiddenValuesDir holds each project's list of forbidden value hashes
 	// (SetForbiddenValuesDir).
 	forbiddenValuesDir string
+	// gates holds the open gate of each running build of a project with such a list,
+	// guarded by gateMu (gate.go).
+	gateMu sync.RWMutex
+	gates  map[uuid.UUID]*jobGate
 
 	// claudeDefaults is the environment's model/effort, used until an operator
 	// saves a choice on the dashboard (internal/buildsettings).
@@ -196,7 +200,7 @@ func NewManager(
 	if maxConcurrent < 1 {
 		maxConcurrent = 1
 	}
-	return &manager{
+	m := &manager{
 		store:              store,
 		runner:             runner,
 		notifier:           notifier,
@@ -222,6 +226,8 @@ func NewManager(
 		subs:               make(map[uuid.UUID][]*subscriber),
 		cancels:            make(map[uuid.UUID]context.CancelFunc),
 	}
+	m.readLogs()
+	return m
 }
 
 // Enqueue records a new job (status=queued) and kicks the dispatcher, which
@@ -506,6 +512,19 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		Timestamp: time.Now().UTC(),
 	})
 
+	// A project with a list of forbidden values: the list is pinned here, before anything
+	// the agent can touch, and the gate reads all this build prints from here on.
+	gate, err := m.openGate(job)
+	if err != nil {
+		log.Error("forbidden list refused", "err", err)
+		m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), traceMeta{mode: buildMode(parsePayload(job.Payload, m.logger))})
+		return
+	}
+	if gate != nil {
+		defer m.closeGate(job.ID)
+		runCtx = m.readCommands(runCtx, job.ID, gate)
+	}
+
 	// The absolute per-project working dir: every file write, Claude run, and
 	// git push targets the same directory.
 	workDir := filepath.Join(m.projectsDir, job.ProjectID.String())
@@ -595,6 +614,12 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			return
 		}
 		log.Info("edit workspace ready", "workdir", workDir, "branch", pushBranch)
+		if gate != nil {
+			if gate.base, err = buildstep.HeadCommit(runCtx, workDir, m.logger); err != nil {
+				m.finishFailed(ctx, job, "read the branch's head: "+err.Error(), meta)
+				return
+			}
+		}
 		if m.runClaude || m.buildImage {
 			var err error
 			priorMigrations, err = buildstep.SnapshotMigrations(workDir)
@@ -661,6 +686,17 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			ResumeSessionID: resumeSession,
 			Model:           claudeCfg.Model,
 			Effort:          claudeCfg.Effort,
+		}
+		if gate != nil {
+			// What the agent reads and prints is read too; a real value in the request
+			// stops here, before it reaches the model.
+			gate.scan.Scan("the agent's input", []byte(claudePrompt))
+			if err := gate.check(); err != nil {
+				m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), meta)
+				return
+			}
+			runSpec.StdoutTrace = gate.scan.Source("the agent's output")
+			runSpec.StderrTrace = gate.scan.Source("the agent's errors")
 		}
 
 		emit := func(ev domain.ClaudeEvent) error {
@@ -813,6 +849,11 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 	}
 
+	if err := m.beforeCommit(workDir, gate); err != nil {
+		m.finishFailed(ctx, job, err.Error(), meta)
+		return
+	}
+
 	// Write the on-prem delivery bundle (opaque app + migrate Dockerfiles, customer
 	// docker-compose, INSTALL) BEFORE the git push so it is committed alongside the
 	// build. Uses the deterministic image tags the push-time image build produces.
@@ -842,6 +883,17 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		commitSHA = commit
 		meta.commit = commit
 		log.Info("git pushed", "branch", pushBranch, "commit", commit, "remote", pushRemote)
+		if gate != nil {
+			if err := gate.afterPush(runCtx, workDir, pushRemote, pushBranch, commit, m.logger); err != nil {
+				log.Error("the pushed commit was refused", "err", err)
+				if runCtx.Err() != nil && ctx.Err() == nil {
+					m.finishCancelled(ctx, job, meta)
+				} else {
+					m.finishFailed(ctx, job, err.Error(), meta)
+				}
+				return
+			}
+		}
 		// Surface the push in the live stream so it also lands in the saved trace:
 		// the operator sees exactly what was committed and where it went.
 		m.publish(job.ID, domain.BuildEventMsg{
@@ -867,7 +919,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// deliverable: if it can't be built/pushed, FAIL the build rather than
 	// releasing with a "branch:main" tag that would make a consumer fall back to
 	// git-cloning the source repo. (When image mode is off, this is a no-op.)
-	imageDigest, err := m.buildAndPushImage(runCtx, workDir, spec, job, commitSHA, log)
+	imageDigest, err := m.buildAndPushImage(runCtx, workDir, spec, job, commitSHA, gate, log)
 	if err != nil {
 		log.Error("image build failed; failing the build", "err", err)
 		if runCtx.Err() != nil && ctx.Err() == nil {
@@ -883,6 +935,18 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			m.finishCancelled(ctx, job, meta)
 		}
 		return
+	}
+	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
+	if gate != nil {
+		body, err := callbackBody(job.ID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx)
+		if err == nil {
+			err = gate.beforeRelease(body)
+		}
+		if err != nil {
+			log.Error("the build may not be released", "err", err)
+			m.finishFailed(ctx, job, err.Error(), meta)
+			return
+		}
 	}
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobDone, ""); err != nil {
 		log.Error("mark done failed", "err", err)
@@ -911,7 +975,6 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
-	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
 	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, envEx))
 	go m.reportToFTC(job, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx)
 
@@ -981,6 +1044,7 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef st
 // finishFailed records the failure, notifies the central DB, pushes a terminal
 // error to live subscribers, and closes their channels.
 func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg string, meta traceMeta) {
+	errMsg = m.safeMessage(job.ID, errMsg)
 	meta.errMsg = errMsg
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobFailed, errMsg); err != nil {
 		m.logger.Error("mark failed failed", "job_id", job.ID, "err", err)
@@ -1156,7 +1220,11 @@ func (m *manager) mirrorImage(ctx context.Context, appTag string, job *domain.Jo
 // there is no separate migrate image. The air-gap tarball stays best-effort.
 // It also returns the digest the registry gave the push ("" when nothing was
 // pushed or the digest could not be read; that never fails the build).
-func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, commitSHA string, log *slog.Logger) (string, error) {
+//
+// A gated build (gate.go) takes its image from the commit alone: its context is an export
+// of the pushed commit, so nothing untracked or ignored in the workspace can reach the
+// image, and the labels are read from the same export.
+func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, commitSHA string, gate *jobGate, log *slog.Logger) (string, error) {
 	if !m.buildImage {
 		return "", nil
 	}
@@ -1166,13 +1234,28 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	}
 	m.publishPhase(job.ID, "docker")
 	appTag := m.imageTag(spec, job)
-	labels, err := imageLabels(workDir, job, commitSHA)
+	buildDir := workDir
+	if gate != nil {
+		if commitSHA == "" {
+			return "", errors.New("candidate acceptance: this build has no commit to build from")
+		}
+		exported, err := os.MkdirTemp("", "crn-build-context-")
+		if err != nil {
+			return "", err
+		}
+		defer os.RemoveAll(exported)
+		if err := buildstep.ExportCommit(ctx, workDir, commitSHA, exported); err != nil {
+			return "", fmt.Errorf("candidate acceptance: %w", err)
+		}
+		buildDir = exported
+	}
+	labels, err := imageLabels(buildDir, job, commitSHA)
 	if err != nil {
 		return "", err
 	}
 
 	// App image (opaque, self-migrating) — REQUIRED. Build failure fails the build.
-	if err := buildstep.BuildImage(ctx, workDir, "Dockerfile", appTag, labels, log); err != nil {
+	if err := buildstep.BuildImage(ctx, buildDir, "Dockerfile", appTag, labels, log); err != nil {
 		m.publish(job.ID, domain.BuildEventMsg{
 			Kind: domain.WSError, Text: "docker build (app) failed: " + err.Error(),
 			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
@@ -1183,7 +1266,11 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	digest := ""
 	registry := m.registryFor(job)
 	if registry != "" {
-		if err := buildstep.PushImage(ctx, appTag, log); err != nil {
+		push := buildstep.PushImage
+		if gate != nil {
+			push = buildstep.PushImageOnce
+		}
+		if err := push(ctx, appTag, log); err != nil {
 			m.publish(job.ID, domain.BuildEventMsg{
 				Kind: domain.WSError, Text: "docker push (app) failed: " + err.Error(),
 				JobID: job.ID.String(), Timestamp: time.Now().UTC(),
@@ -1203,7 +1290,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	m.writeArtifactBundle(ctx, workDir, appTag, log)
 
 	// v3 is pushed but not released: it reads as this build's image only once it passes.
-	digest, err = m.acceptCandidate(ctx, workDir, spec, job, appTag, digest, commitSHA, log)
+	digest, err = m.acceptCandidate(ctx, workDir, buildDir, spec, job, appTag, digest, commitSHA, gate, log)
 	if err != nil {
 		m.publish(job.ID, domain.BuildEventMsg{
 			Kind: domain.WSError, Text: err.Error(),
@@ -1234,17 +1321,21 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 // (<dir>/<project id>.txt). Without a list an external-tls-only build cannot pass.
 func (m *manager) SetForbiddenValuesDir(dir string) { m.forbiddenValuesDir = dir }
 
-// acceptCandidate is the gate between the push and "released" for an external-tls-only
-// app. The release check before the commit ran on a build for this machine's CPU; this
-// one runs on the linux/amd64 image the registry holds, named by the digest the registry
-// gives, and returns that digest. Any other app keeps the path it had.
-func (m *manager) acceptCandidate(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, appTag, pushedDigest, commitSHA string, log *slog.Logger) (string, error) {
-	mode, err := buildstep.ReadDBMode(workDir)
+// acceptCandidate is the gate between the push and "released" for a project with a list
+// of forbidden values. The release check before the commit ran on a build for this
+// machine's CPU; this one runs on the linux/amd64 image the registry holds, named by the
+// digest the registry gives, and returns that digest. Any other app keeps the path it
+// had. buildDir holds what the image was built from: the mode is read from there.
+func (m *manager) acceptCandidate(ctx context.Context, workDir, buildDir string, spec payloadSpec, job *domain.Job, appTag, pushedDigest, commitSHA string, gate *jobGate, log *slog.Logger) (string, error) {
+	if gate == nil {
+		return pushedDigest, nil
+	}
+	mode, err := buildstep.ReadDBMode(buildDir)
 	if err != nil {
 		return "", err
 	}
 	if mode != buildstep.DBModeExternalTLS {
-		return pushedDigest, nil
+		return "", fmt.Errorf("candidate acceptance: the commit is not %s", buildstep.DBModeExternalTLS)
 	}
 	if m.registryFor(job) == "" {
 		return "", errors.New("candidate acceptance: an external-tls-only build needs a registry to push to")
@@ -1264,13 +1355,13 @@ func (m *manager) acceptCandidate(ctx context.Context, workDir string, spec payl
 	if err := buildstep.PullDigest(ctx, image, log); err != nil {
 		return "", fmt.Errorf("candidate acceptance: %w", err)
 	}
-	wantWidget := buildstep.HasFeedbackWidget(workDir)
+	wantWidget := buildstep.HasFeedbackWidget(buildDir)
 	if spec.FeedbackWidget != nil {
 		wantWidget = *spec.FeedbackWidget
 	}
 	acceptance := buildstep.Acceptance{
 		Image: image, Commit: commitSHA, ProjectID: job.ProjectID.String(), Widget: wantWidget,
-		ForbiddenFile: filepath.Join(m.forbiddenValuesDir, job.ProjectID.String()+".txt"),
+		Forbidden: gate.list,
 	}
 	if m.artifactDir != "" {
 		acceptance.ReceiptPath = filepath.Join(m.artifactDir, "acceptance", job.ID.String()+".json")
@@ -1278,6 +1369,7 @@ func (m *manager) acceptCandidate(ctx context.Context, workDir string, spec payl
 	if err := buildstep.AcceptCandidate(ctx, workDir, acceptance, log); err != nil {
 		return "", err
 	}
+	gate.accepted = true
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSAssistantText,
 		Text:      "✓ candidate accepted: " + image,
@@ -1627,6 +1719,35 @@ func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, ima
 	if m.ftcdvCallbackURL == "" || !m.ftcdvCallbackOrgs[orgID] {
 		return
 	}
+	body, err := callbackBody(jobID, buildNo, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message, env)
+	if err != nil {
+		m.logger.Warn("ftc callback marshal failed", "err", err, "job_id", jobID)
+		return
+	}
+	sum := sha256.Sum256(body)
+	log := m.logger.With("job_id", jobID, "build_no", buildNo, "status", status, "payload_sha256", hex.EncodeToString(sum[:]))
+
+	lane := m.callbackLane(jobID)
+	lane.mu.Lock()
+	defer lane.mu.Unlock()
+	if status == "released" || status == "failed" {
+		defer m.dropCallbackLane(jobID)
+	}
+	if lane.stopped[buildNo] {
+		log.Error("ftc callback not sent: FTC DV answered 409 for this build; agree with FTC DV before anything more is sent for it")
+		return
+	}
+	if m.deliverCallback(log, body) == http.StatusConflict {
+		if lane.stopped == nil {
+			lane.stopped = map[int]bool{}
+		}
+		lane.stopped[buildNo] = true
+		log.Error("ftc callback 409: stopped this build's callbacks; report job_id, build_no, status and payload_sha256 to FTC DV")
+	}
+}
+
+// callbackBody is one callback's payload, as it goes out.
+func callbackBody(jobID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message string, env any) ([]byte, error) {
 	payload := map[string]any{
 		"status":   status,
 		"job_id":   jobID,
@@ -1662,31 +1783,7 @@ func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, ima
 	if gitCommit != "" {
 		payload["git_commit"] = gitCommit
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		m.logger.Warn("ftc callback marshal failed", "err", err, "job_id", jobID)
-		return
-	}
-	sum := sha256.Sum256(body)
-	log := m.logger.With("job_id", jobID, "build_no", buildNo, "status", status, "payload_sha256", hex.EncodeToString(sum[:]))
-
-	lane := m.callbackLane(jobID)
-	lane.mu.Lock()
-	defer lane.mu.Unlock()
-	if status == "released" || status == "failed" {
-		defer m.dropCallbackLane(jobID)
-	}
-	if lane.stopped[buildNo] {
-		log.Error("ftc callback not sent: FTC DV answered 409 for this build; agree with FTC DV before anything more is sent for it")
-		return
-	}
-	if m.deliverCallback(log, body) == http.StatusConflict {
-		if lane.stopped == nil {
-			lane.stopped = map[int]bool{}
-		}
-		lane.stopped[buildNo] = true
-		log.Error("ftc callback 409: stopped this build's callbacks; report job_id, build_no, status and payload_sha256 to FTC DV")
-	}
+	return json.Marshal(payload)
 }
 
 // callbackLane serializes one job's callbacks, so "released" never overtakes a
@@ -1852,6 +1949,7 @@ func callbackClient(ca *x509.CertPool) *http.Client {
 // buffer is full is skipped (best-effort live telemetry; the build is never
 // blocked by a slow WebSocket client).
 func (m *manager) publish(jobID uuid.UUID, msg domain.BuildEventMsg) {
+	m.readEvent(jobID, msg)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Buffer for replay so a WS connecting/refreshing mid-build sees history.

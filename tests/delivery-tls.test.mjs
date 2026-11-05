@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateContract, tlsUrls, tlsFailurePlan, leaks, sanitizedTail, TLS_SCRIPTS, BAD_CA_FILES, TLS_PG_IMAGE, isWantedPostgres, caShapeProblem, caFileMount, CA_PROBE_JS } from '../internal/buildstep/verify-delivery.mjs';
+import { validateContract, tlsUrls, tlsFailurePlan, leaks, sanitizedTail, TLS_SCRIPTS, BAD_CA_FILES, TLS_PG_IMAGE, LOCAL_PG_IMAGE, isWantedPostgres, caShapeProblem, caFileMount, CA_PROBE_JS } from '../internal/buildstep/verify-delivery.mjs';
 
 const docs = { 'BUILD_NOTES.md': 'notes', 'TEST_CASES.md': 'cases', 'PORT_CHECKLIST.md': '- [x] done' };
 const scripts = ['typecheck', 'test:unit', 'test:smoke', 'build', 'start', 'db:generate', 'db:deploy', 'db:seed'];
@@ -114,6 +114,10 @@ test('the stand-ins run one PostgreSQL image pinned by digest, version 17.11 exa
   assert.match(TLS_PG_IMAGE, /^postgres:17\.11-alpine@sha256:[0-9a-f]{64}$/);
   const src = await fs.readFile(new URL('../internal/buildstep/verify-delivery.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(src, /postgres:17-alpine/);
+  // The database of the other path is pinned the same way: a moving tag changes what the checker proves.
+  assert.match(LOCAL_PG_IMAGE, /^postgres:16\.14-alpine@sha256:[0-9a-f]{64}$/);
+  assert.doesNotMatch(src, /postgres:16-alpine/);
+  assert.match(src, /'-p', '127\.0\.0\.1::5432', LOCAL_PG_IMAGE\]/);
   for (const ok of ['17.11', '17.11 (Debian 17.11-1)']) assert.ok(isWantedPostgres(ok), ok);
   for (const bad of ['17.1', '17.10', '17.12', '17.110', '16.11', '7.11', '']) assert.ok(!isWantedPostgres(bad), bad);
 });

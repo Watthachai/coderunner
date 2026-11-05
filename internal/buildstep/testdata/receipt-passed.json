@@ -1,0 +1,1208 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "image": "crn-tls-fixture@sha256:f5d3eea9b4647300fef9ca9f719c058a494633322446d7a553f7b908240d1a89",
+  "commit": "c0ffee",
+  "project": "11111111-1111-4111-8111-111111111111",
+  "started_at": "2026-11-05T16:18:24.745Z",
+  "platform": "linux/amd64",
+  "revision": "c0ffee",
+  "artifact_scan": {
+    "scope": [
+      "the commit's tree: names, symlink targets and content",
+      "image manifest",
+      "image config: Env, Labels, Cmd, history",
+      "every image layer, decompressed"
+    ],
+    "list_sha256": "ccb3044f0d40e5a652b4443744bfed01dbe4606a39e4729884ae9d2ca10b51ba",
+    "values": {
+      "real": 3,
+      "placeholders": 3
+    },
+    "hits": [],
+    "source": {
+      "directories": 5,
+      "files": 19,
+      "symlinks": 0,
+      "bytes": 14276
+    },
+    "image": {
+      "blobs": [
+        {
+          "where": "image blobs/sha256/02e3d894f9269421e4cfa4def365a7045b4ccc3aa1d78198fbcf3bac84496534",
+          "encoding": "gzip",
+          "bytes": 2048
+        },
+        {
+          "where": "image blobs/sha256/1b7992cf5ea802ac4b2bcb787738f6040d742e27f6d10e1395bee16b0a3c6d03",
+          "encoding": "gzip",
+          "bytes": 7218176
+        },
+        {
+          "where": "image blobs/sha256/1c6922378cca59d454b688ae6a8c20a0a26ab58378636cc3e7a0916f6702ae9b",
+          "encoding": "raw",
+          "bytes": 1195
+        },
+        {
+          "where": "image blobs/sha256/2c21794876c60e11b352df77aead49c6eb4a1fb6c5f5bafdb9b86f8df113add2",
+          "encoding": "raw",
+          "bytes": 11343
+        },
+        {
+          "where": "image blobs/sha256/305b89d2a945b6d8a26e6e9732dbf6e0100dfca2809733e6eb1da54dfe88c58e",
+          "encoding": "gzip",
+          "bytes": 9681408
+        },
+        {
+          "where": "image blobs/sha256/36e1203eda1b5dac1933186812dc4462310cfbfa2fcbad6c9ae089df55cf7bb0",
+          "encoding": "gzip",
+          "bytes": 11776
+        },
+        {
+          "where": "image blobs/sha256/3c5f479ca65a7b3147df7d9724ac331de960e91ea4034826b7a5c3f9eed57934",
+          "encoding": "gzip",
+          "bytes": 21504
+        },
+        {
+          "where": "image blobs/sha256/44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "encoding": "raw",
+          "bytes": 2
+        },
+        {
+          "where": "image blobs/sha256/4e5078dd7d9e7bd4b1ff9759d5ecc03b70b17150a23ea01bddb1198b70a76fe6",
+          "encoding": "gzip",
+          "bytes": 5632
+        },
+        {
+          "where": "image blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+          "encoding": "gzip",
+          "bytes": 1024
+        },
+        {
+          "where": "image blobs/sha256/5d0c6c5710f1cdc2a30a47c236d5a75ab16d2785fc0aed022b46273ffafd13c6",
+          "encoding": "gzip",
+          "bytes": 147235840
+        },
+        {
+          "where": "image blobs/sha256/692eea43773787b9ca8dc06c780abcac36bbffb4ce904ec606d40f088a1429f1",
+          "encoding": "gzip",
+          "bytes": 1536
+        },
+        {
+          "where": "image blobs/sha256/7403589ffe6fc21c03422878dc66d39e207b265b591fc13ea866cecae93d62de",
+          "encoding": "raw",
+          "bytes": 3516
+        },
+        {
+          "where": "image blobs/sha256/7f8f84e164502a832e54b2ebf273b66d9d035f6fc9fb9b7bfbf296f518591505",
+          "encoding": "gzip",
+          "bytes": 242902528
+        },
+        {
+          "where": "image blobs/sha256/91ff2ba56e9146129bd15df4b4aacd367098b94fff3315e4f5df21158a7399ae",
+          "encoding": "raw",
+          "bytes": 837
+        },
+        {
+          "where": "image blobs/sha256/ab8cd6091f91ffc203f31590f96a78467668c00d5ad229b37fad54a5d68557e9",
+          "encoding": "gzip",
+          "bytes": 33792
+        },
+        {
+          "where": "image blobs/sha256/b53df2eabd46526a89ee352d592a2cbc92e36393646312dd535c436007a83319",
+          "encoding": "gzip",
+          "bytes": 6144
+        },
+        {
+          "where": "image blobs/sha256/cab2d2b605527082272d905dfbcd497bd84acae218d23f119ab356df725d6275",
+          "encoding": "gzip",
+          "bytes": 2560
+        },
+        {
+          "where": "image blobs/sha256/dd051e1b8c92ff101fa3071ab97ea4924885942f15644e01c3dc095764e863e3",
+          "encoding": "gzip",
+          "bytes": 77946880
+        },
+        {
+          "where": "image blobs/sha256/e2f7824e2d245d6ba21a48a30050815f41522aefa8b9e9f1fbd1e01108497705",
+          "encoding": "gzip",
+          "bytes": 268115968
+        },
+        {
+          "where": "image blobs/sha256/f58febecb7d14cd84658dbd4594cdbc7bc5c8bc0ea4b6be3a2db37d6b635b4d3",
+          "encoding": "gzip",
+          "bytes": 2560
+        },
+        {
+          "where": "image blobs/sha256/f5d3eea9b4647300fef9ca9f719c058a494633322446d7a553f7b908240d1a89",
+          "encoding": "raw",
+          "bytes": 856
+        },
+        {
+          "where": "image blobs/sha256/ff2c4258f9cf850b921ff6d790c9a52585dca4811afdb2b78f92be33696d8b5d",
+          "encoding": "gzip",
+          "bytes": 3584
+        },
+        {
+          "where": "image index.json",
+          "encoding": "raw",
+          "bytes": 237
+        },
+        {
+          "where": "image manifest.json",
+          "encoding": "raw",
+          "bytes": 1479
+        },
+        {
+          "where": "image oci-layout",
+          "encoding": "raw",
+          "bytes": 30
+        }
+      ],
+      "config": {
+        "digest": "sha256:2c21794876c60e11b352df77aead49c6eb4a1fb6c5f5bafdb9b86f8df113add2",
+        "env": 9,
+        "labels": 1,
+        "history": 29
+      },
+      "layers": 17
+    }
+  },
+  "widget": {
+    "expected": true,
+    "ran": true,
+    "login_status": 200,
+    "script_status": 200,
+    "route_status": 502,
+    "outside_requests": []
+  },
+  "checker": {
+    "schema_version": 1,
+    "status": "passed",
+    "checks": [
+      {
+        "name": "delivery contract",
+        "passed": true
+      },
+      {
+        "name": "schedule",
+        "passed": true
+      },
+      {
+        "name": "runtime contract",
+        "passed": true
+      },
+      {
+        "name": "locked install",
+        "passed": true
+      },
+      {
+        "name": "generate client",
+        "passed": true
+      },
+      {
+        "name": "typecheck",
+        "passed": true
+      },
+      {
+        "name": "unit tests",
+        "passed": true
+      },
+      {
+        "name": "customer image present",
+        "passed": true
+      },
+      {
+        "name": "OpenSSL 3.4+ for test certificates",
+        "passed": true
+      },
+      {
+        "name": "isolated runtime network",
+        "passed": true
+      },
+      {
+        "name": "TLS test certificates",
+        "passed": true
+      },
+      {
+        "name": "start PostgreSQL 17.11 stand-in (TLS server)",
+        "passed": true
+      },
+      {
+        "name": "start PostgreSQL 17.11 stand-in (certificate without this IP in its SAN)",
+        "passed": true
+      },
+      {
+        "name": "start PostgreSQL 17.11 stand-in (expired certificate)",
+        "passed": true
+      },
+      {
+        "name": "start PostgreSQL 17.11 stand-in (no TLS)",
+        "passed": true
+      },
+      {
+        "name": "stand-in ready (TLS server)",
+        "passed": true
+      },
+      {
+        "name": "stand-in ready (certificate without this IP in its SAN)",
+        "passed": true
+      },
+      {
+        "name": "stand-in ready (expired certificate)",
+        "passed": true
+      },
+      {
+        "name": "stand-in ready (no TLS)",
+        "passed": true
+      },
+      {
+        "name": "start connection tripwire",
+        "passed": true
+      },
+      {
+        "name": "create application role and database on the stand-in",
+        "passed": true
+      },
+      {
+        "name": "stand-in server version (TLS server)",
+        "passed": true
+      },
+      {
+        "name": "stand-in is PostgreSQL 17.11 (TLS server)",
+        "passed": true
+      },
+      {
+        "name": "stand-in server version (certificate without this IP in its SAN)",
+        "passed": true
+      },
+      {
+        "name": "stand-in is PostgreSQL 17.11 (certificate without this IP in its SAN)",
+        "passed": true
+      },
+      {
+        "name": "stand-in server version (expired certificate)",
+        "passed": true
+      },
+      {
+        "name": "stand-in is PostgreSQL 17.11 (expired certificate)",
+        "passed": true
+      },
+      {
+        "name": "stand-in server version (no TLS)",
+        "passed": true
+      },
+      {
+        "name": "stand-in is PostgreSQL 17.11 (no TLS)",
+        "passed": true
+      },
+      {
+        "name": "database port",
+        "passed": true
+      },
+      {
+        "name": "database packages in the image",
+        "passed": true
+      },
+      {
+        "name": "apply migrations in customer image (TLS)",
+        "passed": true
+      },
+      {
+        "name": "first-install bootstrap in customer image",
+        "passed": true
+      },
+      {
+        "name": "repeat bootstrap with changed inputs",
+        "passed": true
+      },
+      {
+        "name": "restart without bootstrap inputs",
+        "passed": true
+      },
+      {
+        "name": "seed reports already-complete once bootstrapped",
+        "passed": true
+      },
+      {
+        "name": "runtime connection check (db:check, TLS)",
+        "passed": true
+      },
+      {
+        "name": "runtime connects as the app role in its schema",
+        "passed": true
+      },
+      {
+        "name": "schema isolation query",
+        "passed": true
+      },
+      {
+        "name": "schema isolation",
+        "passed": true
+      },
+      {
+        "name": "migration files in the image",
+        "passed": true
+      },
+      {
+        "name": "migration journal matches the image",
+        "passed": true
+      },
+      {
+        "name": "look at the CA file (no CA file)",
+        "passed": true
+      },
+      {
+        "name": "CA file prepared as intended (no CA file)",
+        "passed": true
+      },
+      {
+        "name": "look at the CA file (CA file is a symlink)",
+        "passed": true
+      },
+      {
+        "name": "CA file prepared as intended (CA file is a symlink)",
+        "passed": true
+      },
+      {
+        "name": "look at the CA file (CA file is empty)",
+        "passed": true
+      },
+      {
+        "name": "CA file prepared as intended (CA file is empty)",
+        "passed": true
+      },
+      {
+        "name": "look at the CA file (CA file holds two certificates)",
+        "passed": true
+      },
+      {
+        "name": "CA file prepared as intended (CA file holds two certificates)",
+        "passed": true
+      },
+      {
+        "name": "look at the CA file (CA file is unreadable)",
+        "passed": true
+      },
+      {
+        "name": "CA file prepared as intended (CA file is unreadable)",
+        "passed": true
+      },
+      {
+        "name": "TLS and configuration failure matrix (runtime, seed, migrate)",
+        "passed": true
+      },
+      {
+        "name": "browser installation",
+        "passed": true
+      },
+      {
+        "name": "start customer image",
+        "passed": true
+      },
+      {
+        "name": "application port",
+        "passed": true
+      },
+      {
+        "name": "browser smoke tests",
+        "passed": true
+      },
+      {
+        "name": "login page answers",
+        "passed": true
+      },
+      {
+        "name": "one widget tag for this project, posting to the same origin",
+        "passed": true
+      },
+      {
+        "name": "widget script loads",
+        "passed": true
+      },
+      {
+        "name": "widget route answers on the same origin",
+        "passed": true
+      },
+      {
+        "name": "one widget on the page",
+        "passed": true
+      },
+      {
+        "name": "widget starts closed",
+        "passed": true
+      },
+      {
+        "name": "widget opens",
+        "passed": true
+      },
+      {
+        "name": "no request leaves the app's origin",
+        "passed": true
+      },
+      {
+        "name": "start fake status server",
+        "passed": true
+      },
+      {
+        "name": "start customer image while suspended",
+        "passed": true
+      },
+      {
+        "name": "switch application port",
+        "passed": true
+      },
+      {
+        "name": "suspension switch while suspended",
+        "passed": true
+      },
+      {
+        "name": "stop customer image while suspended",
+        "passed": true
+      },
+      {
+        "name": "start customer image while active",
+        "passed": true
+      },
+      {
+        "name": "switch application port",
+        "passed": true
+      },
+      {
+        "name": "suspension switch while active",
+        "passed": true
+      },
+      {
+        "name": "stop customer image while active",
+        "passed": true
+      }
+    ],
+    "started_at": "2026-11-05T16:20:46.657Z",
+    "image": "crn-tls-fixture@sha256:f5d3eea9b4647300fef9ca9f719c058a494633322446d7a553f7b908240d1a89",
+    "node_version": "24.20.0",
+    "database_mode": "external-tls-only",
+    "lockfile_sha256": "86b44da65d2082e9c1b85873af389571f20dc2c8949f53d84d072206e1cf2238",
+    "unit_tests": 1,
+    "external_tls": {
+      "attestation": "Every database this check used is a container it created on its own network, with a CA it generated; no other host, credential or CA was given to the app.",
+      "stand_ins": [
+        {
+          "role": "TLS server",
+          "ip": "10.213.239.10",
+          "tls": true,
+          "san": [
+            "10.213.239.10",
+            "127.0.0.1"
+          ],
+          "image": "postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b",
+          "server_version": "17.11"
+        },
+        {
+          "role": "certificate without this IP in its SAN",
+          "ip": "10.213.239.11",
+          "tls": true,
+          "san": [
+            "192.0.2.1"
+          ],
+          "image": "postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b",
+          "server_version": "17.11"
+        },
+        {
+          "role": "expired certificate",
+          "ip": "10.213.239.12",
+          "tls": true,
+          "san": [
+            "10.213.239.12"
+          ],
+          "image": "postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b",
+          "server_version": "17.11"
+        },
+        {
+          "role": "no TLS",
+          "ip": "10.213.239.13",
+          "tls": false,
+          "san": [],
+          "image": "postgres:17.11-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b",
+          "server_version": "17.11"
+        }
+      ],
+      "tripwire": {
+        "ip": "10.213.239.14",
+        "purpose": "counts connections; configuration errors must leave it at zero"
+      },
+      "schema": "crn_verify",
+      "app_role": "crn_app",
+      "ca_mount": "/run/fixture-ca/db-ca.pem",
+      "versions": {
+        "node": "v22.23.4",
+        "pg": "8.23.1",
+        "pg-connection-string": "2.14.1",
+        "@prisma/adapter-pg": null,
+        "@prisma/client": null,
+        "prisma": "7.10.1",
+        "@prisma/engines": "7.10.1"
+      },
+      "runtime_identity": {
+        "current_user": "crn_app",
+        "current_schema": "crn_verify"
+      },
+      "isolation": {
+        "public_objects": 0,
+        "journal_in_schema": true,
+        "schema_owner": "crn_app",
+        "objects_not_owned_by_app": 0,
+        "objects_by_kind": {
+          "S": 1,
+          "r": 3,
+          "i": 4
+        },
+        "journal": [
+          {
+            "name": "20261102000000_init",
+            "checksum": "2889e90283cc73317aa446bcb186e063541dbbc4eb36efad9d7287fd816118f6",
+            "finished": true,
+            "rolled_back": false
+          }
+        ]
+      },
+      "migrations": {
+        "files": {
+          "20261102000000_init": "2889e90283cc73317aa446bcb186e063541dbbc4eb36efad9d7287fd816118f6"
+        },
+        "journal": [
+          {
+            "name": "20261102000000_init",
+            "checksum": "2889e90283cc73317aa446bcb186e063541dbbc4eb36efad9d7287fd816118f6",
+            "finished": true,
+            "rolled_back": false
+          }
+        ]
+      },
+      "ca_shapes": {
+        "no CA file": {
+          "exists": false,
+          "symlink": false,
+          "readable": false,
+          "certs": 0,
+          "size": 0
+        },
+        "CA file is a symlink": {
+          "exists": true,
+          "symlink": true,
+          "readable": true,
+          "certs": 1,
+          "size": 599
+        },
+        "CA file is empty": {
+          "exists": true,
+          "symlink": false,
+          "readable": true,
+          "certs": 0,
+          "size": 0
+        },
+        "CA file holds two certificates": {
+          "exists": true,
+          "symlink": false,
+          "readable": true,
+          "certs": 2,
+          "size": 1194
+        },
+        "CA file is unreadable": {
+          "exists": true,
+          "symlink": false,
+          "readable": false,
+          "certs": 0,
+          "size": 0
+        }
+      },
+      "must_fail": [
+        {
+          "case": "wrong CA",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "a.prisma. Error: P1011: Error opening a TLS connection: error:0A000086:SSL routines:tls_post_process_server_certificate:certificate verify failed:../ssl/statem/statem_clnt.c:1889: (self-signed certificate) Datasource \"db\": PostgreSQL database \"crn_verify\", schema \"crn_verify\" at \"10.213.239.10:5432\""
+        },
+        {
+          "case": "wrong CA",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: self-signed certificate"
+        },
+        {
+          "case": "wrong CA",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: self-signed certificate"
+        },
+        {
+          "case": "no CA file",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE does not exist"
+        },
+        {
+          "case": "no CA file",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE does not exist"
+        },
+        {
+          "case": "no CA file",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE does not exist"
+        },
+        {
+          "case": "CA file is a symlink",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE is not a regular file"
+        },
+        {
+          "case": "CA file is a symlink",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE is not a regular file"
+        },
+        {
+          "case": "CA file is a symlink",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE is not a regular file"
+        },
+        {
+          "case": "CA file is empty",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE must hold exactly one PEM certificate"
+        },
+        {
+          "case": "CA file is empty",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE must hold exactly one PEM certificate"
+        },
+        {
+          "case": "CA file is empty",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE must hold exactly one PEM certificate"
+        },
+        {
+          "case": "CA file holds two certificates",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE must hold exactly one PEM certificate"
+        },
+        {
+          "case": "CA file holds two certificates",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE must hold exactly one PEM certificate"
+        },
+        {
+          "case": "CA file holds two certificates",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE must hold exactly one PEM certificate"
+        },
+        {
+          "case": "CA file is unreadable",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE cannot be read"
+        },
+        {
+          "case": "CA file is unreadable",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE cannot be read"
+        },
+        {
+          "case": "CA file is unreadable",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_CA_FILE cannot be read"
+        },
+        {
+          "case": "IP not in SAN",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "chema.prisma. Error: P1011: Error opening a TLS connection: error:0A000086:SSL routines:tls_post_process_server_certificate:certificate verify failed:../ssl/statem/statem_clnt.c:1889: (IP address mismatch) Datasource \"db\": PostgreSQL database \"crn_verify\", schema \"crn_verify\" at \"10.213.239.11:5432\""
+        },
+        {
+          "case": "IP not in SAN",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: Hostname/IP does not match certificate's altnames: IP: 10.213.239.11 is not in the cert's list: 192.0.2.1"
+        },
+        {
+          "case": "IP not in SAN",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: Hostname/IP does not match certificate's altnames: IP: 10.213.239.11 is not in the cert's list: 192.0.2.1"
+        },
+        {
+          "case": "expired certificate",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "a.prisma. Error: P1011: Error opening a TLS connection: error:0A000086:SSL routines:tls_post_process_server_certificate:certificate verify failed:../ssl/statem/statem_clnt.c:1889: (certificate has expired) Datasource \"db\": PostgreSQL database \"crn_verify\", schema \"crn_verify\" at \"10.213.239.12:5432\""
+        },
+        {
+          "case": "expired certificate",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: certificate has expired"
+        },
+        {
+          "case": "expired certificate",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: certificate has expired"
+        },
+        {
+          "case": "server without TLS",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "quested Loaded Prisma config from prisma.config.ts. Prisma schema loaded from prisma/schema.prisma. Error: P1011: Error opening a TLS connection: error performing TLS handshake: server does not support TLS Datasource \"db\": PostgreSQL database \"crn_verify\", schema \"crn_verify\" at \"10.213.239.13:5432\""
+        },
+        {
+          "case": "server without TLS",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: The server does not support SSL connections"
+        },
+        {
+          "case": "server without TLS",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": null,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: The server does not support SSL connections"
+        },
+        {
+          "case": "MIGRATION_DATABASE_URL missing",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: MIGRATION_DATABASE_URL is not set"
+        },
+        {
+          "case": "DATABASE_URL sslmode missing",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "DATABASE_URL sslmode missing",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "DATABASE_URL sslmode=prefer",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "DATABASE_URL sslmode=prefer",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "DATABASE_URL sslmode=disable",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "DATABASE_URL sslmode=disable",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "DATABASE_URL sslmode=no-verify",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "DATABASE_URL sslmode=no-verify",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "MIGRATION_DATABASE_URL sslaccept=accept_invalid_certs",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: MIGRATION_DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "MIGRATION_DATABASE_URL sslaccept missing",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: MIGRATION_DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "MIGRATION_DATABASE_URL sslcert missing",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: MIGRATION_DATABASE_URL TLS parameters are not the required form"
+        },
+        {
+          "case": "schema \"Film-Job\"",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "schema \"Film-Job\"",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "schema \"Film-Job\"",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "schema \"a;drop\"",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "schema \"a;drop\"",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "schema \"a;drop\"",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "schema \"public\"",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "schema \"public\"",
+          "path": "seed",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "schema \"public\"",
+          "path": "runtime",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL schema is missing, malformed or public"
+        },
+        {
+          "case": "runtime and migration targets differ: host",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL and MIGRATION_DATABASE_URL differ in: host"
+        },
+        {
+          "case": "runtime and migration targets differ: port",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL and MIGRATION_DATABASE_URL differ in: port"
+        },
+        {
+          "case": "runtime and migration targets differ: database",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL and MIGRATION_DATABASE_URL differ in: database"
+        },
+        {
+          "case": "runtime and migration targets differ: user",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL and MIGRATION_DATABASE_URL differ in: user"
+        },
+        {
+          "case": "runtime and migration targets differ: schema",
+          "path": "migrate",
+          "expected": "fail",
+          "result": "failed",
+          "exit": 1,
+          "connections": 0,
+          "leaks": [],
+          "ok": true,
+          "error": "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested error: DATABASE_URL and MIGRATION_DATABASE_URL differ in: schema"
+        }
+      ]
+    },
+    "browser_tests": 1,
+    "finished_at": "2026-11-05T16:22:07.470Z"
+  },
+  "finished_at": "2026-11-05T16:22:07.471Z"
+}
