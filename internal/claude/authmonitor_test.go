@@ -86,7 +86,7 @@ func TestAFailedProbeMarksTheLoginBroken(t *testing.T) {
 	m.CheckStatus(context.Background())
 	m.Probe(context.Background())
 	got := m.Status()
-	if got.State != "probe_failed" || got.ProbeOK == nil || *got.ProbeOK || !strings.Contains(got.Detail, "Please run /login") {
+	if got.State != "probe_failed" || got.ProbeOK == nil || *got.ProbeOK || got.Detail != reasonRefusedLogin {
 		t.Fatalf("status = %+v, want probe_failed naming the reason", got)
 	}
 
@@ -158,5 +158,53 @@ func TestTickProbesWhenDueAndWhileBroken(t *testing.T) {
 	m.tick(context.Background(), false)
 	if cli.probes() != 3 || m.Status().State != "ok" {
 		t.Fatalf("probes %d state %q: want one more probe, then none while ok", cli.probes(), m.Status().State)
+	}
+}
+
+// The real CLI pretty-prints its JSON over many lines, sometimes after a warning.
+func TestCheckStatusReadsTheCLIsPrettyPrintedJSON(t *testing.T) {
+	out := "Warning: something unrelated\n{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\",\n  \"apiProvider\": \"firstParty\",\n  \"projectsDirectory\": \"/Users/x/.claude/projects\"\n}\n"
+	m := testMonitor(&fakeCLI{status: out}, nil)
+	m.CheckStatus(context.Background())
+	if got := m.Status(); got.State != "ok" || !got.LoggedIn || got.AuthMethod != "claude.ai" {
+		t.Fatalf("status = %+v, want ok via claude.ai", got)
+	}
+	probe := "{\n  \"type\": \"result\",\n  \"is_error\": false,\n  \"result\": \"OK\"\n}"
+	m = testMonitor(&fakeCLI{status: out, probe: probe}, nil)
+	m.CheckStatus(context.Background())
+	m.Probe(context.Background())
+	if got := m.Status(); got.State != "ok" || got.ProbeOK == nil || !*got.ProbeOK {
+		t.Fatalf("pretty probe: %+v", got)
+	}
+}
+
+// The console shows a fixed reason, never the CLI's own text: that may carry an
+// account email, a path or worse. The raw text goes to the server log, redacted.
+func TestDetailIsAFixedReasonNeverTheCLIsText(t *testing.T) {
+	leaky := "error for someone@example.com with sk-ant-api03-abcdef and Bearer xyz"
+	m := testMonitor(&fakeCLI{status: leaky, statusErr: errors.New("exit status 1")}, nil)
+	m.CheckStatus(context.Background())
+	if got := m.Status(); got.State != "error" || got.Detail != reasonStatusUnreadable {
+		t.Fatalf("status detail = %q (state %q), want the fixed reason", got.Detail, got.State)
+	}
+	cli := &fakeCLI{status: `{"loggedIn":true,"authMethod":"claude.ai"}`, probeErr: errors.New("exit status 1")}
+	for probe, want := range map[string]string{
+		`{"is_error":true,"result":"Invalid API key · Please run /login"}`:             reasonRefusedLogin,
+		`{"is_error":true,"result":"OAuth token has expired for someone@example.com"}`: reasonRefusedLogin,
+		`{"is_error":true,"result":"Claude usage limit reached"}`:                      reasonRefusedLimit,
+		leaky: reasonRequestFailed,
+	} {
+		cli.probe = probe
+		m := testMonitor(cli, nil)
+		m.CheckStatus(context.Background())
+		m.Probe(context.Background())
+		if got := m.Status().Detail; got != want {
+			t.Errorf("probe %q: detail %q, want %q", probe, got, want)
+		}
+	}
+	for _, s := range []string{"someone@example.com", "sk-ant-api03-abcdef", "Bearer xyz", "https://u:p@host/x"} {
+		if got := redactForLog("before " + s + " after"); strings.Contains(got, s) {
+			t.Errorf("redactForLog kept %q: %q", s, got)
+		}
 	}
 }

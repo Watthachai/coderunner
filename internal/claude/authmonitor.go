@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -89,12 +90,13 @@ func (m *AuthMonitor) CheckStatus(ctx context.Context) {
 	case parseErr == nil:
 		// `auth status` exits non-zero when logged out; the JSON still says so.
 		m.loggedIn, m.method, m.statusErr = st.LoggedIn, st.AuthMethod, ""
-	case err != nil:
-		m.loggedIn, m.method, m.statusErr = false, "", shortDetail(string(out)+" "+err.Error())
 	default:
-		m.loggedIn, m.method, m.statusErr = false, "", "unreadable auth status: "+shortDetail(string(out))
+		m.loggedIn, m.method, m.statusErr = false, "", reasonStatusUnreadable
 	}
 	m.mu.Unlock()
+	if parseErr != nil {
+		m.logger.Warn("claude auth status unreadable", "output", redactForLog(string(out)), "err", err)
+	}
 	m.logChange()
 }
 
@@ -109,14 +111,12 @@ func (m *AuthMonitor) Probe(ctx context.Context) {
 	ok := err == nil && parseErr == nil && !res.IsError
 	detail := ""
 	if !ok {
-		switch {
-		case parseErr == nil && res.Result != "":
-			detail = shortDetail(res.Result)
-		case err != nil:
-			detail = shortDetail(string(out) + " " + err.Error())
-		default:
-			detail = "unreadable probe result: " + shortDetail(string(out))
+		text := string(out)
+		if parseErr == nil {
+			text = res.Result
 		}
+		detail = probeReason(text)
+		m.logger.Warn("claude probe refused", "output", redactForLog(text), "err", err)
 	}
 	m.mu.Lock()
 	m.probed, m.probeAt, m.probeOK, m.probeErr = true, m.now(), ok, detail
@@ -210,28 +210,56 @@ func (m *AuthMonitor) Run(ctx context.Context, checkEvery, probeEvery time.Durat
 	}
 }
 
-// lastJSON is the last line of out that looks like a JSON object (the CLI may
-// print warnings first).
+// lastJSON is the last JSON object in out. The CLI pretty-prints it over many
+// lines and may print warnings first, so take the last line that opens an
+// object and is followed by a complete one.
 func lastJSON(out []byte) []byte {
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	text := strings.TrimSpace(string(out))
+	lines := strings.Split(text, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
-		if l := strings.TrimSpace(lines[i]); strings.HasPrefix(l, "{") {
-			return []byte(l)
+		if !strings.HasPrefix(strings.TrimSpace(lines[i]), "{") {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.Join(lines[i:], "\n"))
+		if json.Valid([]byte(candidate)) {
+			return []byte(candidate)
 		}
 	}
-	return bytes.TrimSpace(out)
+	return []byte(text)
 }
 
-// shortDetail keeps an error short and free of anything that looks like a key.
-func shortDetail(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
-	for _, f := range strings.Fields(s) {
-		if strings.HasPrefix(f, "sk-ant-") || len(f) > 60 {
-			s = strings.ReplaceAll(s, f, "[redacted]")
-		}
+// The console shows one of these fixed reasons, never the CLI's own text (it may
+// carry an account email, a path or a key); that text goes to the server log,
+// redacted.
+const (
+	reasonStatusUnreadable = "CRN could not read `claude auth status` (see the server log)"
+	reasonRefusedLogin     = "the request was refused: the login is invalid or expired — log in again"
+	reasonRefusedLimit     = "the request was refused: a usage or rate limit was reached"
+	reasonRequestFailed    = "the request failed (see the server log)"
+)
+
+var (
+	loginRefusal = regexp.MustCompile(`(?i)/login|log ?in|invalid (api )?key|unauthori[sz]ed|\b401\b|expired|revoked|authentication|credential|oauth`)
+	limitRefusal = regexp.MustCompile(`(?i)usage limit|rate limit|\b429\b|quota|overloaded`)
+	secretish    = regexp.MustCompile(`(?i)sk-[\w-]+|bearer\s+\S+|[a-z][a-z0-9+.-]*://[^\s/@]*:[^\s/@]*@\S+|(token|key|secret|password)["'=:\s]+\S+|[\w.+-]+@[\w-]+\.[\w.-]+`)
+)
+
+func probeReason(text string) string {
+	switch {
+	case loginRefusal.MatchString(text):
+		return reasonRefusedLogin
+	case limitRefusal.MatchString(text):
+		return reasonRefusedLimit
 	}
-	if len(s) > 200 {
-		s = s[:200] + "…"
+	return reasonRequestFailed
+}
+
+// redactForLog keeps CLI text short and strips what looks like a key, a bearer
+// token, URL credentials or an email address.
+func redactForLog(s string) string {
+	s = secretish.ReplaceAllString(strings.Join(strings.Fields(s), " "), "[redacted]")
+	if len(s) > 300 {
+		s = s[:300] + "…"
 	}
 	return s
 }
