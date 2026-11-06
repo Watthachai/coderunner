@@ -233,6 +233,119 @@ func TestAPushCredentialSaysWhyItIsRefused(t *testing.T) {
 	})
 }
 
+// Fittcore's finding on r6: looking at a path and then reading it leaves a gap. What is checked
+// and what is read are one open file, so swapping the path in that gap changes nothing.
+func TestAPushCredentialIsCheckedAndReadThroughOneOpenFile(t *testing.T) {
+	const good = `{"auths":{"r":{"auth":"dTp0"}}}`
+	dir := t.TempDir()
+	path, other := filepath.Join(dir, "config.json"), filepath.Join(dir, "other")
+	if err := os.WriteFile(path, []byte(good), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte(`{"auths":{"r":{"auth":"b3RoZXI6dG9rZW4="}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := credentialOpened
+	credentialOpened = func() {
+		if err := os.Rename(path, path+".moved"); err != nil {
+			t.Error(err)
+		}
+		if err := os.Symlink(other, path); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { credentialOpened = old })
+	raw, err := ReadPushCredential(path, time.Time{}, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != good {
+		t.Errorf("read the file that replaced it: %s", raw)
+	}
+}
+
+func TestAPushCredentialThatIsNotOneRegularFileIsRefused(t *testing.T) {
+	const good = `{"auths":{"r":{"auth":"dTp0"}}}`
+	t.Run("a pipe, which must not hold the build", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := syscall.Mkfifo(path, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := ReadPushCredential(path, time.Time{}, "r")
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+				t.Errorf("err = %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("reading a pipe held the build")
+		}
+	})
+	t.Run("a directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadPushCredential(path, time.Time{}, "r"); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("a file removed once it is open", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(good), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := credentialOpened
+		credentialOpened = func() { _ = os.Remove(path) }
+		t.Cleanup(func() { credentialOpened = old })
+		if _, err := ReadPushCredential(path, time.Time{}, "r"); err == nil || !strings.Contains(err.Error(), "one name") {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("a second name for one file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		if err := os.WriteFile(path, []byte(good), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(path, filepath.Join(dir, "another-name")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadPushCredential(path, time.Time{}, "r"); err == nil || !strings.Contains(err.Error(), "one name") {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("the mode, the size and the age", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.json")
+		if err := os.WriteFile(path, []byte(good), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadPushCredential(path, time.Time{}, "r"); err == nil || !strings.Contains(err.Error(), "mode") {
+			t.Errorf("mode: err = %v", err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadPushCredential(path, time.Now().Add(time.Hour), "r"); err == nil || !strings.Contains(err.Error(), "older") {
+			t.Errorf("age: err = %v", err)
+		}
+		if err := os.WriteFile(path, make([]byte, maxPushCredential+1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadPushCredential(path, time.Time{}, "r"); err == nil || !strings.Contains(err.Error(), "larger") {
+			t.Errorf("size: err = %v", err)
+		}
+	})
+}
+
 func TestAPushCredentialErrorNeverQuotesTheFile(t *testing.T) {
 	const secret = "dGhlLXNlY3JldA"
 	for _, body := range []string{secret, `{"auths":{"r":{"auth":"` + secret + `%"}}}`, `{"auths":{"other":{"auth":"` + secret + `"}}}`} {
@@ -511,31 +624,52 @@ func TestAnImageTagIsTakenApart(t *testing.T) {
 	}
 }
 
-func TestEveryTagOfEveryImageIsRead(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/v4/projects/fitt/x/registry/repositories" && r.URL.Query().Get("page") == "1":
-			if r.URL.EscapedPath() != "/api/v4/projects/fitt%2Fx/registry/repositories" {
-				t.Errorf("the project is not one path segment: %s", r.URL.EscapedPath())
-			}
-			w.Header().Set("X-Next-Page", "2")
-			fmt.Fprint(w, `[{"id":1,"path":"fitt/x/a","tags":[{"name":"v1"},{"name":"v2"}]}]`)
-		case r.URL.Query().Get("page") == "2":
-			fmt.Fprint(w, `[{"id":2,"path":"fitt/x/b","tags":[]}]`)
-		case strings.HasSuffix(r.URL.Path, "/1/tags/v1"):
-			fmt.Fprint(w, `{"digest":"sha256:one"}`)
-		case strings.HasSuffix(r.URL.Path, "/1/tags/v2"):
-			fmt.Fprint(w, `{"digest":"sha256:two"}`)
-		default:
-			w.WriteHeader(http.StatusNotFound)
+// fakeGitLab answers a list the way GitLab does: a page at a time, X-Next-Page always there and
+// empty on the last page. Keys are "<path>?page=<n>"; a tag's detail gives a digest of its name.
+func fakeGitLab(t *testing.T, pages map[string]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("tags") {
+			t.Errorf("tags carried on the repository list, which can be cut short: %s", r.URL)
 		}
+		if !strings.HasPrefix(r.URL.EscapedPath(), "/api/v4/projects/fitt%2Fx/") {
+			t.Errorf("the project is not one path segment: %s", r.URL.EscapedPath())
+		}
+		page := r.URL.Query().Get("page")
+		if body, ok := pages[r.URL.Path+"?page="+page]; ok {
+			n, _ := strconv.Atoi(page)
+			next := ""
+			if _, more := pages[r.URL.Path+"?page="+strconv.Itoa(n+1)]; more {
+				next = strconv.Itoa(n + 1)
+			}
+			w.Header()["X-Next-Page"] = []string{next}
+			fmt.Fprint(w, body)
+			return
+		}
+		if i := strings.LastIndex(r.URL.Path, "/tags/"); i >= 0 {
+			fmt.Fprintf(w, `{"digest":"sha256:%s"}`, r.URL.Path[i+len("/tags/"):])
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
+}
+
+const testRepositories = "/api/v4/projects/fitt/x/registry/repositories"
+
+func TestEveryTagOfEveryImageIsRead(t *testing.T) {
+	srv := fakeGitLab(t, map[string]string{
+		testRepositories + "?page=1":        `[{"id":1,"path":"fitt/x/a"}]`,
+		testRepositories + "?page=2":        `[{"id":2,"path":"fitt/x/b"}]`,
+		testRepositories + "/1/tags?page=1": `[{"name":"v1"}]`,
+		testRepositories + "/1/tags?page=2": `[{"name":"v2"}]`,
+		testRepositories + "/2/tags?page=1": `[]`,
+	})
 	defer srv.Close()
 	got, err := ReadRegistryTags(context.Background(), ImageRef{API: srv.URL, Project: "fitt/x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got["fitt/x/a"]["v1"] != "sha256:one" || got["fitt/x/a"]["v2"] != "sha256:two" {
+	if got["fitt/x/a"]["v1"] != "sha256:v1" || got["fitt/x/a"]["v2"] != "sha256:v2" {
 		t.Errorf("got %v", got)
 	}
 	if tags, ok := got["fitt/x/b"]; !ok || len(tags) != 0 {
@@ -543,24 +677,159 @@ func TestEveryTagOfEveryImageIsRead(t *testing.T) {
 	}
 }
 
-// An answer it cannot read must not read as fewer tags.
+// Fittcore's finding on r6: a list carried inside another list can be cut short.
+func TestAnImageWithMoreTagsThanOnePageIsReadToTheEnd(t *testing.T) {
+	pages := map[string]string{testRepositories + "?page=1": `[{"id":7,"path":"fitt/x/many"}]`}
+	const total = 250
+	for page := 0; page*100 < total; page++ {
+		var names []string
+		for i := page * 100; i < min((page+1)*100, total); i++ {
+			names = append(names, fmt.Sprintf(`{"name":"t%d"}`, i))
+		}
+		pages[fmt.Sprintf("%s/7/tags?page=%d", testRepositories, page+1)] = "[" + strings.Join(names, ",") + "]"
+	}
+	srv := fakeGitLab(t, pages)
+	defer srv.Close()
+	got, err := ReadRegistryTags(context.Background(), ImageRef{API: srv.URL, Project: "fitt/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["fitt/x/many"]) != total {
+		t.Errorf("read %d tags of %d", len(got["fitt/x/many"]), total)
+	}
+	if got["fitt/x/many"]["t249"] != "sha256:t249" {
+		t.Errorf("the last tag: %q", got["fitt/x/many"]["t249"])
+	}
+}
+
+// A list that repeats itself cannot be trusted to be the whole list.
+func TestARepeatInTheListIsAnError(t *testing.T) {
+	cases := map[string]map[string]string{
+		"the same image id twice": {
+			testRepositories + "?page=1":        `[{"id":1,"path":"fitt/x/a"},{"id":1,"path":"fitt/x/b"}]`,
+			testRepositories + "/1/tags?page=1": `[]`,
+		},
+		"the same image path twice": {
+			testRepositories + "?page=1":        `[{"id":1,"path":"fitt/x/a"},{"id":2,"path":"fitt/x/a"}]`,
+			testRepositories + "/1/tags?page=1": `[]`,
+			testRepositories + "/2/tags?page=1": `[]`,
+		},
+		"the same image on the next page": {
+			testRepositories + "?page=1":        `[{"id":1,"path":"fitt/x/a"}]`,
+			testRepositories + "?page=2":        `[{"id":1,"path":"fitt/x/a"}]`,
+			testRepositories + "/1/tags?page=1": `[]`,
+		},
+		"the same tag twice": {
+			testRepositories + "?page=1":        `[{"id":1,"path":"fitt/x/a"}]`,
+			testRepositories + "/1/tags?page=1": `[{"name":"v1"},{"name":"v1"}]`,
+		},
+		"the same tag on the next page": {
+			testRepositories + "?page=1":        `[{"id":1,"path":"fitt/x/a"}]`,
+			testRepositories + "/1/tags?page=1": `[{"name":"v1"}]`,
+			testRepositories + "/1/tags?page=2": `[{"name":"v1"}]`,
+		},
+	}
+	for name, pages := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := fakeGitLab(t, pages)
+			defer srv.Close()
+			_, err := ReadRegistryTags(context.Background(), ImageRef{API: srv.URL, Project: "fitt/x"})
+			if err == nil || !strings.Contains(err.Error(), "twice") {
+				t.Errorf("err = %v", err)
+			}
+		})
+	}
+}
+
+// An answer it cannot read must not read as fewer tags, and neither must an answer that does
+// not say it is the last.
 func TestATagListItCannotReadIsAnError(t *testing.T) {
+	list := func(next string, set bool, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			if set {
+				w.Header()["X-Next-Page"] = []string{next}
+			}
+			fmt.Fprint(w, body)
+		}
+	}
+	oneImage := func(w http.ResponseWriter, r *http.Request) bool {
+		if strings.HasSuffix(r.URL.Path, "/repositories") {
+			w.Header()["X-Next-Page"] = []string{""}
+			fmt.Fprint(w, `[{"id":1,"path":"a"}]`)
+			return true
+		}
+		return false
+	}
+	// anImage lists these images, and each has no tags: only the image can be what is wrong.
+	anImage := func(images string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header()["X-Next-Page"] = []string{""}
+			if strings.HasSuffix(r.URL.Path, "/repositories") {
+				fmt.Fprint(w, images)
+				return
+			}
+			fmt.Fprint(w, "[]")
+		}
+	}
 	cases := map[string]http.HandlerFunc{
 		"refused": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header()["X-Next-Page"] = []string{""}
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprint(w, "[]") // reads as no images at all, if the status is not looked at
 		},
-		"not json": func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "<html>") },
+		"not json":                    list("", true, "<html>"),
+		"it does not say if it ended": list("", false, "[]"),
+		"the next page is not a page": list("soon", true, `[{"id":1,"path":"a"}]`),
+		"the next page goes back":     list("1", true, `[{"id":1,"path":"a"}]`),
+		"a page with nothing on it, and more to come": func(w http.ResponseWriter, r *http.Request) {
+			next := ""
+			if r.URL.Query().Get("page") == "1" {
+				next = "2"
+			}
+			w.Header()["X-Next-Page"] = []string{next}
+			fmt.Fprint(w, "[]")
+		},
+		"an image with no id":   anImage(`[{"path":"a"}]`),
+		"an image with no path": anImage(`[{"id":1}]`),
+		"the total says there are more": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header()["X-Next-Page"] = []string{""}
+			w.Header().Set("X-Total", "9")
+			fmt.Fprint(w, "[]")
+		},
+		"a tag list it cannot read": func(w http.ResponseWriter, r *http.Request) {
+			if !oneImage(w, r) {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		},
+		"a tag with no name": func(w http.ResponseWriter, r *http.Request) {
+			if oneImage(w, r) {
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/tags") {
+				w.Header()["X-Next-Page"] = []string{""}
+				fmt.Fprint(w, `[{}]`)
+				return
+			}
+			fmt.Fprint(w, `{"digest":"sha256:x"}`) // only the name can be what is wrong
+		},
 		"a tag it cannot read": func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasSuffix(r.URL.Path, "/repositories") {
-				fmt.Fprint(w, `[{"id":1,"path":"a","tags":[{"name":"v1"}]}]`)
+			if oneImage(w, r) {
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/tags") {
+				w.Header()["X-Next-Page"] = []string{""}
+				fmt.Fprint(w, `[{"name":"v1"}]`)
 				return
 			}
 			w.WriteHeader(http.StatusInternalServerError)
 		},
 		"a tag with no digest": func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasSuffix(r.URL.Path, "/repositories") {
-				fmt.Fprint(w, `[{"id":1,"path":"a","tags":[{"name":"v1"}]}]`)
+			if oneImage(w, r) {
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/tags") {
+				w.Header()["X-Next-Page"] = []string{""}
+				fmt.Fprint(w, `[{"name":"v1"}]`)
 				return
 			}
 			fmt.Fprint(w, `{}`)
@@ -693,9 +962,36 @@ func TestDockerCommandsUseTheConfigTheyAreGiven(t *testing.T) {
 	}
 }
 
+// Fittcore's finding on r6: a variable left in the environment can point docker at another
+// daemon, context or builder, whatever config it is given.
+func TestADockerCommandKeepsNothingThatPointsDockerElsewhere(t *testing.T) {
+	for _, name := range []string{"DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "BUILDX_BUILDER", "BUILDKIT_HOST", "BUILDX_CONFIG", "COMPOSE_FILE"} {
+		t.Setenv(name, "tcp://somewhere-else:2375")
+	}
+	t.Setenv("KEEP_ME", "yes")
+	env := dockerCommand(WithDockerConfig(context.Background(), "/the/dir"), "version").Env
+	configs := 0
+	for _, kv := range env {
+		name, value, _ := strings.Cut(kv, "=")
+		switch {
+		case value == "tcp://somewhere-else:2375":
+			t.Errorf("%s reached docker", name)
+		case name == "DOCKER_CONFIG":
+			configs++
+		}
+	}
+	if configs != 1 || !slices.Contains(env, "DOCKER_CONFIG=/the/dir") {
+		t.Errorf("want one DOCKER_CONFIG, the given one: %d in %v", configs, env)
+	}
+	if !slices.Contains(env, "KEEP_ME=yes") {
+		t.Error("the rest of the environment did not reach docker")
+	}
+}
+
 // The operator's script and the build agree on the file, and the token stays off the screen.
 func TestTheOperatorsScriptLeavesWhatTheBuildAccepts(t *testing.T) {
 	const project = "efa0ff04-7885-4d86-a4ff-4829cccd2d9f"
+	const job = "7185f870-0000-4000-8000-000000000001"
 	script, err := filepath.Abs("../../deploy/macmini/push-window.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -724,7 +1020,7 @@ func TestTheOperatorsScriptLeavesWhatTheBuildAccepts(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	out, err := run(login+"\n", "receive", project)
+	out, err := run(login+"\n", "receive", project, job)
 	if err == nil || !strings.Contains(out, "REVOKE") {
 		t.Errorf("with no READY: %v, %s", err, out)
 	}
@@ -735,18 +1031,30 @@ func TestTheOperatorsScriptLeavesWhatTheBuildAccepts(t *testing.T) {
 		t.Errorf("the token was printed: %s", out)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "READY"), []byte("job-1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "READY"), []byte(job+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	status("READY")
-	out, err = run(login+"\n", "receive", project)
+	// Another job's pause: nothing is left.
+	out, err = run(login+"\n", "receive", project, "7185f870-0000-4000-8000-000000000002")
+	if err == nil || !strings.Contains(out, "REVOKE") {
+		t.Errorf("for another job: %v, %s", err, out)
+	}
+	if _, err := os.Lstat(path); err == nil {
+		t.Error("a token was left for another job")
+	}
+	out, err = run(login+"\n", "receive", project, job)
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	if strings.Contains(out, "the-secret-value") {
 		t.Errorf("the token was printed: %s", out)
 	}
-	if !strings.Contains(out, "job-1") {
+	// Fittcore's finding on r6: not even a fingerprint of it. The token's id says which one.
+	if strings.Contains(strings.ToLower(out), "sha256") {
+		t.Errorf("a fingerprint of the token was printed: %s", out)
+	}
+	if !strings.Contains(out, job) {
 		t.Errorf("it does not say which job: %s", out)
 	}
 	raw, err := ReadPushCredential(path, time.Time{}, "172.168.1.234:5050")
@@ -757,18 +1065,21 @@ func TestTheOperatorsScriptLeavesWhatTheBuildAccepts(t *testing.T) {
 		t.Errorf("the file: %s", raw)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "PUSHED"), []byte("job-1 sha256:x\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "PUSHED"), []byte(job+" sha256:x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	status("PUSHED")
 
 	for _, bad := range []string{"", "no-separator\n", ":\n"} {
-		if out, err := run(bad, "receive", project); err == nil {
+		if out, err := run(bad, "receive", project, job); err == nil {
 			t.Errorf("took %q: %s", bad, out)
 		}
 	}
-	if out, err := run("", "receive", "not-a-project"); err == nil {
+	if out, err := run("", "receive", "not-a-project", job); err == nil {
 		t.Errorf("took a bad id: %s", out)
+	}
+	if out, err := run(login+"\n", "receive", project); err == nil {
+		t.Errorf("took no job: %s", out)
 	}
 }
 
@@ -869,6 +1180,10 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	// And what could be left in CRN's environment: a daemon and a context that do not exist.
+	// docker fails at once if it obeys either.
+	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
+	t.Setenv("DOCKER_CONTEXT", "crn-test-no-such-context")
 
 	build := t.TempDir()
 	writeTree(t, build, "Dockerfile", "FROM scratch\nCOPY a.txt /a.txt\n")

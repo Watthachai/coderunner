@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -24,6 +25,10 @@ const buildxPlugin = "/Applications/Docker.app/Contents/Resources/cli-plugins/do
 // maxPushCredential is far more than one login needs.
 const maxPushCredential = 8 * 1024
 
+// credentialOpened runs between opening a push credential and reading it. A test swaps the
+// path here: what was opened is what must be read.
+var credentialOpened = func() {}
+
 type dockerConfigKey struct{}
 
 // WithDockerConfig has every docker command under ctx use dir as its config, not ~/.docker,
@@ -33,22 +38,51 @@ func WithDockerConfig(ctx context.Context, dir string) context.Context {
 	return context.WithValue(ctx, dockerConfigKey{}, dir)
 }
 
+// dockerSteering is what in an environment can point docker at another daemon, context,
+// builder or plugin, whatever config it is given.
+var dockerSteering = []string{"DOCKER_", "BUILDX_", "BUILDKIT_", "COMPOSE_"}
+
+// dockerEnv is this process's environment without any of that, and with the one config.
+func dockerEnv(dir string) []string {
+	var env []string
+	for _, entry := range os.Environ() {
+		steers := false
+		for _, prefix := range dockerSteering {
+			steers = steers || strings.HasPrefix(entry, prefix)
+		}
+		if !steers {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "DOCKER_CONFIG="+dir)
+}
+
 // dockerCommand is how this package runs docker.
 func dockerCommand(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	if dir, ok := ctx.Value(dockerConfigKey{}).(string); ok {
-		cmd.Env = append(os.Environ(), "DOCKER_CONFIG="+dir)
+		cmd.Env = dockerEnv(dir)
 	}
 	return cmd
 }
 
-// ReadPushCredential reads what an operator left for one push: a regular file, mode 600,
-// owned by CRN's user, written since the build asked at notBefore, holding one login for
-// registryHost and nothing else. Its errors never quote the file.
-func ReadPushCredential(path string, notBefore time.Time, registryHost string) ([]byte, error) {
-	info, err := os.Lstat(path)
+// readCredentialFile checks and reads one open file: a regular file with one name, mode 600,
+// owned by CRN's user, written since notBefore. Opening it refuses a link, and does not wait
+// on a pipe. Everything after that goes through the descriptor, so replacing the path changes
+// nothing about what is checked or what is read.
+func readCredentialFile(path string, notBefore time.Time) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, errors.New("the push credential is not a regular file")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("the push credential: %w", err)
+	}
+	defer file.Close()
+	credentialOpened()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, errors.New("the push credential cannot be read")
 	}
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("the push credential is not a regular file")
@@ -60,15 +94,28 @@ func ReadPushCredential(path string, notBefore time.Time, registryHost string) (
 	if !ok || int(stat.Uid) != listOwner() {
 		return nil, errors.New("the push credential is not owned by this user")
 	}
+	if stat.Nlink != 1 {
+		return nil, errors.New("the push credential does not have exactly one name")
+	}
 	if info.Size() > maxPushCredential {
 		return nil, errors.New("the push credential is larger than one login")
 	}
 	if info.ModTime().Before(notBefore) {
 		return nil, errors.New("the push credential is older than this build's request for it")
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
+	raw, err := io.ReadAll(io.LimitReader(file, maxPushCredential+1))
+	if err != nil || int64(len(raw)) != info.Size() {
 		return nil, errors.New("the push credential cannot be read")
+	}
+	return raw, nil
+}
+
+// ReadPushCredential reads what an operator left for one push, as readCredentialFile allows,
+// holding one login for registryHost and nothing else. Its errors never quote the file.
+func ReadPushCredential(path string, notBefore time.Time, registryHost string) ([]byte, error) {
+	raw, err := readCredentialFile(path, notBefore)
+	if err != nil {
+		return nil, err
 	}
 	var config struct {
 		Auths map[string]struct {

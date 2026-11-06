@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,61 +43,107 @@ func ParseImageRef(appTag string) (ImageRef, error) {
 
 var gitlabClient = &http.Client{Timeout: 20 * time.Second}
 
-func gitlabGet(ctx context.Context, address string, into any) (next string, err error) {
+func gitlabGet(ctx context.Context, address string, into any) (http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	res, err := gitlabClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("ask GitLab: %w", err)
+		return nil, fmt.Errorf("ask GitLab: %w", err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, res.Body)
-		return "", fmt.Errorf("ask GitLab: %s answered %d", res.Request.URL.Path, res.StatusCode)
+		return nil, fmt.Errorf("ask GitLab: %s answered %d", res.Request.URL.Path, res.StatusCode)
 	}
 	if err := json.NewDecoder(res.Body).Decode(into); err != nil {
-		return "", fmt.Errorf("ask GitLab: %s: %w", res.Request.URL.Path, err)
+		return nil, fmt.Errorf("ask GitLab: %s: %w", res.Request.URL.Path, err)
 	}
-	return res.Header.Get("X-Next-Page"), nil
+	return res.Header, nil
 }
 
-// ReadRegistryTags asks GitLab's API for all of it, without a login. The project's registry
-// is readable by anyone who can reach it. An answer it cannot read is an error, never a
-// shorter list.
-func ReadRegistryTags(ctx context.Context, ref ImageRef) (RegistryTags, error) {
-	base := ref.API + "/api/v4/projects/" + url.PathEscape(ref.Project) + "/registry/repositories"
-	all := RegistryTags{}
-	for page := "1"; page != ""; {
-		var repositories []struct {
-			ID   int64  `json:"id"`
-			Path string `json:"path"`
-			Tags []struct {
-				Name string `json:"name"`
-			} `json:"tags"`
-		}
-		next, err := gitlabGet(ctx, base+"?per_page=100&tags=true&page="+url.QueryEscape(page), &repositories)
+// gitlabList reads a whole list, page by page, until GitLab says that was the last page. An
+// answer that does not say so is an error, since a shorter list would read as nothing changed.
+func gitlabList[T any](ctx context.Context, address string) ([]T, error) {
+	var all []T
+	for page := 1; ; page++ {
+		var items []T
+		header, err := gitlabGet(ctx, address+"?per_page=100&page="+strconv.Itoa(page), &items)
 		if err != nil {
 			return nil, err
 		}
-		for _, r := range repositories {
-			tags := map[string]string{}
-			for _, t := range r.Tags {
-				var detail struct {
-					Digest string `json:"digest"`
-				}
-				if _, err := gitlabGet(ctx, fmt.Sprintf("%s/%d/tags/%s", base, r.ID, url.PathEscape(t.Name)), &detail); err != nil {
-					return nil, err
-				}
-				if detail.Digest == "" {
-					return nil, fmt.Errorf("ask GitLab: no digest for %s:%s", r.Path, t.Name)
-				}
-				tags[t.Name] = detail.Digest
-			}
-			all[r.Path] = tags
+		all = append(all, items...)
+		next, said := header["X-Next-Page"]
+		if !said || len(next) != 1 {
+			return nil, errors.New("ask GitLab: it did not say whether another page follows")
 		}
-		page = next
+		if next[0] == "" {
+			if total := header.Get("X-Total"); total != "" && total != strconv.Itoa(len(all)) {
+				return nil, fmt.Errorf("ask GitLab: it counts %s entries and listed %d", total, len(all))
+			}
+			return all, nil
+		}
+		if next[0] != strconv.Itoa(page+1) || len(items) == 0 {
+			return nil, errors.New("ask GitLab: its pages do not follow one another")
+		}
+	}
+}
+
+// ReadRegistryTags asks GitLab's API for all of it, without a login. The project's registry
+// is readable by anyone who can reach it. Each image's tags come from that image's own list,
+// page by page: a list carried inside the list of images can be cut short. An answer it cannot
+// read, or one that names an image or a tag twice, is an error, never a shorter list.
+func ReadRegistryTags(ctx context.Context, ref ImageRef) (RegistryTags, error) {
+	base := ref.API + "/api/v4/projects/" + url.PathEscape(ref.Project) + "/registry/repositories"
+	type repository struct {
+		ID   int64  `json:"id"`
+		Path string `json:"path"`
+	}
+	type tag struct {
+		Name string `json:"name"`
+	}
+	repositories, err := gitlabList[repository](ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	all := RegistryTags{}
+	ids := map[int64]bool{}
+	for _, r := range repositories {
+		if r.ID <= 0 || r.Path == "" {
+			return nil, errors.New("ask GitLab: an image with no id or no path")
+		}
+		if ids[r.ID] {
+			return nil, fmt.Errorf("ask GitLab: it lists image id %d twice", r.ID)
+		}
+		if _, repeated := all[r.Path]; repeated {
+			return nil, fmt.Errorf("ask GitLab: it lists image %s twice", r.Path)
+		}
+		ids[r.ID] = true
+		listed, err := gitlabList[tag](ctx, fmt.Sprintf("%s/%d/tags", base, r.ID))
+		if err != nil {
+			return nil, err
+		}
+		tags := map[string]string{}
+		for _, t := range listed {
+			if t.Name == "" {
+				return nil, fmt.Errorf("ask GitLab: a tag of %s with no name", r.Path)
+			}
+			if _, repeated := tags[t.Name]; repeated {
+				return nil, fmt.Errorf("ask GitLab: it lists %s:%s twice", r.Path, t.Name)
+			}
+			var detail struct {
+				Digest string `json:"digest"`
+			}
+			if _, err := gitlabGet(ctx, fmt.Sprintf("%s/%d/tags/%s", base, r.ID, url.PathEscape(t.Name)), &detail); err != nil {
+				return nil, err
+			}
+			if detail.Digest == "" {
+				return nil, fmt.Errorf("ask GitLab: no digest for %s:%s", r.Path, t.Name)
+			}
+			tags[t.Name] = detail.Digest
+		}
+		all[r.Path] = tags
 	}
 	return all, nil
 }

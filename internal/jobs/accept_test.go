@@ -32,8 +32,8 @@ const fakeDigest = "sha256:" + "ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56
 // pipeline reads back. FAKE_REGISTRY_DIGEST is what the registry says v3 is.
 const pipelineDocker = `#!/bin/sh
 echo "docker $*" >> "$EVENTS"
-echo "docker-config $1 ${DOCKER_CONFIG:-none}" >> "$DOCKER_CONFIGS"
-[ -n "$DOCKER_CONFIG" ] && [ -f "$DOCKER_CONFIG/config.json" ] && echo "docker-auth $1 $(cat "$DOCKER_CONFIG/config.json")" >> "$DOCKER_CONFIGS"
+echo "docker-config $1 ${DOCKER_CONFIG:-none}" >> "$CRN_TEST_DOCKER_LOG"
+[ -n "$DOCKER_CONFIG" ] && [ -f "$DOCKER_CONFIG/config.json" ] && echo "docker-auth $1 $(cat "$DOCKER_CONFIG/config.json")" >> "$CRN_TEST_DOCKER_LOG"
 [ "$1" = "ps" ] && cat "$FAKE_CONTAINERS" 2>/dev/null
 case "$1 $2" in
   "image inspect") echo "[\"$(echo "$3" | sed 's/:v[0-9]*$//')@${FAKE_LOCAL_DIGEST}\"]" ;;
@@ -350,7 +350,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	t.Setenv("CONTEXT_COPY", contextCopy)
 	t.Setenv("LIST_SEEN", listSeen)
 	dockerConfigs := filepath.Join(root, "docker-configs")
-	t.Setenv("DOCKER_CONFIGS", dockerConfigs)
+	t.Setenv("CRN_TEST_DOCKER_LOG", dockerConfigs)
 	containers := filepath.Join(root, "containers")
 	if err := os.WriteFile(containers, []byte("old-container\n"), 0o644); err != nil {
 		t.Fatal(err)

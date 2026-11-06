@@ -491,6 +491,19 @@ func TestTheOperatorIsToldWhenThePushIsOver(t *testing.T) {
 	}
 }
 
+// A deploy token's user holds its id: the trace says which token, and never the token.
+func TestTheTraceNamesWhichLoginAndNotItsToken(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
+	released(t, run, "app.js", "changed")
+	raw, _ := json.Marshal(run.store.trace)
+	if !strings.Contains(string(raw), "Push credential for test-user received") {
+		t.Errorf("the trace does not name the login: %s", raw)
+	}
+	if strings.Contains(string(raw)+run.logs, "test-token") {
+		t.Error("the token is in the trace")
+	}
+}
+
 func TestARegistryItCannotReadFailsTheBuild(t *testing.T) {
 	cases := map[string]func(bool) error{
 		"before a token": func(bool) error { return errors.New("gitlab said 502") },

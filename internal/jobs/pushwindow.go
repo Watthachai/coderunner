@@ -252,7 +252,8 @@ func (m *manager) openPushWindow(ctx context.Context, job *domain.Job, gate *job
 		}
 		window := &pushWindow{dockerDir: dockerDir, login: login, tags: tags, ref: ref}
 		window.ctx, window.cancel = context.WithTimeout(buildstep.WithDockerConfig(ctx, dockerDir), orDefault(m.pushWindowLimit, pushWindowLimit))
-		m.publishText(job.ID, "Push credential received at "+time.Now().UTC().Format(time.RFC3339)+"; pushing.")
+		user, _, _ := strings.Cut(login, ":")
+		m.publishText(job.ID, "Push credential for "+user+" received at "+time.Now().UTC().Format(time.RFC3339)+"; pushing.")
 		return window, nil
 	}
 }
