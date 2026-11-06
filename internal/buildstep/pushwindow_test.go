@@ -351,6 +351,24 @@ func TestAChangeToTheMachineIsSeen(t *testing.T) {
 			before = now
 		})
 	}
+	t.Run("the same program from another place", func(t *testing.T) {
+		other := t.TempDir()
+		raw, err := os.ReadFile(filepath.Join(bin, "node"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(other, "node"), raw, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", other+string(os.PathListSeparator)+os.Getenv("PATH"))
+		now, err := CaptureMachineState(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if differ := before.Differences(now); !slices.Contains(differ, "program node") {
+			t.Errorf("not seen: %v", differ)
+		}
+	})
 	t.Run("a program that shadows another", func(t *testing.T) {
 		writeTree(t, bin, "docker", "#!/bin/sh\n")
 		if err := os.Chmod(filepath.Join(bin, "docker"), 0o755); err != nil {
@@ -813,20 +831,28 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(auth, "htpasswd"), []byte(testRegistryHtpasswd+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// On the docker daemon's own network, where its 127.0.0.1 is the registry and plain http is
+	// allowed. Nothing outside Docker's machine can reach it.
 	name := fmt.Sprintf("crn-test-registry-%d", os.Getpid())
-	out, err := exec.Command("docker", "run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::5000",
-		"-v", auth+":/auth:ro", "-e", "REGISTRY_AUTH=htpasswd", "-e", "REGISTRY_AUTH_HTPASSWD_REALM=test",
+	port := fmt.Sprint(45000 + os.Getpid()%5000)
+	out, err := exec.Command("docker", "run", "-d", "--rm", "--name", name, "--network", "host",
+		"-v", auth+":/auth:ro", "-e", "REGISTRY_HTTP_ADDR=127.0.0.1:"+port, "-e", "REGISTRY_AUTH=htpasswd", "-e", "REGISTRY_AUTH_HTPASSWD_REALM=test",
 		"-e", "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd", "registry:2").CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "-v", name).Run() })
-	raw, err := exec.Command("docker", "port", name, "5000").Output()
-	if err != nil {
-		t.Fatal(err)
+	for i := 0; ; i++ {
+		logs, _ := exec.Command("docker", "logs", name).CombinedOutput()
+		if strings.Contains(string(logs), "listening on") {
+			break
+		}
+		if i == 100 {
+			t.Fatalf("the registry did not start:\n%s", logs)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	_, port, _ := strings.Cut(strings.TrimSpace(strings.Split(string(raw), "\n")[0]), ":")
-	host := "localhost:" + port
+	host := "127.0.0.1:" + port
 	tag := host + "/push-window/check:v1"
 	t.Cleanup(func() { _ = exec.Command("docker", "rmi", "-f", tag).Run() })
 
@@ -857,9 +883,19 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 	if raw, err := os.ReadFile(marks); err == nil {
 		t.Errorf("the buildx in the home directory ran: %s", raw)
 	}
-	if err := PushImageOnce(bare, tag, logger); err == nil {
-		t.Error("the push worked with no login: it used the one in the home directory")
+	refused := func(ctx context.Context, when string) {
+		t.Helper()
+		err := PushImageOnce(ctx, tag, logger)
+		if err == nil {
+			t.Errorf("%s: the push worked", when)
+			return
+		}
+		// Only a refusal shows it had no login. A network failure would show nothing.
+		if text := err.Error(); !strings.Contains(text, "no basic auth") && !strings.Contains(text, "unauthorized") && !strings.Contains(text, "authentication required") {
+			t.Errorf("%s: it failed for another reason: %v", when, err)
+		}
 	}
+	refused(bare, "with no login, and a working one in the home directory")
 
 	withLogin, err := NewPushDockerConfig([]byte(`{"auths":{"` + host + `":{"auth":"dGVzdC11c2VyOnRlc3QtcGFzcw=="}}}`))
 	if err != nil {
@@ -881,7 +917,5 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 	if err := RemovePushDockerConfig(withLogin); err != nil {
 		t.Fatal(err)
 	}
-	if err := PushImageOnce(bare, tag, logger); err == nil {
-		t.Error("the push worked after the login was removed")
-	}
+	refused(bare, "after the login was removed")
 }

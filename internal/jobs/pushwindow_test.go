@@ -190,8 +190,14 @@ func TestACredentialThatIsNotAsAgreedIsRefused(t *testing.T) {
 // ~/.docker, which an agent can write. What the operator left is moved, not copied.
 func TestThePushUsesOnlyTheCredentialItWasGiven(t *testing.T) {
 	home := t.TempDir()
-	run := runPipelineWith(t, pipelineOpts{env: map[string]string{"HOME": home}, agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
+	run := runPipelineWith(t, pipelineOpts{env: map[string]string{
+		"HOME":           home,
+		"FAKE_PUSH_RUNS": `if [ -e "$CREDENTIAL_PATH" ]; then echo "the operator's file is still there" >> "$EVENTS"; fi`,
+	}, agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
 	released(t, run, "app.js", "changed")
+	if indexOf(run.events, "the operator's file is still there") >= 0 {
+		t.Error("the operator's file was still there during the push")
+	}
 	seen := map[string]string{}
 	for _, line := range run.dockerConfigs {
 		if rest, ok := strings.CutPrefix(line, "docker-config "); ok {
@@ -505,7 +511,19 @@ func TestARegistryItCannotReadFailsTheBuild(t *testing.T) {
 			if indexOf(run.events, "node accept-candidate.mjs") >= 0 {
 				t.Errorf("the gate ran:\n%s", events(run))
 			}
+			if name == "before a token" && indexOf(run.events, "operator: ready for a token") >= 0 {
+				t.Errorf("a token was asked for:\n%s", events(run))
+			}
 		})
+	}
+}
+
+// The push must give a digest: it is what everything after it is checked against.
+func TestAPushThatGivesNoDigestFailsTheBuild(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{env: map[string]string{"FAKE_LOCAL_DIGEST": "not-a-digest"}, agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
+	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "no digest") {
+		t.Errorf("the failure does not say why: %s", failedMessage(run))
 	}
 }
 
