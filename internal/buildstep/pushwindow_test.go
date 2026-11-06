@@ -189,6 +189,45 @@ func TestAPushCredentialFromAnotherUserIsRefused(t *testing.T) {
 	}
 }
 
+// Each refusal says what is wrong, which is all an operator gets: never the file's content.
+func TestAPushCredentialSaysWhyItIsRefused(t *testing.T) {
+	const good = `{"auths":{"r":{"auth":"dTp0"}}}`
+	cases := map[string]struct {
+		body string
+		want string
+	}{
+		"another registry": {`{"auths":{"other":{"auth":"dTp0"}}}`, "not for this build's registry"},
+		"two logins":       {`{"auths":{"r":{"auth":"dTp0"},"s":{"auth":"dTp0"}}}`, "not for this build's registry"},
+		"no logins":        {`{"auths":{}}`, "not for this build's registry"},
+		"not one login":    {`user:token`, "not one docker login"},
+		"no separator":     {`{"auths":{"r":{"auth":"bm9zZXA="}}}`, "does not hold a user and a token"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(c.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadPushCredential(path, time.Time{}, "r"); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v, want %q", err, c.want)
+			}
+		})
+	}
+	t.Run("a link", func(t *testing.T) {
+		dir := t.TempDir()
+		real, link := filepath.Join(dir, "real"), filepath.Join(dir, "config.json")
+		if err := os.WriteFile(real, []byte(good), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadPushCredential(link, time.Time{}, "r"); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("err = %v", err)
+		}
+	})
+}
+
 func TestAPushCredentialErrorNeverQuotesTheFile(t *testing.T) {
 	const secret = "dGhlLXNlY3JldA"
 	for _, body := range []string{secret, `{"auths":{"r":{"auth":"` + secret + `%"}}}`, `{"auths":{"other":{"auth":"` + secret + `"}}}`} {

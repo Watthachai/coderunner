@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -150,7 +151,7 @@ func TestACredentialThatIsNotAsAgreedIsRefused(t *testing.T) {
 		"no separator":       write(`{"auths":{"172.168.1.234:5050":{"auth":"bm9zZXBhcmF0b3I="}}}`, 0o600),
 		"a credential store": write(`{"credsStore":"evil","auths":{"172.168.1.234:5050":{"auth":"`+testToken+`"}}}`, 0o600),
 		"a helper":           write(`{"credHelpers":{"172.168.1.234:5050":"evil"},"auths":{"172.168.1.234:5050":{"auth":"`+testToken+`"}}}`, 0o600),
-		"too large":          write(`{"auths":{"172.168.1.234:5050":{"auth":"`+strings.Repeat("A", 9000)+`"}}}`, 0o600),
+		"too large":          write(`{"auths":{"172.168.1.234:5050":{"auth":"`+base64.StdEncoding.EncodeToString([]byte("user:"+strings.Repeat("x", 9000)))+`"}}}`, 0o600),
 		"a link": func(t *testing.T, path string) {
 			target := path + ".real"
 			if err := os.WriteFile(target, []byte(goodCredential), 0o600); err != nil {

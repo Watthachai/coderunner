@@ -240,6 +240,7 @@ func TestRunLeavesTheGroupAloneOtherwise(t *testing.T) {
 	}
 	pid := readPid(t, pidFile)
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	time.Sleep(500 * time.Millisecond) // a killed process lingers until launchd reaps it
 	if !alive(pid) {
 		t.Errorf("process %d was stopped without being asked", pid)
 	}
