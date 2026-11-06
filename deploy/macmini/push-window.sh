@@ -9,6 +9,8 @@
 #   push-window.sh receive <project> <job> token on stdin: leave it for that job
 #   push-window.sh scope                   token on stdin: it writes this project's images only
 #   push-window.sh dead                    token on stdin: it can no longer push
+#   push-window.sh sessions                exit 0 only when no agent's session is open
+#   push-window.sh tags                    every tag of the project, from GitLab, sorted
 #
 # deploy/macmini/push-window-run.sh runs these from the laptop.
 set -eu
@@ -72,11 +74,13 @@ registry_check() {
 import base64, json, os, sys, urllib.error, urllib.parse, urllib.request
 
 mode = sys.argv[1]
-login = sys.stdin.readline().rstrip("\n")
-user, _, token = login.partition(":")
-if not user or not token:
-    print("no user:token on stdin", file=sys.stderr)
-    sys.exit(1)
+login = ""
+if mode != "tags":
+    login = sys.stdin.readline().rstrip("\n")
+    user, _, token = login.partition(":")
+    if not user or not token:
+        print("no user:token on stdin", file=sys.stderr)
+        sys.exit(1)
 gitlab = os.environ["CRN_GITLAB_URL"]
 registry = os.environ["CRN_REGISTRY_URL"]
 project = os.environ["CRN_SCOPE_PROJECT"]
@@ -102,20 +106,43 @@ def ask(address, headers=None, method="GET"):
         return e.code, e.headers, e.read()
 
 
-def repositories():
-    base = gitlab + "/api/v4/projects/" + urllib.parse.quote(project, safe="") + "/registry/repositories"
+images_of_project = gitlab + "/api/v4/projects/" + urllib.parse.quote(project, safe="") + "/registry/repositories"
+
+
+def listed(address):
+    """A whole GitLab list, page by page. A list that does not say it ended is an error."""
     seen, page = [], 1
     while True:
-        status, headers, body = ask(base + "?per_page=100&page=" + str(page))
-        if status != 200 or headers.get("X-Next-Page") is None:
-            raise ValueError("the project's image list")
-        seen += [r["path"] for r in json.loads(body)]
+        status, headers, body = ask(address + "?per_page=100&page=" + str(page))
         following = headers.get("X-Next-Page")
+        if status != 200 or following is None:
+            raise ValueError("a list from GitLab")
+        seen += json.loads(body)
         if following == "":
             return seen
         if following != str(page + 1):
-            raise ValueError("the project's image list")
+            raise ValueError("a list from GitLab")
         page += 1
+
+
+def repositories():
+    return [r["path"] for r in listed(images_of_project)]
+
+
+def tag_lines():
+    lines = []
+    for image in listed(images_of_project):
+        names = [t["name"] for t in listed(images_of_project + "/" + str(image["id"]) + "/tags")]
+        if not names:
+            lines.append(image["path"] + " (no tags)")
+        for name in names:
+            status, _, body = ask(images_of_project + "/" + str(image["id"]) + "/tags/" + urllib.parse.quote(name, safe=""))
+            if status != 200 or not json.loads(body).get("digest"):
+                raise ValueError("a tag from GitLab")
+            lines.append(image["path"] + " " + name + " " + json.loads(body)["digest"])
+    if len(lines) != len(set(lines)):
+        raise ValueError("GitLab lists something twice")
+    return sorted(lines)
 
 
 def actions_on(repo):
@@ -139,6 +166,9 @@ def actions_on(repo):
 
 def main():
     problems = []
+    if mode == "tags":
+        print("\n".join(tag_lines()))
+        return 0
     if mode == "scope":
         held = repositories()
         if sorted(held) != sorted(allowed):
@@ -185,7 +215,7 @@ def main():
 try:
     sys.exit(main())
 except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
-    print(("SCOPE" if mode == "scope" else "DEAD"), "FAILED: no usable answer:", type(e).__name__)
+    print({"scope": "SCOPE", "dead": "DEAD", "tags": "TAGS"}[mode], "FAILED: no usable answer:", type(e).__name__)
     sys.exit(1)
 PY
 	)" "$1"
@@ -280,11 +310,20 @@ receive)
 	mv "$tmp" "$dir/config.json"
 	echo "left for job $3, login ${login%%:*}"
 	;;
-scope | dead)
+scope | dead | tags)
 	registry_check "$1"
 	;;
+sessions)
+	sessions=$(agent_sessions)
+	if [ -n "$sessions" ]; then
+		printf '%s\n' "$sessions"
+		echo "SESSIONS FAILED: an agent session is open"
+		exit 1
+	fi
+	echo "SESSIONS PASSED: none"
+	;;
 *)
-	sed -n 2,13p "$0" >&2
+	sed -n 2,15p "$0" >&2
 	exit 2
 	;;
 esac

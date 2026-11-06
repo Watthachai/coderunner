@@ -32,6 +32,6 @@ unless live.call.map(&:id) == [token.id] && token.scopes == [:read_registry, :wr
   token.revoke!
   abort("not exactly one live token with the two registry scopes: #{token.id} was revoked")
 end
-puts "CRNMETA id=#{token.id} name=#{token.name} username=#{token.username} created_at=#{token.created_at.utc.iso8601} expires_at=#{token.expires_at.utc.iso8601} expires_epoch=#{token.expires_at.to_i} gitlab_clock=#{Time.current.utc.iso8601} scopes=#{token.scopes.join(",")}"
+puts "CRNMETA id=#{token.id} name=#{token.name} live_before=#{before.size} live_after=#{live.call.size} username=#{token.username} created_at=#{token.created_at.utc.iso8601} expires_at=#{token.expires_at.utc.iso8601} expires_epoch=#{token.expires_at.to_i} gitlab_clock=#{Time.current.utc.iso8601} scopes=#{token.scopes.join(",")}"
 puts "CRNTOKEN #{token.username}:#{token.token}"
 ' | grep -E '^CRN(META|TOKEN) '

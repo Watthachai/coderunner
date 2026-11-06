@@ -246,12 +246,13 @@ func TestABaselineOfAMachineItCannotReadIsNotSaved(t *testing.T) {
 
 // registryFake is GitLab and the registry as push-window.sh's scope and dead see them.
 type registryFake struct {
-	images    []string          // what the project's image list says
-	grants    map[string]string // image to "pull,push"; absent grants nothing
-	refused   bool              // /jwt/auth refuses the login
-	jwtStatus int               // /jwt/auth answers this instead
-	opened    int               // what the registry answers to opening a push
-	noHeader  bool              // the image list does not say whether it ended
+	images    []string            // what the project's image list says
+	tags      map[string][]string // an image\'s tags; its list says them, each digest is its name
+	grants    map[string]string   // image to "pull,push"; absent grants nothing
+	refused   bool                // /jwt/auth refuses the login
+	jwtStatus int                 // /jwt/auth answers this instead
+	opened    int                 // what the registry answers to opening a push
+	noHeader  bool                // the image list does not say whether it ended
 	openings  []string
 	logins    []string
 }
@@ -264,9 +265,24 @@ func (f *registryFake) serve(t *testing.T) *httptest.Server {
 			if !f.noHeader {
 				w.Header()["X-Next-Page"] = []string{""}
 			}
-			var list []map[string]string
-			for _, image := range f.images {
-				list = append(list, map[string]string{"path": image})
+			if i := strings.Index(r.URL.Path, "/repositories/"); i >= 0 {
+				parts := strings.Split(r.URL.Path[i+len("/repositories/"):], "/")
+				number, _ := strconv.Atoi(parts[0])
+				image := f.images[number-1]
+				if len(parts) == 3 {
+					_ = json.NewEncoder(w).Encode(map[string]string{"digest": "sha256:" + parts[2]})
+					return
+				}
+				list := []map[string]string{}
+				for _, name := range f.tags[image] {
+					list = append(list, map[string]string{"name": name})
+				}
+				_ = json.NewEncoder(w).Encode(list)
+				return
+			}
+			list := []map[string]any{}
+			for i, image := range f.images {
+				list = append(list, map[string]any{"id": i + 1, "path": image})
 			}
 			_ = json.NewEncoder(w).Encode(list)
 		case r.URL.Path == "/jwt/auth":
@@ -312,6 +328,14 @@ func (f *registryFake) ask(t *testing.T, sub string) (string, error) {
 		"CRN_GITLAB_URL=" + srv.URL, "CRN_REGISTRY_URL=" + srv.URL, "CRN_SCOPE_PROJECT=fitt/ftcdv-uat",
 		"CRN_SCOPE_ALLOWED=" + inNTC + " " + inHello, "CRN_SCOPE_OUTSIDE=" + outDemos,
 	}, sub)
+}
+
+func (f *registryFake) askTags(t *testing.T) (string, error) {
+	t.Helper()
+	srv := f.serve(t)
+	defer srv.Close()
+	m := newMachineFake(t)
+	return m.run("", []string{"CRN_GITLAB_URL=" + srv.URL, "CRN_SCOPE_PROJECT=fitt/ftcdv-uat"}, "tags")
 }
 
 func goodScope() *registryFake {
@@ -414,6 +438,40 @@ func TestDeadPassesOnlyWhenTheTokenCannotPush(t *testing.T) {
 	})
 }
 
+func TestSessionsFailsWhenAnAgentIsOpen(t *testing.T) {
+	m := newMachineFake(t)
+	if out, err := m.run("", nil, "sessions"); err != nil || !strings.Contains(out, "SESSIONS PASSED") {
+		t.Errorf("none open: %v: %s", err, out)
+	}
+	m.set("sessions", "claude --resume\n")
+	if out, err := m.run("", nil, "sessions"); err == nil || !strings.Contains(out, "SESSIONS FAILED") {
+		t.Errorf("one open: %v: %s", err, out)
+	}
+}
+
+func TestTagsListsEveryTagOrFails(t *testing.T) {
+	f := goodScope()
+	f.tags = map[string][]string{inNTC: {"v2", "v1"}}
+	out, err := f.askTags(t)
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	want := inHello + " (no tags)\n" + inNTC + " v1 sha256:v1\n" + inNTC + " v2 sha256:v2\n"
+	if out != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out, want)
+	}
+	f = goodScope()
+	f.noHeader = true
+	if out, err := f.askTags(t); err == nil || !strings.Contains(out, "TAGS FAILED") {
+		t.Errorf("a list that does not end: %v: %s", err, out)
+	}
+	f = goodScope()
+	f.tags = map[string][]string{inNTC: {"v1", "v1"}}
+	if out, err := f.askTags(t); err == nil || !strings.Contains(out, "TAGS FAILED") {
+		t.Errorf("a tag listed twice: %v: %s", err, out)
+	}
+}
+
 // sshFake stands in for both hosts for push-window-run.sh. A file named fail-<step> makes that
 // step fail, fail-dead-<n> the nth dead check. calls records each step in order.
 const sshFake = `
@@ -430,6 +488,7 @@ root@*)
 	esac
 	script=$(cat)
 	case "$script" in
+	*WINDOW_START*) step=writelog ;;
 	*CRNREVOKEALL*) step=revoke-unknown ;;
 	*CRNREVOKE*) step=revoke ;;
 	*CRNSHOW*) step=show ;;
@@ -437,27 +496,39 @@ root@*)
 	*) step=unknown ;;
 	esac
 	note "$step $cmd"
-	fails "$step" && { echo "$step failed" >&2; exit 1; }
+	if fails "$step"; then
+		[ "$step" = writelog ] && printf '== summary\nWRONG: a write outside the allowed image\nWRITE LOG FAILED: 1 problem(s)\n'
+		echo "$step failed" >&2
+		exit 1
+	fi
 	case "$step" in
 	create)
 		n=$(( $(cat "$FAKE/made" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE/made"
 		fails create-unnamed && { echo "CRNTOKEN gitlab+deploy-token-$n:gldt-secret-$n"; exit 0; }
-		fails create-tokenless && { echo "CRNMETA id=$n name=crn-push-window-10$n username=u expires_epoch=2 gitlab_clock=t scopes=s"; exit 0; }
-		echo "CRNMETA id=$n name=crn-push-window-10$n username=gitlab+deploy-token-$n created_at=c expires_at=e expires_epoch=2 gitlab_clock=t scopes=read_registry,write_registry"
+		fails create-tokenless && { echo "CRNMETA id=$n name=crn-push-window-10$n live_before=0 live_after=1 username=u expires_epoch=2 gitlab_clock=t scopes=s"; exit 0; }
+		before=0; fails create-count && before=1
+		echo "CRNMETA id=$n name=crn-push-window-10$n live_before=$before live_after=1 username=gitlab+deploy-token-$n created_at=c expires_at=e expires_epoch=2 gitlab_clock=t scopes=read_registry,write_registry"
 		echo "CRNTOKEN gitlab+deploy-token-$n:gldt-secret-$n"
 		fails create-two && echo "CRNTOKEN gitlab+deploy-token-$n:gldt-secret-other"
 		;;
 	revoke) echo "CRNREVOKE $cmd" ;;
 	revoke-unknown) echo "CRNREVOKEALL EMERGENCY" ;;
-	show) echo "CRNSHOW {}" ;;
+	show) if fails show-no-jwt; then echo "CRNSHOW {}"; else echo 'CRNSHOW {"id":1,"registry_jwt_minutes":5}'; fi ;;
+	writelog) printf '== summary\nwrites listed here\nWRITE LOG PASSED\n== raw, nginx\nraw line kept in its file only\n' ;;
 	esac
 	;;
 macagents@*)
 	case "$cmd" in
+	*" sessions") note sessions; fails sessions && { echo SESSIONS FAILED; exit 1; }; echo SESSIONS PASSED ;;
+	*" tags")
+		n=$(( $(cat "$FAKE/tagreads" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE/tagreads"
+		note tags
+		{ fails tags || fails "tags-$n"; } && { echo TAGS FAILED >&2; exit 1; }
+		if [ "$n" -gt 1 ] && [ -f "$FAKE/tags-after" ]; then cat "$FAKE/tags-after"; else echo "fitt/x/ntc v2 sha256:2"; fi ;;
 	*" baseline") note baseline; fails baseline && { echo "baseline saved: 1 lines, sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; exit 1; }; echo "baseline saved: 1 lines, sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
 	*" status "*) cat "$FAKE/status" ;;
 	*" check "*) note "check $cmd"; fails check && { echo CHECK FAILED; exit 1; }; echo CHECK PASSED ;;
-	*" receive "*) note "receive $cmd"; cat > "$FAKE/received"; fails receive && exit 1; [ -f "$FAKE/never-pushed" ] || echo PUSHED > "$FAKE/status"; echo left ;;
+	*" receive "*) note "receive $cmd"; cat > "$FAKE/received"; fails receive && exit 1; [ -f "$FAKE/never-pushed" ] || echo PUSHED > "$FAKE/status"; [ -f "$FAKE/tags-after" ] || printf 'fitt/x/ntc v2 sha256:2\nfitt/x/ntc v3 sha256:3\n' > "$FAKE/tags-after"; echo left ;;
 	*" scope")
 		cat > /dev/null
 		n=$(( $(cat "$FAKE/scopes" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE/scopes"
@@ -487,8 +558,14 @@ func runWindow(t *testing.T, failing []string, stdin string, args ...string) win
 	t.Helper()
 	bin, fake, home := t.TempDir(), t.TempDir(), t.TempDir()
 	writeShim(t, bin, "ssh", sshFake)
-	writeShim(t, bin, "sleep", `exit 0`)
+	writeShim(t, bin, "sleep", `echo "$1" >> "$FAKE/sleeps"`)
 	for _, name := range failing {
+		if content, ok := strings.CutPrefix(name, "tags-after="); ok {
+			if err := os.WriteFile(filepath.Join(fake, "tags-after"), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		file := "fail-" + name
 		if name == "never-pushed" {
 			file = name
@@ -562,6 +639,13 @@ func (r windowRun) mustStop(t *testing.T) {
 	}
 }
 
+// logTranscript leaves what the operator saw in the test's output, for the transcript Fittcore
+// reads: go test -v.
+func (r windowRun) logTranscript(t *testing.T) {
+	t.Helper()
+	t.Logf("exit: %v\nsteps: %s\nevidence:\n%s", r.err, r.steps(), r.evidence)
+}
+
 func (r windowRun) mustPass(t *testing.T, marker string) {
 	t.Helper()
 	if r.err != nil {
@@ -576,38 +660,55 @@ func (r windowRun) mustPass(t *testing.T, marker string) {
 	}
 }
 
+// Fittcore's order: 0 live before, one made, the right scope, no write and no tag changed, that
+// one revoked, none live, and it cannot push after.
 func TestTheRehearsalPassesOnlyWhenEveryStepHeld(t *testing.T) {
 	run := runWindow(t, nil, "", "--rehearse")
 	run.mustPass(t, "REHEARSAL")
-	// Part 1: revoked while live. Part 2: dead before anyone revokes it.
-	const want = "create scope show revoke show dead create scope show show dead revoke show dead"
+	const want = "sessions tags create scope show revoke show dead tags writelog"
 	if got := run.steps(); got != want {
 		t.Errorf("steps:\n got %s\nwant %s", got, want)
 	}
-	for _, id := range []string{"1", "2"} {
-		wanted := "revoke PUSH_TOKEN_ID=" + id + " PUSH_TOKEN_NAME=crn-push-window-10" + id + " bash -s"
-		if !contains(run.calls, wanted) {
-			t.Errorf("token %s was not revoked by its id and name: %v", id, run.calls)
+	if !contains(run.calls, "revoke PUSH_TOKEN_ID=1 PUSH_TOKEN_NAME=crn-push-window-101 bash -s") {
+		t.Errorf("not revoked by its id and name: %v", run.calls)
+	}
+	if !contains(run.calls, "writelog WINDOW_START=1 WINDOW_END=1 PUSH_ALLOW_IMAGE= bash -s") {
+		t.Errorf("the write log may not allow any write: %v", run.calls)
+	}
+	for _, want := range []string{"id=1 name=crn-push-window-101", "live_before=0 live_after=1", "WRITE LOG PASSED", "write log sha256: ", "waiting 330s"} {
+		if !strings.Contains(run.evidence, want) {
+			t.Errorf("the evidence lacks %q:\n%s", want, run.evidence)
 		}
 	}
-	if !strings.Contains(run.evidence, "id=1 name=crn-push-window-101") || !strings.Contains(run.evidence, "id=2 name=crn-push-window-102") {
-		t.Errorf("the evidence does not name the tokens:\n%s", run.evidence)
+	// A registry token issued before the revoke works for its minutes more: the log reaches past it.
+	if raw, _ := os.ReadFile(filepath.Join(run.fake, "sleeps")); strings.TrimSpace(string(raw)) != "330" {
+		t.Errorf("it did not wait out registry tokens: %q", raw)
+	}
+	if strings.Contains(run.evidence, "raw line kept in its file only") {
+		t.Error("the raw log was copied into the evidence")
 	}
 	raw, _ := os.ReadFile(filepath.Join(run.fake, "dead-logins"))
-	if got := strings.Fields(string(raw)); len(got) != 3 || got[0] != "gitlab+deploy-token-1:gldt-secret-1" || got[1] != "gitlab+deploy-token-2:gldt-secret-2" || got[2] != got[1] {
-		t.Errorf("the dead checks were not on the token just made: %v", got)
+	if got := strings.Fields(string(raw)); len(got) != 1 || got[0] != "gitlab+deploy-token-1:gldt-secret-1" {
+		t.Errorf("the dead check was not on the token just made: %v", got)
 	}
 
-	revokedAfterMade := map[string]bool{"scope": true, "scope-1": true, "scope-2": true, "show": true, "revoke": true, "dead": true, "dead-1": true, "dead-2": true, "dead-3": true}
-	for _, failing := range []string{"connect", "create", "create-unnamed", "create-tokenless", "create-two", "scope", "scope-1", "scope-2", "show", "revoke", "dead", "dead-1", "dead-2", "dead-3"} {
+	nothingMade := map[string]bool{"connect": true, "sessions": true, "tags": true, "tags-1": true}
+	for _, failing := range []string{"connect", "sessions", "tags-1", "create", "create-unnamed", "create-tokenless", "create-two", "create-count", "scope", "show", "show-no-jwt", "revoke", "dead", "tags-2", "writelog", "tags-after=fitt/x/ntc v2 sha256:other\n"} {
 		t.Run(failing, func(t *testing.T) {
 			run := runWindow(t, []string{failing}, "", "--rehearse")
 			run.mustStop(t)
-			if revokedAfterMade[failing] && !strings.Contains(run.steps(), "revoke") {
-				t.Errorf("a token it made was not revoked: %s", run.steps())
+			run.logTranscript(t)
+			if nothingMade[failing] && strings.Contains(run.steps(), "create") {
+				t.Errorf("a token was made: %s", run.steps())
+			}
+			if strings.HasPrefix(failing, "create") && failing != "create" && failing != "create-unnamed" && !strings.Contains(run.steps(), "revoke ") {
+				t.Errorf("a token it knew was not revoked by id: %s", run.steps())
 			}
 			if strings.Contains(run.steps(), "revoke-unknown") && failing != "create" && failing != "create-unnamed" {
 				t.Errorf("revoked by name when it knew the id: %s", run.steps())
+			}
+			if !nothingMade[failing] && !strings.Contains(run.steps(), "writelog") {
+				t.Errorf("a token's window has no write log: %s", run.steps())
 			}
 		})
 	}
@@ -633,10 +734,38 @@ func TestTheRehearsalPassesOnlyWhenEveryStepHeld(t *testing.T) {
 	})
 }
 
+// A second run, not a gate: a token left alone is dead after its expires_at, before any revoke.
+func TestProvingExpiryLeavesTheTokenAloneUntilItIsDead(t *testing.T) {
+	run := runWindow(t, nil, "", "--prove-expiry")
+	run.mustPass(t, "EXPIRY")
+	const want = "sessions create scope show show dead revoke show dead writelog"
+	if got := run.steps(); got != want {
+		t.Errorf("steps:\n got %s\nwant %s", got, want)
+	}
+	if !contains(run.calls, "create PUSH_TOKEN_MINUTES=2 bash -s") {
+		t.Errorf("not a short-lived token: %v", run.calls)
+	}
+	for _, failing := range []string{"sessions", "dead-1", "dead-2", "revoke"} {
+		t.Run(failing, func(t *testing.T) {
+			run := runWindow(t, []string{failing}, "", "--prove-expiry")
+			run.mustStop(t)
+			run.logTranscript(t)
+		})
+	}
+	t.Run("it says what did not hold, and revokes", func(t *testing.T) {
+		run := runWindow(t, []string{"dead-1"}, "", "--prove-expiry")
+		if !strings.Contains(run.evidence, "EXPIRY NOT SHOWN") || !strings.Contains(run.steps(), "revoke") {
+			t.Errorf("%s\n%s", run.steps(), run.evidence)
+		}
+	})
+}
+
+const testImage = "fitt/x/ntc:v3"
+
 func TestThePushWindowPassesOnlyWhenEveryStepHeld(t *testing.T) {
-	run := runWindow(t, nil, "yes\n", testProject, testJob)
+	run := runWindow(t, nil, "yes\n", testProject, testJob, testImage)
 	run.mustPass(t, "PUSH WINDOW")
-	const want = "check create scope receive show revoke show dead"
+	const want = "check tags create scope receive show revoke show dead tags writelog"
 	if got := run.steps(); got != want {
 		t.Errorf("steps:\n got %s\nwant %s", got, want)
 	}
@@ -649,6 +778,9 @@ func TestThePushWindowPassesOnlyWhenEveryStepHeld(t *testing.T) {
 	if !strings.Contains(strings.Join(run.calls, "\n"), "receive "+testProject+" "+testJob) {
 		t.Errorf("the token is not handed to that job: %v", run.calls)
 	}
+	if !contains(run.calls, "writelog WINDOW_START=1 WINDOW_END=1 PUSH_ALLOW_IMAGE="+testImage+" bash -s") {
+		t.Errorf("the write log is not told the one image: %v", run.calls)
+	}
 	if raw, _ := os.ReadFile(filepath.Join(run.fake, "received")); strings.TrimSpace(string(raw)) != "gitlab+deploy-token-1:gldt-secret-1" {
 		t.Errorf("the build got %q", raw)
 	}
@@ -659,42 +791,61 @@ func TestThePushWindowPassesOnlyWhenEveryStepHeld(t *testing.T) {
 		// made is whether a token existed, so one must have been revoked.
 		made bool
 	}{
-		"the check fails":      {[]string{"check"}, "yes\n", false},
-		"no baseline recorded": {[]string{"no-record"}, "yes\n", false},
-		"the operator says no": {nil, "no\n", false},
-		"nobody answers":       {nil, "", false},
-		"no connection":        {[]string{"connect"}, "yes\n", false},
-		"scope fails":          {[]string{"scope"}, "yes\n", true},
-		"receive fails":        {[]string{"receive"}, "yes\n", true},
-		"show fails":           {[]string{"show"}, "yes\n", true},
-		"no PUSHED in time":    {[]string{"never-pushed"}, "yes\n", true},
-		"revoke fails":         {[]string{"revoke"}, "yes\n", true},
-		"it is not dead":       {[]string{"dead"}, "yes\n", true},
+		"the check fails":           {[]string{"check"}, "yes\n", false},
+		"no baseline recorded":      {[]string{"no-record"}, "yes\n", false},
+		"the operator says no":      {nil, "no\n", false},
+		"nobody answers":            {nil, "", false},
+		"no connection":             {[]string{"connect"}, "yes\n", false},
+		"the tags cannot be read":   {[]string{"tags-1"}, "yes\n", false},
+		"scope fails":               {[]string{"scope"}, "yes\n", true},
+		"receive fails":             {[]string{"receive"}, "yes\n", true},
+		"show fails":                {[]string{"show"}, "yes\n", true},
+		"no PUSHED in time":         {[]string{"never-pushed"}, "yes\n", true},
+		"revoke fails":              {[]string{"revoke"}, "yes\n", true},
+		"it is not dead":            {[]string{"dead"}, "yes\n", true},
+		"the write log fails":       {[]string{"writelog"}, "yes\n", true},
+		"the tags after are unread": {[]string{"tags-2"}, "yes\n", true},
+		"no new tag":                {[]string{"tags-after=fitt/x/ntc v2 sha256:2\n"}, "yes\n", true},
+		"another tag moved":         {[]string{"tags-after=fitt/x/ntc v2 sha256:other\nfitt/x/ntc v3 sha256:3\n"}, "yes\n", true},
+		"a second new tag":          {[]string{"tags-after=fitt/x/ntc v2 sha256:2\nfitt/x/ntc v3 sha256:3\nfitt/x/ntc v4 sha256:4\n"}, "yes\n", true},
+		"another image got the tag": {[]string{"tags-after=fitt/x/hello v3 sha256:3\nfitt/x/ntc v2 sha256:2\n"}, "yes\n", true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			run := runWindow(t, c.failing, c.stdin, testProject, testJob)
+			run := runWindow(t, c.failing, c.stdin, testProject, testJob, testImage)
 			run.mustStop(t)
+			run.logTranscript(t)
 			if !c.made && strings.Contains(run.steps(), "create") {
 				t.Errorf("a token was made: %s", run.steps())
 			}
 			if c.made && !strings.Contains(run.steps(), "revoke") {
 				t.Errorf("the token was not revoked: %s", run.steps())
 			}
+			if c.made && !strings.Contains(run.steps(), "writelog") {
+				t.Errorf("a token's window has no write log: %s", run.steps())
+			}
 		})
 	}
 	t.Run("a scope failure hands nothing over", func(t *testing.T) {
-		run := runWindow(t, []string{"scope"}, "yes\n", testProject, testJob)
+		run := runWindow(t, []string{"scope"}, "yes\n", testProject, testJob, testImage)
 		if strings.Contains(run.steps(), "receive") {
 			t.Errorf("the token was handed over: %s", run.steps())
 		}
 	})
-	t.Run("no job named", func(t *testing.T) {
-		run := runWindow(t, nil, "yes\n", testProject)
-		run.mustStop(t)
-		if strings.Contains(run.steps(), "create") {
-			t.Errorf("a token was made: %s", run.steps())
-		}
-	})
+	for name, args := range map[string][]string{
+		"no job named":          {testProject},
+		"no image named":        {testProject, testJob},
+		"a bad image":           {testProject, testJob, "ntc:v3"},
+		"an image with a space": {testProject, testJob, "fitt/x/ntc:v3 bash"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := runWindow(t, nil, "yes\n", args...)
+			run.mustStop(t)
+			run.logTranscript(t)
+			if strings.Contains(run.steps(), "create") {
+				t.Errorf("a token was made: %s", run.steps())
+			}
+		})
+	}
 }
 
 func TestTheBaselineHashIsKeptOnTheLaptop(t *testing.T) {
@@ -842,5 +993,243 @@ func TestNoScriptPrintsAFingerprintOfTheToken(t *testing.T) {
 				t.Errorf("%s:%s prints a short hash", name, strconv.Itoa(i+1))
 			}
 		}
+	}
+}
+
+// writeLogFake is what the write log reads: the logs of a window that starts at 14:00:00 UTC.
+type writeLogFake struct {
+	t                      *testing.T
+	nginx, registry, rails string
+}
+
+const (
+	logNTC   = "fitt/ftcdv-uat/ntc"
+	logHello = "fitt/ftcdv-uat/hello"
+)
+
+func newWriteLogFake(t *testing.T) *writeLogFake {
+	t.Helper()
+	f := &writeLogFake{t: t, nginx: t.TempDir(), registry: t.TempDir(), rails: t.TempDir()}
+	f.append(f.registry, "current", "")
+	f.append(f.nginx, "gitlab_registry_access.log", "")
+	return f
+}
+
+func (f *writeLogFake) append(dir, name, text string) {
+	f.t.Helper()
+	file, err := os.OpenFile(filepath.Join(dir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(text); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// request writes one request into both logs at 14:mm:ss, as nginx and the registry write it.
+func (f *writeLogFake) request(at, method, target string, status int) {
+	f.t.Helper()
+	f.nginxOnly(at, method, target, status)
+	f.registryOnly(at, method, target, status)
+}
+
+func (f *writeLogFake) nginxOnly(at, method, target string, status int) {
+	f.append(f.nginx, "gitlab_registry_access.log", fmt.Sprintf("172.168.1.171 - - [06/Nov/2026:14:%s +0000] \"%s %s HTTP/1.1\" %d 0 \"\" \"docker\" -\n", at, method, target, status))
+}
+
+func (f *writeLogFake) registryOnly(at, method, target string, status int) {
+	id := fmt.Sprintf("C%s%d", strings.ReplaceAll(at, ":", ""), status)
+	f.append(f.registry, "current", fmt.Sprintf("2026-11-06_14:%s.00001 time=\"2026-11-06T14:%s.000Z\" level=info msg=\"authorized request\" auth_project_paths=\"[fitt/ftcdv-uat]\" auth_user_name= auth_user_type=deploy_token correlation_id=%s\n", at, at, id))
+	line, _ := json.Marshal(map[string]any{"msg": "access", "method": method, "uri": target, "status": status, "remote_ip": "172.168.1.171", "time": "2026-11-06T14:" + at + ".000Z", "correlation_id": id})
+	f.append(f.registry, "current", fmt.Sprintf("2026-11-06_14:%s.00002 %s\n", at, line))
+}
+
+// aPush is what docker push leaves: a mount from another image, a blob, a manifest, the tag.
+func (f *writeLogFake) aPush() {
+	f.request("00:10", "POST", "/v2/"+logNTC+"/blobs/uploads/?mount=sha256:aaa&from="+logHello, 201)
+	f.request("00:11", "POST", "/v2/"+logNTC+"/blobs/uploads/", 202)
+	f.request("00:12", "PATCH", "/v2/"+logNTC+"/blobs/uploads/u1?_state=SECRETSTATE", 202)
+	f.request("00:13", "PUT", "/v2/"+logNTC+"/blobs/uploads/u1?_state=SECRETSTATE&digest=sha256:bbb", 201)
+	f.request("00:14", "PUT", "/v2/"+logNTC+"/manifests/sha256:ccc", 201)
+	f.request("00:15", "PUT", "/v2/"+logNTC+"/manifests/v3", 201)
+}
+
+func (f *writeLogFake) run(allow string) (string, error) {
+	f.t.Helper()
+	ruby, err := exec.LookPath("ruby")
+	if err != nil {
+		f.t.Skip("no ruby here")
+	}
+	cmd := exec.Command("/bin/bash", scriptPath(f.t, "deploy/registry/registry-write-log.sh"))
+	cmd.Env = []string{
+		"PATH=/usr/bin:/bin", "WRITE_LOG_RUBY=" + ruby, "WRITE_LOG_NGINX=" + f.nginx, "WRITE_LOG_REGISTRY=" + f.registry, "WRITE_LOG_RAILS=" + f.rails,
+		"WINDOW_START=1793973600", "WINDOW_END=1793974200", "PUSH_ALLOW_IMAGE=" + allow, // 14:00:00 to 14:10:00 UTC
+	}
+	out, err := cmd.CombinedOutput()
+	f.t.Logf("exit: %v\n%s", err, out)
+	return string(out), err
+}
+
+func TestAWindowThatPushedOnlyTheOneTagPasses(t *testing.T) {
+	f := newWriteLogFake(t)
+	f.aPush()
+	f.append(f.rails, "production_json.log", `{"time":"2026-11-06T14:00:09.000Z","path":"/jwt/auth","status":200,"remote_ip":"172.168.1.171","params":[{"key":"account","value":"gitlab+deploy-token-7"},{"key":"scope","value":"repository:`+logNTC+`:push,pull"}]}`+"\n")
+	out, err := f.run(logNTC + ":v3")
+	if err != nil || !strings.Contains(out, "WRITE LOG PASSED") {
+		t.Fatalf("%v", err)
+	}
+	for _, want := range []string{
+		"writes to " + logNTC + ": 6", "kind=mount", "from=" + logHello, "kind=blob", "ref=v3", "ref=sha256:ccc",
+		"who=deploy_token", "who=not recorded by nginx", "ip=172.168.1.171",
+		"account=gitlab+deploy-token-7", "== raw, nginx", "== raw, registry",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the output lacks %q", want)
+		}
+	}
+	if strings.Contains(out, "SECRETSTATE") {
+		t.Error("the upload state was printed")
+	}
+}
+
+// Fittcore's rule: a write that was put back still fails, however the tags end up.
+func TestAWriteLogFailsOnAnyOtherWrite(t *testing.T) {
+	cases := map[string]func(f *writeLogFake){
+		"a blob to another image": func(f *writeLogFake) { f.request("01:00", "POST", "/v2/"+logHello+"/blobs/uploads/", 202) },
+		"a mount into another image": func(f *writeLogFake) {
+			f.request("01:00", "POST", "/v2/"+logHello+"/blobs/uploads/?mount=sha256:a&from="+logNTC, 201)
+		},
+		"a manifest to another image":      func(f *writeLogFake) { f.request("01:00", "PUT", "/v2/"+logHello+"/manifests/v2", 201) },
+		"a delete on another image":        func(f *writeLogFake) { f.request("01:00", "DELETE", "/v2/"+logHello+"/manifests/sha256:a", 202) },
+		"a delete on the image":            func(f *writeLogFake) { f.request("01:00", "DELETE", "/v2/"+logNTC+"/manifests/sha256:a", 202) },
+		"a delete that failed oddly":       func(f *writeLogFake) { f.request("01:00", "DELETE", "/v2/"+logHello+"/manifests/v2", 500) },
+		"another tag of the image":         func(f *writeLogFake) { f.request("01:00", "PUT", "/v2/"+logNTC+"/manifests/v2", 201) },
+		"a write nginx did not see":        func(f *writeLogFake) { f.registryOnly("01:00", "PUT", "/v2/"+logHello+"/manifests/v2", 201) },
+		"a write the registry did not log": func(f *writeLogFake) { f.nginxOnly("01:00", "PUT", "/v2/"+logHello+"/manifests/v2", 201) },
+		"something else under /v2/":        func(f *writeLogFake) { f.request("01:00", "POST", "/v2/_catalog", 200) },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newWriteLogFake(t)
+			f.aPush()
+			change(f)
+			out, err := f.run(logNTC + ":v3")
+			if err == nil || !strings.Contains(out, "WRITE LOG FAILED") || strings.Contains(out, "WRITE LOG PASSED") {
+				t.Errorf("exit %v", err)
+			}
+		})
+	}
+}
+
+func TestAWriteLogNeedsTheTagAndBothLogs(t *testing.T) {
+	t.Run("the tag was never written", func(t *testing.T) {
+		f := newWriteLogFake(t)
+		f.request("00:11", "POST", "/v2/"+logNTC+"/blobs/uploads/", 202)
+		if out, err := f.run(logNTC + ":v3"); err == nil || !strings.Contains(out, "never written") {
+			t.Errorf("exit %v", err)
+		}
+	})
+	t.Run("the tag was refused", func(t *testing.T) {
+		f := newWriteLogFake(t)
+		f.request("00:15", "PUT", "/v2/"+logNTC+"/manifests/v3", 401)
+		if out, err := f.run(logNTC + ":v3"); err == nil || !strings.Contains(out, "never written") {
+			t.Errorf("exit %v", err)
+		}
+	})
+	t.Run("a log with nothing in the window", func(t *testing.T) {
+		f := newWriteLogFake(t)
+		f.nginxOnly("00:15", "PUT", "/v2/"+logNTC+"/manifests/v3", 201)
+		if out, err := f.run(logNTC + ":v3"); err == nil || !strings.Contains(out, "shows nothing") {
+			t.Errorf("exit %v", err)
+		}
+	})
+	t.Run("no log at all", func(t *testing.T) {
+		f := newWriteLogFake(t)
+		if err := os.Remove(filepath.Join(f.nginx, "gitlab_registry_access.log")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.run(logNTC + ":v3"); err == nil {
+			t.Error("exit 0")
+		}
+	})
+	t.Run("a line it cannot read", func(t *testing.T) {
+		f := newWriteLogFake(t)
+		f.aPush()
+		f.append(f.nginx, "gitlab_registry_access.log", "this is not a log line\n")
+		if out, err := f.run(logNTC + ":v3"); err == nil || !strings.Contains(out, "cannot be read") {
+			t.Errorf("exit %v", err)
+		}
+	})
+	t.Run("no window", func(t *testing.T) {
+		ruby, err := exec.LookPath("ruby")
+		if err != nil {
+			t.Skip("no ruby here")
+		}
+		cmd := exec.Command("/bin/bash", scriptPath(t, "deploy/registry/registry-write-log.sh"))
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "WRITE_LOG_RUBY=" + ruby}
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Errorf("exit 0: %s", out)
+		}
+	})
+}
+
+// A rehearsal writes nothing. Its one refused probe outside the project is not a write.
+func TestARehearsalsWriteLogAllowsNoWrite(t *testing.T) {
+	const outside = "/v2/fitt/demos/crn-demo-scope-check/blobs/uploads/"
+	f := newWriteLogFake(t)
+	f.request("00:10", "POST", outside, 401)
+	out, err := f.run("")
+	if err != nil || !strings.Contains(out, "WRITE LOG PASSED") {
+		t.Fatalf("%v", err)
+	}
+	if !strings.Contains(out, "may write: nothing") || !strings.Contains(out, "refused: ") {
+		t.Error("the output does not say what it allowed and what was refused")
+	}
+	for name, change := range map[string]func(f *writeLogFake){
+		"a blob":     func(f *writeLogFake) { f.request("01:00", "POST", "/v2/"+logNTC+"/blobs/uploads/", 202) },
+		"a manifest": func(f *writeLogFake) { f.request("01:00", "PUT", "/v2/"+logNTC+"/manifests/v3", 201) },
+		"a delete":   func(f *writeLogFake) { f.request("01:00", "DELETE", "/v2/"+logHello+"/manifests/v2", 202) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newWriteLogFake(t)
+			f.request("00:10", "POST", outside, 401)
+			change(f)
+			if out, err := f.run(""); err == nil || !strings.Contains(out, "WRITE LOG FAILED") {
+				t.Errorf("exit %v", err)
+			}
+		})
+	}
+	t.Run("logs that show nothing prove nothing", func(t *testing.T) {
+		f := newWriteLogFake(t)
+		if out, err := f.run(""); err == nil || !strings.Contains(out, "shows nothing") {
+			t.Errorf("exit %v", err)
+		}
+	})
+	t.Run("what is outside the window does not count", func(t *testing.T) {
+		f := newWriteLogFake(t)
+		f.request("00:10", "POST", outside, 401)
+		f.request("30:00", "PUT", "/v2/"+logHello+"/manifests/v2", 201)
+		if out, err := f.run(""); err != nil {
+			t.Errorf("exit %v: %s", err, out)
+		}
+	})
+}
+
+func TestAWriteLogKeepsNoSecret(t *testing.T) {
+	f := newWriteLogFake(t)
+	f.request("00:10", "POST", "/v2/fitt/demos/x/blobs/uploads/?_state=SECRETSTATE", 401)
+	f.append(f.registry, "current", `2026-11-06_14:00:11.00001 time="2026-11-06T14:00:11.000Z" msg="x" authorization="Bearer SECRETBEARER" token=eyJhbGci.eyJzdWIi.SECRETSIG other=gldt-SECRETDEPLOYTOKEN`+"\n")
+	out, err := f.run("")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	for _, secret := range []string{"SECRETSTATE", "SECRETBEARER", "SECRETSIG", "SECRETDEPLOYTOKEN"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("%s was printed", secret)
+		}
+	}
+	if !strings.Contains(out, "[REDACTED") {
+		t.Error("nothing says it was redacted")
 	}
 }

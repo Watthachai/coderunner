@@ -2,20 +2,26 @@
 # The operator's one command for a listed build's push window. Run it from the laptop, in
 # Terminal. It asks for the root password of the GitLab host once.
 #
-#   deploy/macmini/push-window-run.sh --baseline               before GO: record the machine
-#   deploy/macmini/push-window-run.sh <project id> <job id>    at the pause
-#   deploy/macmini/push-window-run.sh --rehearse               before GO: nothing is pushed
+#   deploy/macmini/push-window-run.sh --rehearse         before GO: one token, nothing is pushed
+#   deploy/macmini/push-window-run.sh --prove-expiry     extra evidence, not a gate: a second run
+#   deploy/macmini/push-window-run.sh --baseline         before GO: record the machine
+#   deploy/macmini/push-window-run.sh <project id> <job id> <group/project/image:tag>
+#                                                        at the pause
 #
-# At the pause it checks that this job waits and that the machine is as it was, asks, makes one
-# token, sees it can write this project's images and nothing else, pipes it straight to the
-# waiting build, waits until CRN says the push is over, revokes that token by its id, and
-# checks it is dead. A token it made is always revoked when it ends, however it ends.
+# --rehearse checks no agent session is open and reads every tag. It makes one token, sees it can
+# write this project's images and nothing else, revokes that token by its id, sees it dead and no
+# push-window token live, reads every tag again, and reads the write log: no write at all.
 #
-# --rehearse does that twice with no build and no write. The first token shows that revoking a
-# live token kills it. The second, left alone, shows that one dies at its expires_at.
+# At the pause it does the same around a real push: it checks that this job waits and the machine
+# is as it was, asks, hands the token straight to the waiting build, and waits until CRN says the
+# push is over. The tags may differ only by the one tag, and the write log may show writes to that
+# image only. A token it made is always revoked when it ends, however it ends.
 #
-# The last line says PASS only if every step held; anything else is STOP and a non-zero exit.
-# The evidence, in ~/Downloads, holds GitLab's ids and times and no token value.
+# --prove-expiry leaves a short-lived token alone until it dies. Fittcore does not count expiry as
+# a gate: revoking is what closes a window.
+#
+# The last line says PASS only if every step held; anything else is STOP and a non-zero exit. The
+# evidence, in ~/Downloads, holds GitLab's ids and times and no token value.
 set -euo pipefail
 mini="${CRN_MINI:-macagents@172.168.1.171}"
 gitlab="${CRN_GITLAB_HOST:-root@172.168.1.234}"
@@ -27,7 +33,8 @@ wait_rounds="${CRN_PUSH_WAIT_ROUNDS:-180}" # 15 minutes, Fittcore's limit on a l
 wait_seconds="${CRN_PUSH_WAIT_SECONDS:-5}"
 expiry_minutes="${CRN_REHEARSE_EXPIRY_MINUTES:-2}"
 mkdir -p "$HOME/Downloads"
-evidence="$HOME/Downloads/push-window-evidence-$(date +%Y%m%d-%H%M%S).txt"
+stamp="$(date +%Y%m%d-%H%M%S)"
+evidence="$HOME/Downloads/push-window-evidence-$stamp.txt"
 control_dir="$(mktemp -d)"
 control="$control_dir/gitlab"
 
@@ -38,7 +45,11 @@ token_open=no
 token_id=""
 token_name=""
 expires_epoch=""
+jwt_minutes=""
 login=""
+window_start=""
+allowed_image=""
+log_read=no
 
 on_gitlab() { ssh -o ControlMaster=auto -o ControlPath="$control" -o ControlPersist=30m "$gitlab" "$@"; }
 say() { echo "$*" | tee -a "$evidence"; }
@@ -67,6 +78,10 @@ make_token() {
 		stop "GitLab's answer does not say which token it made"
 	fi
 	say "token: $meta"
+	case "$meta" in
+	*" live_before=0 live_after=1 "*) ;;
+	*) stop "GitLab's answer does not say 0 live before and 1 after" ;;
+	esac
 	case "$login" in
 	*:?*) ;;
 	*) stop "GitLab's answer holds no login" ;;
@@ -77,9 +92,11 @@ make_token() {
 }
 
 show_token() {
-	local answer
+	local answer minutes
 	if answer=$(on_gitlab "PUSH_TOKEN_ID=$token_id bash -s" <"$scripts/push-token-show.sh" 2>>"$evidence"); then
 		say "$answer"
+		minutes=$(printf '%s\n' "$answer" | sed -n 's/.*"registry_jwt_minutes":\([0-9][0-9]*\).*/\1/p')
+		[ -z "$minutes" ] || jwt_minutes="$minutes"
 	else
 		problem "GitLab would not show token $token_id"
 		return 1
@@ -121,11 +138,53 @@ close_token() {
 	login=""
 }
 
+read_tags() {
+	ssh "$mini" "$remote_script tags" 2>>"$evidence"
+}
+
+begin_window() {
+	window_start=$(on_gitlab date +%s) || stop "GitLab's clock could not be read: nothing was made"
+	say "--- window starts at $window_start by GitLab's clock"
+}
+
+# A registry token GitLab issued before the revoke keeps working until it expires, so the write
+# log has to reach past that.
+wait_out_registry_tokens() {
+	[ -n "$jwt_minutes" ] || stop "GitLab did not say how long a registry token lives"
+	local left=$((jwt_minutes * 60 + 30))
+	say "--- a registry token issued before the revoke can work for $jwt_minutes minutes more: waiting ${left}s"
+	sleep "$left"
+}
+
+# Reads the window's writes on the GitLab host and keeps them, with their hash.
+read_write_log() {
+	local end out passed=yes
+	log_read=yes
+	out="$HOME/Downloads/push-window-writelog-$stamp.txt"
+	end=$(on_gitlab date +%s) || {
+		problem "GitLab's clock could not be read: no write log"
+		return 1
+	}
+	say "--- write log, $window_start to $end by GitLab's clock"
+	on_gitlab "WINDOW_START=$window_start WINDOW_END=$end PUSH_ALLOW_IMAGE=$allowed_image bash -s" <"$scripts/registry-write-log.sh" >"$out" 2>>"$evidence" || passed=no
+	sed -e '/^== raw/,$d' "$out" | cut -c1-400 | tee -a "$evidence"
+	say "write log: $out"
+	say "write log sha256: $(shasum -a 256 "$out" | cut -d' ' -f1)"
+	if [ "$passed" != yes ]; then
+		problem "the write log did not pass"
+		return 1
+	fi
+}
+
 finish() {
 	local code=$? rc=1
 	trap - EXIT INT TERM
 	set +e
 	close_token
+	if [ -n "$window_start" ] && [ "$log_read" = no ]; then
+		say "--- this window did not end normally: its write log, at once, without waiting out registry tokens"
+		read_write_log
+	fi
 	ssh -O exit -o ControlPath="$control" "$gitlab" 2>/dev/null
 	rm -rf "$control_dir"
 	if [ "$code" = 0 ] && [ "$problems" = 0 ] && [ "$completed" = yes ]; then
@@ -154,16 +213,33 @@ case "${1:-}" in
 --rehearse)
 	marker="REHEARSAL"
 	say "--- rehearsal $(date '+%F %T %z'): no build, nothing is pushed"
-	on_gitlab true || stop "no connection to GitLab"
-
-	say "--- part 1: a live token is revoked by its id, and dies"
+	ssh "$mini" "$remote_script sessions" 2>&1 | tee -a "$evidence" || stop "an agent session is open: nothing was made"
+	on_gitlab true || stop "no connection to GitLab: nothing was made"
+	tags_before=$(read_tags) || stop "the tags could not be read: nothing was made"
+	say "--- every tag, before"
+	say "$tags_before"
+	begin_window
 	make_token 30
 	token_scope || stop "token $token_id can write the wrong things"
 	show_token || stop "no record of token $token_id"
 	close_token
 	[ "$problems" = 0 ] || exit 1
-
-	say "--- part 2: a token left alone dies at its expires_at"
+	tags_after=$(read_tags) || stop "the tags could not be read after the revoke"
+	[ "$tags_after" = "$tags_before" ] || {
+		say "$tags_after"
+		stop "a tag changed during the rehearsal"
+	}
+	say "--- every tag is as it was"
+	wait_out_registry_tokens
+	read_write_log || exit 1
+	completed=yes
+	;;
+--prove-expiry)
+	marker="EXPIRY"
+	say "--- extra evidence, not a gate: a token left alone dies at its expires_at"
+	ssh "$mini" "$remote_script sessions" 2>&1 | tee -a "$evidence" || stop "an agent session is open: nothing was made"
+	on_gitlab true || stop "no connection to GitLab: nothing was made"
+	begin_window
 	make_token "$expiry_minutes"
 	token_scope || stop "token $token_id can write the wrong things"
 	show_token || stop "no record of token $token_id"
@@ -174,20 +250,29 @@ case "${1:-}" in
 		sleep "$left"
 	fi
 	show_token || stop "no record of token $token_id"
-	token_dead || stop "token $token_id outlived its expires_at"
+	token_dead || stop "EXPIRY NOT SHOWN: token $token_id outlived its expires_at. It is revoked now. Not a gate."
 	say "--- token $token_id died by itself at its expires_at"
 	close_token
 	[ "$problems" = 0 ] || exit 1
+	wait_out_registry_tokens
+	read_write_log || exit 1
 	completed=yes
 	;;
 ????????-????-????-????-????????????)
 	project="$1"
 	job="${2:-}"
+	image="${3:-}"
 	case "$job" in
 	????????-????-????-????-????????????) ;;
 	*) stop "give the job's id as well" ;;
 	esac
+	case "$image" in
+	*[!a-zA-Z0-9._/:-]*) stop "give the image as group/project/image:tag" ;;
+	*/*/*:?*) ;;
+	*) stop "give the image as group/project/image:tag" ;;
+	esac
 	marker="PUSH WINDOW for job $job"
+	allowed_image="$image"
 	[ -s "$record" ] || stop "no baseline was recorded: nothing was made"
 	hash=$(cat "$record")
 	say "--- the machine, compared with the baseline $(date '+%F %T %z')"
@@ -198,6 +283,10 @@ case "${1:-}" in
 	read -r answer || answer=""
 	[ "$answer" = yes ] || stop "stopped by the operator: nothing was made"
 	on_gitlab true || stop "no connection to GitLab: nothing was made"
+	tags_before=$(read_tags) || stop "the tags could not be read: nothing was made"
+	say "--- every tag, before"
+	say "$tags_before"
+	begin_window
 	make_token 30
 	token_scope || stop "token $token_id can write the wrong things: nothing was handed over"
 	say "--- hand token $token_id to job $job"
@@ -214,10 +303,24 @@ case "${1:-}" in
 	done
 	[ "$status" = PUSHED ] || stop "CRN did not say the push is over, within the limit on a live token"
 	say "--- CRN says the push is over $(date '+%F %T %z')"
+	close_token
+	[ "$problems" = 0 ] || exit 1
+	tags_after=$(read_tags) || stop "the tags could not be read after the revoke"
+	say "--- every tag, after"
+	say "$tags_after"
+	changed=$(diff <(printf '%s\n' "$tags_before") <(printf '%s\n' "$tags_after") | grep -E '^[<>]' || true)
+	case "$changed" in
+	"> ${image%:*} ${image##*:} "*)
+		[ "$(printf '%s\n' "$changed" | wc -l | tr -d ' ')" = 1 ] || stop "more than the one tag changed"
+		;;
+	*) stop "the tags did not change by exactly the one tag: $changed" ;;
+	esac
+	wait_out_registry_tokens
+	read_write_log || exit 1
 	completed=yes
 	;;
 *)
-	sed -n 2,19p "$0" >&2
+	sed -n 2,24p "$0" >&2
 	exit 2
 	;;
 esac
