@@ -546,7 +546,10 @@ func TestEveryTagOfEveryImageIsRead(t *testing.T) {
 // An answer it cannot read must not read as fewer tags.
 func TestATagListItCannotReadIsAnError(t *testing.T) {
 	cases := map[string]http.HandlerFunc{
-		"refused":  func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) },
+		"refused": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, "[]") // reads as no images at all, if the status is not looked at
+		},
 		"not json": func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "<html>") },
 		"a tag it cannot read": func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasSuffix(r.URL.Path, "/repositories") {

@@ -1454,7 +1454,8 @@ func TestAWholeReceiptPasses(t *testing.T) {
 // v3 goes up once. A push that fails stops the build: nobody tries that tag again, and
 // the next round is a new job and v4.
 func TestAGatedBuildPushesItsTagOnce(t *testing.T) {
-	run := runPipelineWith(t, pipelineOpts{env: map[string]string{"FAKE_PUSH_FAILS": "1"}})
+	// A window long enough for a retry to happen, if there were one.
+	run := runPipelineWith(t, pipelineOpts{env: map[string]string{"FAKE_PUSH_FAILS": "1"}, manager: func(m *manager) { m.pushWindowLimit = 30 * time.Second }})
 	failedAndNeverReleased(t, run)
 	pushes := 0
 	for _, e := range run.events {
