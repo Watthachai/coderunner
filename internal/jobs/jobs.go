@@ -1081,6 +1081,9 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef st
 // finishFailed records the failure, notifies the central DB, pushes a terminal
 // error to live subscribers, and closes their channels.
 func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg string, meta traceMeta) {
+	if gate := m.gateOf(job.ID); gate != nil && gate.overBudget.Load() {
+		errMsg = "candidate acceptance: this build ran past its time budget: " + errMsg
+	}
 	errMsg = m.safeMessage(job.ID, errMsg)
 	meta.errMsg = errMsg
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobFailed, errMsg); err != nil {
@@ -1113,7 +1116,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 // user cancel) — never the cancelled runCtx.
 func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, meta traceMeta) {
 	if gate := m.gateOf(job.ID); gate != nil && gate.overBudget.Load() {
-		m.finishFailed(ctx, job, "candidate acceptance: this build ran past its time budget", meta)
+		m.finishFailed(ctx, job, "the build was stopped", meta)
 		return
 	}
 	const msg = "build cancelled by operator"

@@ -642,6 +642,23 @@ func TestABuildOverItsBudgetIsFailedNotCancelled(t *testing.T) {
 	}
 }
 
+// Whatever the build was doing when its time ran out, the failure says what happened.
+func TestABudgetThatRunsOutAtAnyPointSaysSo(t *testing.T) {
+	for _, budget := range []time.Duration{time.Nanosecond, 5 * time.Millisecond, 50 * time.Millisecond} {
+		t.Run(budget.String(), func(t *testing.T) {
+			run := runPipelineWith(t, pipelineOpts{
+				credential: func(*testing.T, string) {},
+				agent:      func(a agentRun) { change(t, a.spec.WorkDir) },
+				manager:    func(m *manager) { m.buildBudget = budget },
+			})
+			failedAndNeverReleased(t, run)
+			if !strings.Contains(failedMessage(run), "time budget") {
+				t.Errorf("the failure does not say why: %s", failedMessage(run))
+			}
+		})
+	}
+}
+
 // Fittcore's clock starts at dispatch, so time in the queue counts.
 func TestTimeInTheQueueCountsAgainstTheBudget(t *testing.T) {
 	run := runPipelineWith(t, pipelineOpts{
