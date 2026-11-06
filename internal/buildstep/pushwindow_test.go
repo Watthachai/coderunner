@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -351,6 +352,7 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 		t.Skip("set CRN_TEST_REAL_DOCKER: this runs a registry container")
 	}
 	ctx := context.Background()
+	logger := slog.Default()
 	auth := t.TempDir()
 	if err := os.WriteFile(filepath.Join(auth, "htpasswd"), []byte(testRegistryHtpasswd+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -362,7 +364,7 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", name).Run() })
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "-v", name).Run() })
 	raw, err := exec.Command("docker", "port", name, "5000").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -393,13 +395,13 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(noLogin) })
 	bare := WithDockerConfig(ctx, noLogin)
-	if err := BuildImage(bare, build, "Dockerfile", tag, map[string]string{"t": "1"}, nil); err != nil {
+	if err := BuildImage(bare, build, "Dockerfile", tag, map[string]string{"t": "1"}, logger); err != nil {
 		t.Fatalf("docker build with the given config: %v", err)
 	}
 	if raw, err := os.ReadFile(marks); err == nil {
 		t.Errorf("the buildx in the home directory ran: %s", raw)
 	}
-	if err := PushImageOnce(bare, tag, nil); err == nil {
+	if err := PushImageOnce(bare, tag, logger); err == nil {
 		t.Error("the push worked with no login: it used the one in the home directory")
 	}
 
@@ -409,10 +411,10 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(withLogin) })
 	given := WithDockerConfig(ctx, withLogin)
-	if err := PushImageOnce(given, tag, nil); err != nil {
+	if err := PushImageOnce(given, tag, logger); err != nil {
 		t.Fatalf("the push with the given login: %v", err)
 	}
-	digest, err := PushedDigest(given, tag, nil)
+	digest, err := PushedDigest(given, tag, logger)
 	if err != nil || !strings.HasPrefix(digest, "sha256:") {
 		t.Errorf("digest %q, %v", digest, err)
 	}
@@ -421,7 +423,7 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 		t.Fatal(err)
 	}
 	var runErr *exec.ExitError
-	if err := PushImageOnce(given, tag, nil); err == nil {
+	if err := PushImageOnce(given, tag, logger); err == nil {
 		t.Error("the push worked after the login was cleared")
 	} else if errors.As(err, &runErr) {
 		t.Logf("after clearing: %v", runErr)
