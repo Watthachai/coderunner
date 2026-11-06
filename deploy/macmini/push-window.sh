@@ -4,12 +4,11 @@
 #
 #   push-window.sh baseline             before GO: what this machine looks like
 #   push-window.sh check <project id>   at the pause: what is new since the baseline
+#   push-window.sh status <project id>  READY, PUSHED or NONE
 #   push-window.sh receive <project id> token on stdin: leave it for the waiting build
 #   push-window.sh scope                token on stdin: which repositories it may write
 #
-# From the laptop, at the pause, with the project's id:
-#   ssh root@172.168.1.234 'bash -s' < deploy/registry/push-token-create.sh | \
-#     ssh macagents@172.168.1.171 fitt-coderunner/deploy/macmini/push-window.sh receive <id>
+# At the pause, deploy/macmini/push-window-run.sh runs these from the laptop.
 set -eu
 export PATH="/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 umask 077
@@ -64,6 +63,16 @@ check)
 	echo "--- other Claude sessions on this machine"
 	pgrep -fl '(^|/)claude( |$)' | cut -c1-80 || echo "none"
 	;;
+status)
+	need_project "${2:-}"
+	if [ -f "$push_dir/$2/PUSHED" ]; then
+		echo PUSHED
+	elif [ -f "$push_dir/$2/READY" ]; then
+		echo READY
+	else
+		echo NONE
+	fi
+	;;
 receive)
 	need_project "${2:-}"
 	IFS= read -r login || true
@@ -113,7 +122,7 @@ except Exception as e:
 	done
 	;;
 *)
-	sed -n 2,12p "$0" >&2
+	sed -n 2,11p "$0" >&2
 	exit 2
 	;;
 esac

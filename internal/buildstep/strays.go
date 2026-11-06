@@ -14,10 +14,11 @@ import (
 	"time"
 )
 
-// strayExempt are where launchd starts things for this user on its own schedule, and what
-// someone opens at the screen. Whatever runs from here is left alone, and is what an
-// operator still looks at before handing over a token.
-var strayExempt = []string{"/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/", "/Library/Apple/", "/Applications/"}
+// strayExempt are where launchd starts things for this user on its own schedule, and Docker
+// Desktop's helpers. Whatever runs from here is left alone, and is what an operator still
+// looks at before handing over a token. An application someone opens at the screen during a
+// build is not on this list.
+var strayExempt = []string{"/System/", "/usr/libexec/", "/usr/sbin/", "/sbin/", "/Library/Apple/", "/Applications/Docker.app/"}
 
 const strayRounds = 30
 

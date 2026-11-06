@@ -137,8 +137,15 @@ type manager struct {
 	pushCredentialDir  string
 	pushCredentialWait time.Duration
 	pushCredentialPoll time.Duration
-	// stopStrays ends what an agent left running (buildstep.StopStrayProcesses).
-	stopStrays func(ctx context.Context, since time.Time, logger *slog.Logger) ([]string, error)
+	pushWindowLimit    time.Duration
+	revokePoll         time.Duration
+	buildBudget        time.Duration
+	// stopStrays ends what an agent left running; captureMachine, readRegistryTags and
+	// loginCanPush read the machine and GitLab (pushwindow.go).
+	stopStrays       func(ctx context.Context, since time.Time, logger *slog.Logger) ([]string, error)
+	captureMachine   func(ctx context.Context) (buildstep.MachineState, error)
+	readRegistryTags func(ctx context.Context, ref buildstep.ImageRef) (buildstep.RegistryTags, error)
+	loginCanPush     func(ctx context.Context, ref buildstep.ImageRef, login string) (bool, error)
 	// gates holds the open gate of each running build of a project with such a list,
 	// guarded by gateMu (gate.go).
 	gateMu sync.RWMutex
@@ -231,6 +238,9 @@ func NewManager(
 		claudeDefaults:     claudeDefaults,
 		slots:              make(chan struct{}, maxConcurrent),
 		stopStrays:         buildstep.StopStrayProcesses,
+		captureMachine:     buildstep.CaptureMachineState,
+		readRegistryTags:   buildstep.ReadRegistryTags,
+		loginCanPush:       buildstep.RegistryLoginCanPush,
 		subs:               make(map[uuid.UUID][]*subscriber),
 		cancels:            make(map[uuid.UUID]context.CancelFunc),
 	}
@@ -531,6 +541,11 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	if gate != nil {
 		defer m.closeGate(job.ID)
 		runCtx = m.readCommands(runCtx, job.ID, gate)
+		defer m.startBudget(job, gate, cancel).Stop()
+		if gate.machine, err = m.captureMachine(runCtx); err != nil {
+			m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), traceMeta{mode: buildMode(parsePayload(job.Payload, m.logger))})
+			return
+		}
 	}
 
 	// The absolute per-project working dir: every file write, Claude run, and
@@ -1097,6 +1112,10 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 // and a best-effort FTC callback. Uses the caller's ctx (the parent, alive on a
 // user cancel) — never the cancelled runCtx.
 func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, meta traceMeta) {
+	if gate := m.gateOf(job.ID); gate != nil && gate.overBudget.Load() {
+		m.finishFailed(ctx, job, "candidate acceptance: this build ran past its time budget", meta)
+		return
+	}
 	const msg = "build cancelled by operator"
 	meta.errMsg = msg
 	if err := m.store.UpdateJobStatus(ctx, job.ID, domain.JobCancelled, ""); err != nil {
@@ -1279,10 +1298,11 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		if m.registryFor(job) == "" {
 			return "", errors.New("candidate acceptance: an external-tls-only build needs a registry to push to")
 		}
-		if ctx, err = m.openPushWindow(ctx, job, gate, appTag, log); err != nil {
-			return "", err
+		// docker reads no ~/.docker, which an agent can write, from here on.
+		if gate.dockerDir, err = buildstep.NewBuildDockerConfig(); err != nil {
+			return "", fmt.Errorf("candidate acceptance: %w", err)
 		}
-		defer m.endPushCredential(job, gate, log)
+		ctx = buildstep.WithDockerConfig(ctx, gate.dockerDir)
 	}
 
 	// App image (opaque, self-migrating) — REQUIRED. Build failure fails the build.
@@ -1296,12 +1316,12 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	// App image must be PULLABLE for a registry consumer — push failure fails too.
 	digest := ""
 	registry := m.registryFor(job)
-	if registry != "" {
-		push := buildstep.PushImage
-		if gate != nil {
-			push = buildstep.PushImageOnce
+	if registry != "" && gate != nil {
+		if digest, err = m.pushThroughWindow(ctx, job, gate, appTag, log); err != nil {
+			return "", err
 		}
-		if err := push(ctx, appTag, log); err != nil {
+	} else if registry != "" {
+		if err := buildstep.PushImage(ctx, appTag, log); err != nil {
 			m.publish(job.ID, domain.BuildEventMsg{
 				Kind: domain.WSError, Text: "docker push (app) failed: " + err.Error(),
 				JobID: job.ID.String(), Timestamp: time.Now().UTC(),
@@ -1313,9 +1333,6 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 			log.Warn("image digest unknown; the callback goes without it", "err", err)
 		}
 		digest = d
-		if gate != nil {
-			m.endPushCredential(job, gate, log)
-		}
 	}
 
 	m.mirrorImage(ctx, appTag, job, log)

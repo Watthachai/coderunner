@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -90,9 +91,9 @@ func ReadPushCredential(path string, notBefore time.Time, registryHost string) (
 	return raw, nil
 }
 
-// NewDockerConfig makes a docker config directory holding credential and the plugin docker
-// build needs. The caller removes it.
-func NewDockerConfig(credential []byte) (string, error) {
+// NewBuildDockerConfig makes the docker config a listed build uses for everything but the
+// push: no login, and Docker Desktop's own buildx. The caller removes it.
+func NewBuildDockerConfig() (string, error) {
 	dir, err := os.MkdirTemp("", "crn-docker-")
 	if err != nil {
 		return "", err
@@ -102,7 +103,7 @@ func NewDockerConfig(credential []byte) (string, error) {
 		err = os.Symlink(buildxPlugin, filepath.Join(plugins, "docker-buildx"))
 	}
 	if err == nil {
-		err = os.WriteFile(filepath.Join(dir, "config.json"), credential, 0o600)
+		err = os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}\n"), 0o600)
 	}
 	if err != nil {
 		_ = os.RemoveAll(dir)
@@ -111,10 +112,67 @@ func NewDockerConfig(credential []byte) (string, error) {
 	return dir, nil
 }
 
-// ClearDockerCredential leaves the config in dir with no login: what follows the push reads
-// the registry without one.
-func ClearDockerCredential(dir string) error {
-	return os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}\n"), 0o600)
+// NewPushDockerConfig makes the docker config of one push: a new directory, mode 700, holding
+// one new file, mode 600, and nothing else. It is named on no command line and its content
+// is in no environment: docker gets only the directory's path.
+func NewPushDockerConfig(credential []byte) (string, error) {
+	dir, err := os.MkdirTemp("", "crn-docker-push-")
+	if err != nil {
+		return "", err
+	}
+	file, err := os.OpenFile(filepath.Join(dir, "config.json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		_, err = file.Write(credential)
+		if closeErr := file.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
+}
+
+// RemovePushDockerConfig removes it and checks that it is gone.
+func RemovePushDockerConfig(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return errors.New("the push credential could not be removed")
+	}
+	if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
+		return errors.New("the push credential is still there after removing it")
+	}
+	return nil
+}
+
+// LoginOf takes the user:token out of a credential ReadPushCredential accepted.
+func LoginOf(credential []byte) (string, error) {
+	var config struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(credential, &config); err != nil {
+		return "", errors.New("the push credential is not one docker login")
+	}
+	for _, login := range config.Auths {
+		plain, err := base64.StdEncoding.DecodeString(login.Auth)
+		if err != nil {
+			return "", errors.New("the push credential does not hold a user and a token")
+		}
+		return string(plain), nil
+	}
+	return "", errors.New("the push credential holds no login")
+}
+
+// RemoveLocalImage takes a tag that never reached the registry off this machine.
+func RemoveLocalImage(ctx context.Context, tag string, logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if err := runDocker(ctx, logger, "rmi", "-f", tag); err != nil {
+		logger.Warn("remove the local image", "tag", tag, "err", err)
+	}
 }
 
 // ContainerIDs lists every container, running or not.

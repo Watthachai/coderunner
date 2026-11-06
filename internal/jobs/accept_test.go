@@ -49,6 +49,7 @@ case "$1" in
     ;;
   push)
     [ -n "$FAKE_PUSH_OUTPUT" ] && echo "$FAKE_PUSH_OUTPUT"
+    [ -n "$FAKE_PUSH_RUNS" ] && eval "$FAKE_PUSH_RUNS"
     [ -n "$FAKE_PUSH_FAILS" ] && exit 1
     ;;
 esac
@@ -183,6 +184,14 @@ type nopNotifier struct{}
 
 func (nopNotifier) Notify(context.Context, *domain.BuildEvent) error { return nil }
 
+// recordingNotifier puts each build event in the order of everything else.
+type recordingNotifier struct{ record func(string) }
+
+func (n recordingNotifier) Notify(_ context.Context, e *domain.BuildEvent) error {
+	n.record("event " + string(e.EventType))
+	return nil
+}
+
 // fakeAgent stands in for Claude: it does what a test says, as the agent would, in the
 // workspace and with the same OS user.
 type fakeAgent struct {
@@ -271,6 +280,17 @@ type pipelineOpts struct {
 	strays func() ([]string, error)
 	// manager sees the manager before the build runs.
 	manager func(m *manager)
+	// machine answers each look at the machine; nil always says the same.
+	machine func(look int) buildstep.MachineState
+	// tags changes what GitLab says the project holds: the list so far, and whether the
+	// image has been pushed.
+	tags func(tags buildstep.RegistryTags, ref buildstep.ImageRef, pushed bool)
+	// login answers whether the token can still push, for the n-th question; nil says no.
+	login func(n int) (bool, error)
+	// tagsErr is GitLab failing to answer about the project's tags.
+	tagsErr func(pushed bool) error
+	// queuedAgo says how long the job had been queued when it started.
+	queuedAgo time.Duration
 	// remoteHook is the remote's post-receive hook: the remote's own, not the workspace's.
 	remoteHook func(workDir string) string
 }
@@ -341,7 +361,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.test")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.test")
-	for _, name := range []string{"FAKE_BUILD_OUTPUT", "FAKE_BUILD_RUNS", "FAKE_BUILD_FAILS", "FAKE_PUSH_OUTPUT", "FAKE_PUSH_FAILS", "FAKE_VERIFY_OUTPUT", "FAKE_ACCEPT_OUTPUT", "FAKE_ACCEPT_RUNS"} {
+	for _, name := range []string{"FAKE_BUILD_OUTPUT", "FAKE_BUILD_RUNS", "FAKE_BUILD_FAILS", "FAKE_PUSH_OUTPUT", "FAKE_PUSH_FAILS", "FAKE_PUSH_RUNS", "FAKE_VERIFY_OUTPUT", "FAKE_ACCEPT_OUTPUT", "FAKE_ACCEPT_RUNS"} {
 		t.Setenv(name, "")
 	}
 	for k, v := range o.env {
@@ -446,7 +466,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	if slots == 0 {
 		slots = 1
 	}
-	mgr = NewManager(st, runner, nopNotifier{}, logger, filepath.Join(root, "projects"), remote, "", false, o.agent != nil, "", srv.URL, "", map[uuid.UUID]bool{org: true}, nil, true, "172.168.1.234:5050/fitt/ftcdv-uat", nil, "", "", slots, buildsettings.Defaults{}).(*manager)
+	mgr = NewManager(st, runner, recordingNotifier{record}, logger, filepath.Join(root, "projects"), remote, "", false, o.agent != nil, "", srv.URL, "", map[uuid.UUID]bool{org: true}, nil, true, "172.168.1.234:5050/fitt/ftcdv-uat", nil, "", "", slots, buildsettings.Defaults{}).(*manager)
 	mgr.SetForbiddenValuesDir(forbidden)
 	credentials := filepath.Join(root, "push-credentials")
 	mgr.SetPushCredentialDir(credentials)
@@ -454,6 +474,53 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	mgr.pushCredentialWait = 10 * time.Second
 	if o.noCredential {
 		mgr.pushCredentialWait = 300 * time.Millisecond
+	}
+	mgr.revokePoll = 5 * time.Millisecond
+	mgr.pushWindowLimit = 3 * time.Second
+	looks := 0
+	mgr.captureMachine = func(context.Context) (buildstep.MachineState, error) {
+		looks++
+		if o.machine != nil {
+			return o.machine(looks), nil
+		}
+		return buildstep.MachineState{"program docker": "same"}, nil
+	}
+	mgr.readRegistryTags = func(_ context.Context, ref buildstep.ImageRef) (buildstep.RegistryTags, error) {
+		tags := buildstep.RegistryTags{
+			ref.Repository:                  {"v1": "sha256:one", "v2": "sha256:two"},
+			"fitt/ftcdv-uat/crn-demo-other": {"v1": "sha256:other"},
+		}
+		pushed := false
+		if raw, err := os.ReadFile(events); err == nil {
+			pushed = strings.Contains(string(raw), "docker push") && os.Getenv("FAKE_PUSH_FAILS") == ""
+		}
+		if pushed {
+			tags[ref.Repository][ref.Tag] = fakeDigest
+		}
+		if o.tagsErr != nil {
+			if err := o.tagsErr(pushed); err != nil {
+				return nil, err
+			}
+		}
+		if o.tags != nil {
+			o.tags(tags, ref, pushed)
+		}
+		return tags, nil
+	}
+	questions := 0
+	mgr.loginCanPush = func(_ context.Context, _ buildstep.ImageRef, login string) (bool, error) {
+		questions++
+		if login != "test-user:test-token" {
+			t.Errorf("asked about the login %q", login)
+		}
+		alive, err := false, error(nil)
+		if o.login != nil {
+			alive, err = o.login(questions)
+		}
+		if err == nil && !alive {
+			record("gitlab: the token cannot push")
+		}
+		return alive, err
 	}
 	mgr.stopStrays = func(context.Context, time.Time, *slog.Logger) ([]string, error) {
 		record("stop strays")
@@ -482,6 +549,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 			t.Fatal(err)
 		}
 	}
+	t.Setenv("CREDENTIAL_PATH", credentialPath)
 	operator := make(chan struct{})
 	operatorDone := make(chan struct{})
 	go func() {
@@ -511,6 +579,9 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 
 	payload, _ := json.Marshal(map[string]any{"mode": "edit", "change": o.change, "name": "app", "feedback_widget": false})
 	job := &domain.Job{ID: uuid.New(), ProjectID: project, OrgID: org, BuildNo: 3, Payload: payload, Status: domain.JobQueued}
+	if o.queuedAgo > 0 {
+		job.QueuedAt = time.Now().Add(-o.queuedAgo)
+	}
 	mgr.slots <- struct{}{} // the slot the queue gives a build before it runs
 	mgr.runJob(context.Background(), job)
 	mgr.freeSlot()

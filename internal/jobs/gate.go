@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,12 +37,15 @@ type jobGate struct {
 	// agentStarted and containers are what the machine looked like before the agent ran.
 	agentStarted time.Time
 	containers   map[string]bool
+	// machine is the machine as it was before the agent ran.
+	machine buildstep.MachineState
 	// held counts the build slots taken from other builds (pushwindow.go).
 	held int
-	// dockerDir is the docker config of the push window, credentialLive while it holds
-	// the login.
-	dockerDir      string
-	credentialLive bool
+	// dockerDir is the docker config of everything but the push: it holds no login.
+	dockerDir string
+	// overBudget is set when the build ran past its time budget, which ends it as failed
+	// rather than as cancelled by an operator.
+	overBudget atomic.Bool
 }
 
 // openGate pins the project's list. No list means no gate; a list that is not as agreed

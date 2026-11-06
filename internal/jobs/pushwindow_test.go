@@ -4,12 +4,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 )
 
 // A listed project's build holds a registry credential only in the push window: after its
@@ -95,13 +98,15 @@ func TestAContainerTheAgentLeftIsRemoved(t *testing.T) {
 	}
 }
 
-func TestTheBuildWaitsForAnOperatorBeforeBuildingTheImage(t *testing.T) {
+// The token is asked for once the image is built, so it only has to live through the push.
+func TestTheBuildAsksForATokenOnlyWhenTheImageIsReady(t *testing.T) {
 	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
 	released(t, run, "app.js", "changed")
-	before(t, run, "operator: ready for a token", "docker build")
-	before(t, run, "docker build", "docker push")
-	if head := run.head(t); indexOf(run.events, "callback released") < 0 || head == run.seed {
-		t.Errorf("released = %v, head %s", hasStatus(run, "released"), head)
+	before(t, run, "stop strays", "docker build")
+	before(t, run, "docker build", "operator: ready for a token")
+	before(t, run, "operator: ready for a token", "docker push")
+	if head := run.head(t); head == run.seed {
+		t.Errorf("nothing was committed before the pause")
 	}
 }
 
@@ -112,8 +117,8 @@ func TestNoCredentialInTimeFailsAndNothingReachesTheRegistry(t *testing.T) {
 		t.Errorf("the failure does not say why: %s", failedMessage(run))
 	}
 	noRegistryWrite(t, run)
-	if indexOf(run.events, "docker build") >= 0 {
-		t.Errorf("it built without one:\n%s", events(run))
+	if indexOf(run.events, "docker rmi -f") < 0 {
+		t.Errorf("the image that was never pushed stays on the machine:\n%s", events(run))
 	}
 	if _, err := os.Stat(filepath.Join(run.credentialDir, "READY")); err == nil {
 		t.Error("READY was left behind: an operator would send a token to nobody")
@@ -181,26 +186,34 @@ func TestACredentialThatIsNotAsAgreedIsRefused(t *testing.T) {
 	}
 }
 
-// docker gets a config of its own for the build and the push, and never reads ~/.docker,
-// which an agent can write. What the operator left is moved, not copied.
+// docker gets a config of its own for the build and another for the push, and never reads
+// ~/.docker, which an agent can write. What the operator left is moved, not copied.
 func TestThePushUsesOnlyTheCredentialItWasGiven(t *testing.T) {
 	home := t.TempDir()
 	run := runPipelineWith(t, pipelineOpts{env: map[string]string{"HOME": home}, agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
 	released(t, run, "app.js", "changed")
-	var pushConfig string
+	seen := map[string]string{}
 	for _, line := range run.dockerConfigs {
-		if rest, ok := strings.CutPrefix(line, "docker-config push "); ok {
-			pushConfig = rest
+		if rest, ok := strings.CutPrefix(line, "docker-config "); ok {
+			verb, dir, _ := strings.Cut(rest, " ")
+			if verb == "build" || verb == "push" || verb == "manifest" {
+				seen[verb] = dir
+			}
+		}
+		if rest, ok := strings.CutPrefix(line, "docker-auth build "); ok && rest != "{}" {
+			t.Errorf("docker build held a login: %s", rest)
 		}
 		if rest, ok := strings.CutPrefix(line, "docker-auth push "); ok && rest != goodCredential {
 			t.Errorf("docker push read %q", rest)
 		}
-		if rest, ok := strings.CutPrefix(line, "docker-config build "); ok && (rest == "none" || strings.HasPrefix(rest, home)) {
-			t.Errorf("docker build read %s", rest)
+	}
+	for _, verb := range []string{"build", "push", "manifest"} {
+		if seen[verb] == "" || seen[verb] == "none" || strings.HasPrefix(seen[verb], home) {
+			t.Errorf("docker %s read the config at %q", verb, seen[verb])
 		}
 	}
-	if pushConfig == "" || pushConfig == "none" || strings.HasPrefix(pushConfig, home) {
-		t.Errorf("docker push read the config at %q", pushConfig)
+	if seen["build"] == seen["push"] {
+		t.Error("the build and the push shared a config")
 	}
 	if !strings.Contains(strings.Join(run.dockerConfigs, "\n"), "docker-auth push "+goodCredential) {
 		t.Errorf("docker push did not hold the credential:\n%s", strings.Join(run.dockerConfigs, "\n"))
@@ -208,8 +221,10 @@ func TestThePushUsesOnlyTheCredentialItWasGiven(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(run.credentialDir, "config.json")); err == nil {
 		t.Error("the operator's file is still there")
 	}
-	if _, err := os.Stat(pushConfig); err == nil {
-		t.Error("the build left its docker config behind")
+	for _, verb := range []string{"build", "push"} {
+		if _, err := os.Stat(seen[verb]); err == nil {
+			t.Errorf("the %s config was left behind: %s", verb, seen[verb])
+		}
 	}
 }
 
@@ -314,6 +329,439 @@ func TestABuildThatIsWaitedOnTooLongFails(t *testing.T) {
 	if head := run.head(t); head != run.seed {
 		t.Errorf("it committed while another agent could still be running: %s", head)
 	}
+}
+
+// --- the machine ------------------------------------------------------------------------
+
+func TestAMachineTheAgentChangedStopsTheBuildBeforeTheCommit(t *testing.T) {
+	for _, what := range []string{"program docker", "config ~/.docker/config.json", "listing ~/Library/LaunchAgents", "cron", "launchd labels"} {
+		t.Run(what, func(t *testing.T) {
+			run := runPipelineWith(t, pipelineOpts{
+				agent: func(a agentRun) { change(t, a.spec.WorkDir) },
+				machine: func(look int) buildstep.MachineState {
+					state := buildstep.MachineState{what: "before"}
+					if look > 1 {
+						state[what] = "after"
+					}
+					return state
+				},
+			})
+			failedAndNeverReleased(t, run)
+			if !strings.Contains(failedMessage(run), what) {
+				t.Errorf("the failure does not name it: %s", failedMessage(run))
+			}
+			if head := run.head(t); head != run.seed {
+				t.Errorf("it committed: %s", head)
+			}
+			noRegistryWrite(t, run)
+		})
+	}
+}
+
+// The commit and the image build come after the first look, so there is a second one before
+// a token can exist.
+func TestAMachineThatChangesLaterStopsTheBuildBeforeAToken(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) },
+		machine: func(look int) buildstep.MachineState {
+			if look > 2 {
+				return buildstep.MachineState{"program git": "after"}
+			}
+			return buildstep.MachineState{"program git": "before"}
+		},
+	})
+	failedAndNeverReleased(t, run)
+	if indexOf(run.events, "operator: ready for a token") >= 0 {
+		t.Errorf("a token was asked for:\n%s", events(run))
+	}
+	noRegistryWrite(t, run)
+}
+
+func TestAProcessThatWillNotStopAtThePauseFailsBeforeAToken(t *testing.T) {
+	looks := 0
+	run := runPipelineWith(t, pipelineOpts{
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) },
+		strays: func() ([]string, error) {
+			looks++
+			if looks > 1 {
+				return nil, errors.New("pid 8 keeps coming back")
+			}
+			return nil, nil
+		},
+	})
+	failedAndNeverReleased(t, run)
+	if indexOf(run.events, "operator: ready for a token") >= 0 {
+		t.Errorf("a token was asked for:\n%s", events(run))
+	}
+}
+
+// --- the token ---------------------------------------------------------------------------
+
+func TestACredentialThatAppearsWhileTheAgentRunsFailsTheBuild(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) {
+		change(t, a.spec.WorkDir)
+		path := os.Getenv("CREDENTIAL_PATH")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		putCredential(t, path, goodCredential)
+	}})
+	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "appeared") {
+		t.Errorf("the failure does not say why: %s", failedMessage(run))
+	}
+	if _, err := os.Lstat(os.Getenv("CREDENTIAL_PATH")); err == nil {
+		t.Error("the file was left")
+	}
+	noRegistryWrite(t, run)
+}
+
+// One token, one push. A second one is not read, and the operator hears about it.
+func TestASecondCredentialIsNotUsed(t *testing.T) {
+	var second string
+	run := runPipelineWith(t, pipelineOpts{
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) },
+		credential: func(t *testing.T, path string) {
+			second = path
+			t.Setenv("FAKE_PUSH_RUNS", "printf '%s' '"+goodCredential+"' > '"+path+"'; chmod 600 '"+path+"'")
+			putCredential(t, path, goodCredential)
+		},
+	})
+	released(t, run, "app.js", "changed")
+	if _, err := os.Lstat(second); err == nil {
+		t.Error("the second credential was left in place")
+	}
+	raw, _ := json.Marshal(run.store.trace)
+	if !strings.Contains(string(raw), "second push credential") {
+		t.Errorf("the operator is not told: %s", raw)
+	}
+	pushes := 0
+	for _, e := range run.events {
+		if strings.HasPrefix(e, "docker push") {
+			pushes++
+		}
+	}
+	if pushes != 1 {
+		t.Errorf("%d pushes", pushes)
+	}
+}
+
+// A tag is never pushed twice, whoever put it there.
+func TestATagAlreadyInTheRegistryFailsBeforeAToken(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) },
+		tags: func(tags buildstep.RegistryTags, ref buildstep.ImageRef, _ bool) {
+			tags[ref.Repository][ref.Tag] = "sha256:someone-else"
+		},
+	})
+	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "never pushed twice") {
+		t.Errorf("the failure does not say why: %s", failedMessage(run))
+	}
+	if indexOf(run.events, "operator: ready for a token") >= 0 {
+		t.Errorf("a token was asked for:\n%s", events(run))
+	}
+	noRegistryWrite(t, run)
+}
+
+// PUSHED is how the operator's script knows to revoke: there while the build waits for that,
+// gone afterwards.
+func TestTheOperatorIsToldWhenThePushIsOver(t *testing.T) {
+	sawPushed := false
+	run := runPipelineWith(t, pipelineOpts{
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) },
+		login: func(int) (bool, error) {
+			raw, err := os.ReadFile(filepath.Join(filepath.Dir(os.Getenv("CREDENTIAL_PATH")), "PUSHED"))
+			sawPushed = err == nil && strings.Contains(string(raw), fakeDigest)
+			return false, nil
+		},
+	})
+	released(t, run, "app.js", "changed")
+	if !sawPushed {
+		t.Error("PUSHED was not there, with the digest, while the build waited for the revoke")
+	}
+	if _, err := os.Stat(filepath.Join(run.credentialDir, "PUSHED")); err == nil {
+		t.Error("PUSHED was left behind")
+	}
+}
+
+func TestARegistryItCannotReadFailsTheBuild(t *testing.T) {
+	cases := map[string]func(bool) error{
+		"before a token": func(bool) error { return errors.New("gitlab said 502") },
+		"after the push": func(pushed bool) error {
+			if pushed {
+				return errors.New("gitlab said 502")
+			}
+			return nil
+		},
+	}
+	for name, tagsErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) { change(t, a.spec.WorkDir) }, tagsErr: tagsErr})
+			failedAndNeverReleased(t, run)
+			if !strings.Contains(failedMessage(run), "gitlab said 502") {
+				t.Errorf("the failure does not say why: %s", failedMessage(run))
+			}
+			if indexOf(run.events, "node accept-candidate.mjs") >= 0 {
+				t.Errorf("the gate ran:\n%s", events(run))
+			}
+		})
+	}
+}
+
+// The gate waits for GitLab to say the token is dead, not for anyone's word.
+func TestTheGateRunsOnlyAfterGitLabSaysTheTokenIsDead(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) },
+		login: func(n int) (bool, error) { return n < 4, nil },
+	})
+	released(t, run, "app.js", "changed")
+	before(t, run, "docker push", "gitlab: the token cannot push")
+	before(t, run, "gitlab: the token cannot push", "node accept-candidate.mjs")
+}
+
+func TestARevokeThatCannotBeConfirmedFailsTheBuild(t *testing.T) {
+	cases := map[string]func(int) (bool, error){
+		"the token still works":  func(int) (bool, error) { return true, nil },
+		"gitlab does not answer": func(int) (bool, error) { return false, errors.New("no answer") },
+	}
+	for name, login := range cases {
+		t.Run(name, func(t *testing.T) {
+			run := runPipelineWith(t, pipelineOpts{
+				agent:   func(a agentRun) { change(t, a.spec.WorkDir) },
+				login:   login,
+				manager: func(m *manager) { m.pushWindowLimit = 200 * time.Millisecond },
+			})
+			failedAndNeverReleased(t, run)
+			if !strings.Contains(failedMessage(run), "not confirmed revoked") {
+				t.Errorf("the failure does not say why: %s", failedMessage(run))
+			}
+			if indexOf(run.events, "node accept-candidate.mjs") >= 0 {
+				t.Errorf("the gate ran:\n%s", events(run))
+			}
+			raw, _ := json.Marshal(run.store.trace)
+			if !strings.Contains(string(raw), "stop this lane") {
+				t.Errorf("the trace does not say to stop: %s", raw)
+			}
+		})
+	}
+}
+
+// --- the registry ------------------------------------------------------------------------
+
+func TestAnyOtherChangeInTheRegistryFailsTheBuild(t *testing.T) {
+	const other = "fitt/ftcdv-uat/crn-demo-other"
+	cases := map[string]func(tags buildstep.RegistryTags, ref buildstep.ImageRef){
+		"another image's tag moved": func(tags buildstep.RegistryTags, _ buildstep.ImageRef) { tags[other]["v1"] = "sha256:moved" },
+		"another image got a tag":   func(tags buildstep.RegistryTags, _ buildstep.ImageRef) { tags[other]["v2"] = "sha256:new" },
+		"another image lost a tag":  func(tags buildstep.RegistryTags, _ buildstep.ImageRef) { delete(tags[other], "v1") },
+		"another image is gone":     func(tags buildstep.RegistryTags, _ buildstep.ImageRef) { delete(tags, other) },
+		"a new image": func(tags buildstep.RegistryTags, _ buildstep.ImageRef) {
+			tags["fitt/ftcdv-uat/new"] = map[string]string{"v1": "sha256:x"}
+		},
+		"v2 moved":                func(tags buildstep.RegistryTags, ref buildstep.ImageRef) { tags[ref.Repository]["v2"] = "sha256:moved" },
+		"this image got a latest": func(tags buildstep.RegistryTags, ref buildstep.ImageRef) { tags[ref.Repository]["latest"] = "sha256:x" },
+		"the tag is another image": func(tags buildstep.RegistryTags, ref buildstep.ImageRef) {
+			tags[ref.Repository][ref.Tag] = "sha256:not-what-was-pushed"
+		},
+		"the tag is not there": func(tags buildstep.RegistryTags, ref buildstep.ImageRef) { delete(tags[ref.Repository], ref.Tag) },
+	}
+	for name, change2 := range cases {
+		t.Run(name, func(t *testing.T) {
+			run := runPipelineWith(t, pipelineOpts{
+				agent: func(a agentRun) { change(t, a.spec.WorkDir) },
+				tags: func(tags buildstep.RegistryTags, ref buildstep.ImageRef, pushed bool) {
+					if pushed {
+						change2(tags, ref)
+					}
+				},
+			})
+			failedAndNeverReleased(t, run)
+			if !strings.Contains(failedMessage(run), "the registry changed") {
+				t.Errorf("the failure does not say why: %s", failedMessage(run))
+			}
+			if indexOf(run.events, "node accept-candidate.mjs") >= 0 {
+				t.Errorf("the gate ran:\n%s", events(run))
+			}
+			raw, _ := json.Marshal(run.store.trace)
+			if !strings.Contains(string(raw), "stop this lane") {
+				t.Errorf("the trace does not say to stop: %s", raw)
+			}
+		})
+	}
+}
+
+// --- what Fittcore reads ----------------------------------------------------------------
+
+// Fittcore's ceilings: 4 hours from dispatch to a final event, 3 for the pause; it asked for a
+// token to live 10 to 15 minutes.
+func TestTheLimitsStayInsideFittcoresCeilings(t *testing.T) {
+	if buildBudget >= 4*time.Hour {
+		t.Errorf("the budget is %s", buildBudget)
+	}
+	if pushCredentialWait > 3*time.Hour {
+		t.Errorf("the pause is %s", pushCredentialWait)
+	}
+	if pushWindowLimit < 10*time.Minute || pushWindowLimit > 15*time.Minute {
+		t.Errorf("the window is %s", pushWindowLimit)
+	}
+}
+
+func TestABuildOverItsBudgetIsFailedNotCancelled(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{
+		credential: func(*testing.T, string) {},
+		agent:      func(a agentRun) { change(t, a.spec.WorkDir) },
+		manager:    func(m *manager) { m.buildBudget = 300 * time.Millisecond },
+	})
+	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "time budget") {
+		t.Errorf("the failure does not say why: %s", failedMessage(run))
+	}
+	for _, e := range eventsOf(run) {
+		if e == "build_cancelled" {
+			t.Error("reported as cancelled by an operator")
+		}
+	}
+}
+
+// Fittcore's clock starts at dispatch, so time in the queue counts.
+func TestTimeInTheQueueCountsAgainstTheBudget(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{
+		queuedAgo:  time.Hour,
+		credential: func(*testing.T, string) {},
+		agent:      func(a agentRun) { change(t, a.spec.WorkDir) },
+		manager:    func(m *manager) { m.buildBudget = time.Hour + 300*time.Millisecond },
+	})
+	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "time budget") {
+		t.Errorf("the failure does not say why: %s", failedMessage(run))
+	}
+}
+
+func eventsOf(run pipelineRun) []string {
+	var got []string
+	for _, e := range run.events {
+		if name, ok := strings.CutPrefix(e, "event "); ok {
+			got = append(got, name)
+		}
+	}
+	return got
+}
+
+// Every way a listed build can end, as Fittcore reads it. Before the gate passes the only
+// event is build_started. Each failure is build_failed and callback failed, never build_done
+// and never released. CRN_TEST_EVENT_SAMPLES keeps what each path left.
+func TestEveryPathEndsAsFittcoreReadsIt(t *testing.T) {
+	agent := func(a agentRun) { change(t, a.spec.WorkDir) }
+	never := func(*testing.T, string) {}
+	paths := map[string]pipelineOpts{
+		"token-not-as-agreed": {agent: agent, credential: func(t *testing.T, path string) { putCredential(t, path, "user:token") }},
+		"token-timeout":       {agent: agent, noCredential: true},
+		"token-before-agent":  {agent: agent, credentialFirst: true},
+		"push-fails":          {agent: agent, env: map[string]string{"FAKE_PUSH_FAILS": "1"}},
+		"image-build-fails":   {agent: agent, env: map[string]string{"FAKE_BUILD_FAILS": "1"}},
+		"digest-unknown":      {agent: agent, env: map[string]string{"FAKE_LOCAL_DIGEST": "not-a-digest"}},
+		"digest-mismatch":     {agent: agent, env: map[string]string{"FAKE_REGISTRY_DIGEST": "sha256:" + strings.Repeat("9", 64)}},
+		"revoke-unconfirmed":  {agent: agent, login: func(int) (bool, error) { return true, nil }, manager: func(m *manager) { m.pushWindowLimit = 200 * time.Millisecond }},
+		"registry-changed": {agent: agent, tags: func(tags buildstep.RegistryTags, _ buildstep.ImageRef, pushed bool) {
+			if pushed {
+				tags["fitt/ftcdv-uat/crn-demo-other"]["v1"] = "sha256:moved"
+			}
+		}},
+		"machine-changed": {agent: agent, machine: func(look int) buildstep.MachineState {
+			return buildstep.MachineState{"program docker": fmt.Sprint(look)}
+		}},
+		"stray-will-not-stop": {agent: agent, strays: func() ([]string, error) { return nil, errors.New("pid 7 keeps coming back") }},
+		"gate-fails":          {agent: agent, accept: "failed"},
+		"gate-crashes":        {agent: agent, accept: "crash"},
+		"over-budget":         {agent: agent, credential: never, manager: func(m *manager) { m.buildBudget = 300 * time.Millisecond }},
+	}
+	for name, opts := range paths {
+		t.Run(name, func(t *testing.T) {
+			run := runPipelineWith(t, opts)
+			failedAndNeverReleased(t, run)
+			if got := strings.Join(eventsOf(run), ","); got != "build_started,build_failed" {
+				t.Errorf("events = %s", got)
+			}
+			if indexOf(run.events, "callback failed") < 0 {
+				t.Errorf("no failed callback:\n%s", events(run))
+			}
+			keepSample(t, name, run)
+		})
+	}
+	t.Run("success", func(t *testing.T) {
+		run := runPipelineWith(t, pipelineOpts{agent: agent})
+		released(t, run, "app.js", "changed")
+		if got := strings.Join(eventsOf(run), ","); got != "build_started,build_done" {
+			t.Errorf("events = %s", got)
+		}
+		before(t, run, "node accept-candidate.mjs", "event build_done")
+		before(t, run, "node accept-candidate.mjs", "callback released")
+		keepSample(t, "success", run)
+	})
+}
+
+// keepSample writes what a path left, with the token checked to be absent.
+func keepSample(t *testing.T, name string, run pipelineRun) {
+	t.Helper()
+	trace, err := json.Marshal(run.store.trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies, err := json.Marshal(run.bodies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, seen := range []string{string(trace), string(bodies), run.logs, strings.Join(run.events, "\n")} {
+		if strings.Contains(seen, testToken) || strings.Contains(seen, "test-token") {
+			t.Errorf("the token is in what this path left")
+		}
+	}
+	dir := os.Getenv("CRN_TEST_EVENT_SAMPLES")
+	if dir == "" {
+		return
+	}
+	var texts []string
+	var decoded struct {
+		Events []struct {
+			Text string `json:"text"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(trace, &decoded); err == nil {
+		for _, e := range decoded.Events {
+			if e.Text != "" {
+				texts = append(texts, e.Text)
+			}
+		}
+	}
+	sample := map[string]any{
+		"path": name, "order": run.events, "build_events": eventsOf(run), "callbacks": run.bodies,
+		"trace_text": texts,
+		"log":        windowLog(run.logs),
+	}
+	raw, err := json.MarshalIndent(sample, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name+".json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// windowLog keeps the lines of the log that are about the window, level and message only: a
+// sample does not need temporary paths.
+func windowLog(logs string) []string {
+	var kept []string
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, "level=WARN") && !strings.Contains(line, "level=ERROR") && !strings.Contains(line, "the agent's processes") {
+			continue
+		}
+		if i := strings.Index(line, "level="); i >= 0 {
+			line = line[i:]
+		}
+		kept = append(kept, line)
+	}
+	return kept
 }
 
 // A project without a list has none of this.
