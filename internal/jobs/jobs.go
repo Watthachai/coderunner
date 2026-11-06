@@ -132,6 +132,13 @@ type manager struct {
 	// forbiddenValuesDir holds each project's list of forbidden value hashes
 	// (SetForbiddenValuesDir).
 	forbiddenValuesDir string
+	// pushCredentialDir, pushCredentialWait and pushCredentialPoll belong to the push
+	// window (pushwindow.go).
+	pushCredentialDir  string
+	pushCredentialWait time.Duration
+	pushCredentialPoll time.Duration
+	// stopStrays ends what an agent left running (buildstep.StopStrayProcesses).
+	stopStrays func(ctx context.Context, since time.Time, logger *slog.Logger) ([]string, error)
 	// gates holds the open gate of each running build of a project with such a list,
 	// guarded by gateMu (gate.go).
 	gateMu sync.RWMutex
@@ -223,6 +230,7 @@ func NewManager(
 		artifactDir:        artifactDir,
 		claudeDefaults:     claudeDefaults,
 		slots:              make(chan struct{}, maxConcurrent),
+		stopStrays:         buildstep.StopStrayProcesses,
 		subs:               make(map[uuid.UUID][]*subscriber),
 		cancels:            make(map[uuid.UUID]context.CancelFunc),
 	}
@@ -703,6 +711,12 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			}
 			runSpec.StdoutTrace = gate.scan.Source("the agent's output")
 			runSpec.StderrTrace = gate.scan.Source("the agent's errors")
+			runSpec.StopGroupOnExit = true
+			if gate.containers, err = buildstep.ContainerIDs(runCtx, log); err != nil {
+				m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), meta)
+				return
+			}
+			gate.agentStarted = time.Now()
 		}
 
 		emit := func(ev domain.ClaudeEvent) error {
@@ -773,6 +787,19 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			log.Error("build failed", "err", errMsg, "cost_usd", result.CostUSD)
 			m.finishFailed(ctx, job, errMsg, meta)
 			return
+		}
+
+		// Nothing the agent started goes on running past here.
+		if gate != nil {
+			if err := m.stopAgent(runCtx, job, gate, log); err != nil {
+				log.Error("the agent could not be stopped", "err", err)
+				if runCtx.Err() != nil && ctx.Err() == nil {
+					m.finishCancelled(ctx, job, meta)
+				} else {
+					m.finishFailed(ctx, job, err.Error(), meta)
+				}
+				return
+			}
 		}
 	} else {
 		log.Info("claude step skipped (CRN_RUN_CLAUDE=false)")
@@ -1248,6 +1275,15 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	if err != nil {
 		return "", err
 	}
+	if gate != nil {
+		if m.registryFor(job) == "" {
+			return "", errors.New("candidate acceptance: an external-tls-only build needs a registry to push to")
+		}
+		if ctx, err = m.openPushWindow(ctx, job, gate, appTag, log); err != nil {
+			return "", err
+		}
+		defer m.endPushCredential(job, gate, log)
+	}
 
 	// App image (opaque, self-migrating) — REQUIRED. Build failure fails the build.
 	if err := buildstep.BuildImage(ctx, buildDir, "Dockerfile", appTag, labels, log); err != nil {
@@ -1277,6 +1313,9 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 			log.Warn("image digest unknown; the callback goes without it", "err", err)
 		}
 		digest = d
+		if gate != nil {
+			m.endPushCredential(job, gate, log)
+		}
 	}
 
 	m.mirrorImage(ctx, appTag, job, log)
@@ -1315,6 +1354,10 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 // SetForbiddenValuesDir says where each project's list of forbidden value hashes lives
 // (<dir>/<project id>.txt). Without a list an external-tls-only build cannot pass.
 func (m *manager) SetForbiddenValuesDir(dir string) { m.forbiddenValuesDir = dir }
+
+// SetPushCredentialDir says where an operator leaves a registry credential for a listed
+// project's push (<dir>/<project id>/config.json, see pushwindow.go).
+func (m *manager) SetPushCredentialDir(dir string) { m.pushCredentialDir = dir }
 
 // acceptCandidate is the gate between the push and "released" for a project with a list
 // of forbidden values. The release check before the commit ran on a build for this

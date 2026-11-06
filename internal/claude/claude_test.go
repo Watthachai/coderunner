@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 )
@@ -179,5 +182,65 @@ func TestRunFailsWhenTheLastResultIsAnError(t *testing.T) {
 	}
 	if res.Success || res.CostUSD != 3 {
 		t.Errorf("result = %+v, want the last line's failure and cost 3", res)
+	}
+}
+
+// fakeClaudeWithChild leaves a process behind in the agent's group, with no output held
+// open, and returns where it wrote that process's pid.
+func fakeClaudeWithChild(t *testing.T) (bin, pidFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	pidFile = filepath.Join(dir, "pid")
+	script := "#!/bin/sh\nenv -i /bin/sleep 300 >/dev/null 2>&1 </dev/null &\necho $! > " + pidFile + "\n" +
+		`echo '{"type":"result","subtype":"success","session_id":"s"}'` + "\n"
+	bin = filepath.Join(dir, "claude")
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return bin, pidFile
+}
+
+func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+func readPid(t *testing.T, path string) int {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func TestRunStopsTheAgentsGroupWhenAskedTo(t *testing.T) {
+	bin, pidFile := fakeClaudeWithChild(t)
+	r := NewRunner(bin, t.TempDir(), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := r.Run(context.Background(), domain.RunSpec{Prompt: "p", WorkDir: t.TempDir(), StopGroupOnExit: true}, func(domain.ClaudeEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	pid := readPid(t, pidFile)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	for i := 0; i < 100 && alive(pid); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if alive(pid) {
+		t.Errorf("process %d the agent left is still running", pid)
+	}
+}
+
+// A project without a list keeps what it had: an agent's background process outlives it.
+func TestRunLeavesTheGroupAloneOtherwise(t *testing.T) {
+	bin, pidFile := fakeClaudeWithChild(t)
+	r := NewRunner(bin, t.TempDir(), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := r.Run(context.Background(), domain.RunSpec{Prompt: "p", WorkDir: t.TempDir()}, func(domain.ClaudeEvent) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	pid := readPid(t, pidFile)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if !alive(pid) {
+		t.Errorf("process %d was stopped without being asked", pid)
 	}
 }

@@ -238,6 +238,9 @@ func (r *runner) Run(ctx context.Context, spec domain.RunSpec, emit func(domain.
 		errOut = io.TeeReader(stderr, spec.StderrTrace)
 	}
 	log.Info("claude started", "pid", cmd.Process.Pid)
+	if spec.StopGroupOnExit {
+		defer func() { _ = killGroup(cmd, syscall.SIGKILL) }()
+	}
 
 	// Drain stderr concurrently into the logger so a noisy/blocking stderr can
 	// never deadlock the child (its stderr pipe filling up would stall it).

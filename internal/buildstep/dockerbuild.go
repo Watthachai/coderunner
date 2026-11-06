@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -389,7 +388,7 @@ func SaveImages(ctx context.Context, outPath string, images []string, logger *sl
 // — the operator sees the real reason (e.g. `npm ci` lockfile mismatch) instead of
 // a bare "exit status 1". The full output is also logged at Error level.
 func runDocker(ctx context.Context, logger *slog.Logger, args ...string) error {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerCommand(ctx, args...)
 	out, err := cmd.CombinedOutput()
 	recordOutput(ctx, "docker "+args[0], out)
 	if err != nil {

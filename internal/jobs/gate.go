@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -32,6 +33,15 @@ type jobGate struct {
 	repo *buildstep.CleanRepo
 	// accepted is set when the candidate gate passed on the registry's digest.
 	accepted bool
+	// agentStarted and containers are what the machine looked like before the agent ran.
+	agentStarted time.Time
+	containers   map[string]bool
+	// held counts the build slots taken from other builds (pushwindow.go).
+	held int
+	// dockerDir is the docker config of the push window, credentialLive while it holds
+	// the login.
+	dockerDir      string
+	credentialLive bool
 }
 
 // openGate pins the project's list. No list means no gate; a list that is not as agreed
@@ -47,6 +57,9 @@ func (m *manager) openGate(job *domain.Job) (*jobGate, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := m.refuseEarlyCredential(job); err != nil {
+		return nil, err
+	}
 	gate := &jobGate{list: list, scan: list.NewScanner()}
 	m.gateMu.Lock()
 	defer m.gateMu.Unlock()
@@ -60,8 +73,14 @@ func (m *manager) openGate(job *domain.Job) (*jobGate, error) {
 func (m *manager) closeGate(jobID uuid.UUID) {
 	m.gateMu.Lock()
 	defer m.gateMu.Unlock()
-	if gate := m.gates[jobID]; gate != nil && gate.repo != nil {
-		gate.repo.Close()
+	if gate := m.gates[jobID]; gate != nil {
+		if gate.repo != nil {
+			gate.repo.Close()
+		}
+		if gate.dockerDir != "" {
+			_ = os.RemoveAll(gate.dockerDir)
+		}
+		m.releaseBuilds(gate)
 	}
 	delete(m.gates, jobID)
 }

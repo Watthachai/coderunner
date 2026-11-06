@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -135,7 +134,7 @@ func repository(ref string) string {
 // dockerOutput runs the docker CLI and returns its stdout. stderr — where buildx
 // writes progress — is kept for the error, never mixed into the answer.
 func dockerOutput(ctx context.Context, logger *slog.Logger, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerCommand(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

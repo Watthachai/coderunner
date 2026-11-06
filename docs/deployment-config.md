@@ -56,6 +56,7 @@
 | | `CRN_CENTRAL_DATABASE_URL` | DB กลาง (build_events); ว่าง = ใช้ store DB |
 | | `CRN_FTC_DV_CALLBACK_URL` / `_TOKEN` | HTTP callback ไป FITTCORE |
 | | `CRN_FEEDBACK_INGEST_URL` | PostgREST feedback ingest (`:3010`) |
+| | `CRN_PUSH_CREDENTIAL_DIR` | ที่วาง token ของจุดพักก่อน push สำหรับโปรเจกต์ที่มีรายการค่าต้องห้าม (default `$HOME/crn-secrets/push`, ดู `internal/jobs/pushwindow.go`) |
 | | `CRN_GIT_REMOTE` | git push target (ว่าง = skip push) |
 | | `CRN_MAX_CONCURRENT_BUILDS` | build พร้อมกันได้กี่ตัว (default `5`, ต่ำสุด `1`) |
 | | `CRN_CLAUDE_MODEL` | model ที่ build ใช้ (default `claude-opus-5` = Opus ล่าสุด; `claude-sonnet-5` ถูกกว่า) |

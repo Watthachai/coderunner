@@ -32,6 +32,9 @@ const fakeDigest = "sha256:" + "ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56
 // pipeline reads back. FAKE_REGISTRY_DIGEST is what the registry says v3 is.
 const pipelineDocker = `#!/bin/sh
 echo "docker $*" >> "$EVENTS"
+echo "docker-config $1 ${DOCKER_CONFIG:-none}" >> "$DOCKER_CONFIGS"
+[ -n "$DOCKER_CONFIG" ] && [ -f "$DOCKER_CONFIG/config.json" ] && echo "docker-auth $1 $(cat "$DOCKER_CONFIG/config.json")" >> "$DOCKER_CONFIGS"
+[ "$1" = "ps" ] && cat "$FAKE_CONTAINERS" 2>/dev/null
 case "$1 $2" in
   "image inspect") echo "[\"$(echo "$3" | sed 's/:v[0-9]*$//')@${FAKE_LOCAL_DIGEST}\"]" ;;
   "manifest inspect") echo "{\"Descriptor\":{\"digest\":\"${FAKE_REGISTRY_DIGEST}\"}}" ;;
@@ -208,17 +211,19 @@ func (f fakeAgent) Run(_ context.Context, spec domain.RunSpec, emit func(domain.
 func (f fakeAgent) Improve(context.Context, string, string, string) (string, error) { return "", nil }
 
 type pipelineRun struct {
-	events   []string
-	bodies   []map[string]any
-	store    *pipelineStore
-	logs     string
-	remote   string
-	branch   string
-	seed     string // the commit the remote held before the build
-	workDir  string
-	context  string // a copy of the docker build context
-	listSeen string // what the gate got on stdin
-	agentRan bool
+	events        []string
+	bodies        []map[string]any
+	store         *pipelineStore
+	logs          string
+	remote        string
+	branch        string
+	seed          string // the commit the remote held before the build
+	workDir       string
+	context       string   // a copy of the docker build context
+	dockerConfigs []string // what each docker command was given as its config
+	credentialDir string   // the project's directory for the push credential
+	listSeen      string   // what the gate got on stdin
+	agentRan      bool
 }
 
 // head is the commit the remote's branch is on now.
@@ -251,6 +256,21 @@ type pipelineOpts struct {
 	noList   bool
 	// before runs before the build, on the workspace an earlier build would have left.
 	before func(t *testing.T, workDir, remote string)
+	// credential replaces the operator: it runs once CRN says it is ready for a token,
+	// and is given where the file goes. Nil leaves a good one at once.
+	credential func(t *testing.T, path string)
+	// noCredential leaves nothing, so the window runs out after a moment.
+	noCredential bool
+	// credentialFirst puts a file in place before the build starts.
+	credentialFirst bool
+	// maxConcurrent is the server's build slots; zero means one.
+	maxConcurrent int
+	// otherBuild, with maxConcurrent above one, holds a slot until the channel closes.
+	otherBuild chan struct{}
+	// strays stands in for the sweep of what the agent left.
+	strays func() ([]string, error)
+	// manager sees the manager before the build runs.
+	manager func(m *manager)
 	// remoteHook is the remote's post-receive hook: the remote's own, not the workspace's.
 	remoteHook func(workDir string) string
 }
@@ -309,6 +329,13 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	t.Setenv("FAKE_REGISTRY_DIGEST", fakeDigest)
 	t.Setenv("CONTEXT_COPY", contextCopy)
 	t.Setenv("LIST_SEEN", listSeen)
+	dockerConfigs := filepath.Join(root, "docker-configs")
+	t.Setenv("DOCKER_CONFIGS", dockerConfigs)
+	containers := filepath.Join(root, "containers")
+	if err := os.WriteFile(containers, []byte("old-container\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_CONTAINERS", containers)
 	t.Setenv("CRN_VERIFY_NODE", filepath.Join(bin, "fake-node"))
 	t.Setenv("GIT_AUTHOR_NAME", "t")
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.test")
@@ -415,12 +442,80 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	if o.agent != nil {
 		runner = fakeAgent{ran: &run.agentRan, do: func(a agentRun) { a.t = t; o.agent(a) }, lg: func() *slog.Logger { return mgr.logger }, lst: listPath}
 	}
-	mgr = NewManager(st, runner, nopNotifier{}, logger, filepath.Join(root, "projects"), remote, "", false, o.agent != nil, "", srv.URL, "", map[uuid.UUID]bool{org: true}, nil, true, "172.168.1.234:5050/fitt/ftcdv-uat", nil, "", "", 1, buildsettings.Defaults{}).(*manager)
+	slots := o.maxConcurrent
+	if slots == 0 {
+		slots = 1
+	}
+	mgr = NewManager(st, runner, nopNotifier{}, logger, filepath.Join(root, "projects"), remote, "", false, o.agent != nil, "", srv.URL, "", map[uuid.UUID]bool{org: true}, nil, true, "172.168.1.234:5050/fitt/ftcdv-uat", nil, "", "", slots, buildsettings.Defaults{}).(*manager)
 	mgr.SetForbiddenValuesDir(forbidden)
+	credentials := filepath.Join(root, "push-credentials")
+	mgr.SetPushCredentialDir(credentials)
+	mgr.pushCredentialPoll = 5 * time.Millisecond
+	mgr.pushCredentialWait = 10 * time.Second
+	if o.noCredential {
+		mgr.pushCredentialWait = 300 * time.Millisecond
+	}
+	mgr.stopStrays = func(context.Context, time.Time, *slog.Logger) ([]string, error) {
+		record("stop strays")
+		if o.strays != nil {
+			return o.strays()
+		}
+		return nil, nil
+	}
+	if o.manager != nil {
+		o.manager(mgr)
+	}
+	if o.otherBuild != nil {
+		mgr.slots <- struct{}{}
+		go func() {
+			<-o.otherBuild
+			mgr.freeSlot()
+		}()
+	}
+	run.credentialDir = filepath.Join(credentials, project.String())
+	credentialPath := filepath.Join(run.credentialDir, "config.json")
+	if o.credentialFirst {
+		if err := os.MkdirAll(run.credentialDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(credentialPath, []byte(goodCredential), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	operator := make(chan struct{})
+	operatorDone := make(chan struct{})
+	go func() {
+		defer close(operatorDone)
+		if o.noCredential || o.credentialFirst {
+			return
+		}
+		ready := filepath.Join(run.credentialDir, "READY")
+		for {
+			select {
+			case <-operator:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+			if _, err := os.Stat(ready); err != nil {
+				continue
+			}
+			record("operator: ready for a token")
+			if o.credential != nil {
+				o.credential(t, credentialPath)
+			} else {
+				putCredential(t, credentialPath, goodCredential)
+			}
+			return
+		}
+	}()
 
 	payload, _ := json.Marshal(map[string]any{"mode": "edit", "change": o.change, "name": "app", "feedback_widget": false})
 	job := &domain.Job{ID: uuid.New(), ProjectID: project, OrgID: org, BuildNo: 3, Payload: payload, Status: domain.JobQueued}
+	mgr.slots <- struct{}{} // the slot the queue gives a build before it runs
 	mgr.runJob(context.Background(), job)
+	mgr.freeSlot()
+	close(operator)
+	<-operatorDone
 
 	select {
 	case <-terminal:
@@ -441,6 +536,9 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	run.logs = sink.read(&logs)
 	if seen, err := os.ReadFile(listSeen); err == nil {
 		run.listSeen = string(seen)
+	}
+	if seen, err := os.ReadFile(dockerConfigs); err == nil {
+		run.dockerConfigs = strings.Split(strings.TrimSpace(string(seen)), "\n")
 	}
 	return run
 }
@@ -499,6 +597,25 @@ next:
 		return i
 	}
 	return -1
+}
+
+// goodCredential is what an operator's token looks like in the file: a docker config with
+// one login, for the registry the build pushes to.
+const (
+	testToken      = "dGVzdC11c2VyOnRlc3QtdG9rZW4="
+	goodCredential = `{"auths":{"172.168.1.234:5050":{"auth":"` + testToken + `"}}}`
+)
+
+// putCredential leaves the file the way the operator's script does: whole, in one rename.
+func putCredential(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path+".tmp", []byte(body), 0o600); err != nil {
+		t.Error(err)
+		return
+	}
+	if err := os.Rename(path+".tmp", path); err != nil {
+		t.Error(err)
+	}
 }
 
 // noDeliveryFile as pipelineOpts.delivery seeds a branch with no crn-delivery.json.

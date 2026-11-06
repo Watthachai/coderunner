@@ -140,6 +140,9 @@ func run() error {
 	if gated, ok := jobManager.(interface{ SetForbiddenValuesDir(string) }); ok {
 		gated.SetForbiddenValuesDir(cfg.ForbiddenValuesDir)
 	}
+	if gated, ok := jobManager.(interface{ SetPushCredentialDir(string) }); ok {
+		gated.SetPushCredentialDir(cfg.PushCredentialDir)
+	}
 	if hooked, ok := jobManager.(interface{ SetBeforeBuild(func(context.Context)) }); ok {
 		hooked.SetBeforeBuild(authMonitor.CheckStatus)
 	}

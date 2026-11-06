@@ -225,6 +225,9 @@ type RunSpec struct {
 	// unparsed: the agent's whole output, for the check of what a build may not print.
 	StdoutTrace io.Writer
 	StderrTrace io.Writer
+	// StopGroupOnExit kills what is left of the agent's process group as soon as the
+	// agent exits, however it exits.
+	StopGroupOnExit bool
 }
 
 // RunResult is the terminal outcome of a Claude Code run, from its last result

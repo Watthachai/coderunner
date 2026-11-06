@@ -153,6 +153,11 @@ type Config struct {
 	// without one. Default $HOME/crn-secrets/forbidden.
 	ForbiddenValuesDir string
 
+	// PushCredentialDir is where an operator leaves the registry token for one push of a
+	// project with such a list: <dir>/<project id>/config.json, only after CRN wrote READY
+	// next to it. Default $HOME/crn-secrets/push.
+	PushCredentialDir string
+
 	// MaxConcurrentBuilds caps how many builds run at once, server-wide. Builds
 	// of different projects run in parallel (they share no working dir), so this
 	// is the resource brake, not a correctness rule: each build ends in a docker
@@ -235,6 +240,7 @@ func Load() (*Config, error) {
 		MirrorRegistry:     strings.TrimRight(os.Getenv("CRN_MIRROR_REGISTRY"), "/"),
 		ArtifactDir:        os.Getenv("CRN_ARTIFACT_DIR"),
 		ForbiddenValuesDir: getEnv("CRN_FORBIDDEN_VALUES_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "forbidden")),
+		PushCredentialDir:  getEnv("CRN_PUSH_CREDENTIAL_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "push")),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),
