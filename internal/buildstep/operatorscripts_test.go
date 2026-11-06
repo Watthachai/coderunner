@@ -820,6 +820,7 @@ func TestThePushWindowPassesOnlyWhenEveryStepHeld(t *testing.T) {
 		"a second new tag":                 {[]string{"tags-after=fitt/x/ntc v2 sha256:2\nfitt/x/ntc v3 sha256:3\nfitt/x/ntc v4 sha256:4\n"}, "yes\n", true},
 		"another image got the tag":        {[]string{"tags-after=fitt/x/hello v3 sha256:3\nfitt/x/ntc v2 sha256:2\n"}, "yes\n", true},
 		"another image lost its emptiness": {[]string{"tags-before=fitt/x/hello (no tags)\nfitt/x/ntc (no tags)\n", "tags-after=fitt/x/hello v1 sha256:1\nfitt/x/ntc v3 sha256:3\n"}, "yes\n", true},
+		"an image with no tags is gone":    {[]string{"tags-before=fitt/x/hello (no tags)\nfitt/x/ntc v2 sha256:2\n", "tags-after=fitt/x/ntc v2 sha256:2\nfitt/x/ntc v3 sha256:3\n"}, "yes\n", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			run := runWindow(t, c.failing, c.stdin, testProject, testJob, testImage)
