@@ -604,6 +604,12 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			return
 		}
 		m.publishPhase(job.ID, "pull")
+		if gate != nil {
+			if err := buildstep.ReplaceGitDir(runCtx, workDir, pushBranch, m.logger); err != nil {
+				m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), meta)
+				return
+			}
+		}
 		if err := buildstep.GitCloneOrPull(runCtx, workDir, pushRemote, pushBranch, m.logger); err != nil {
 			log.Error("edit clone/pull failed", "err", err, "branch", pushBranch)
 			if runCtx.Err() != nil && ctx.Err() == nil {
@@ -870,30 +876,19 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		m.publishPhase(job.ID, "git")
 		m.publishPhase(job.ID, "push")
 		msg := commitMessage(spec, job)
-		commit, err := buildstep.GitCommitAndPush(runCtx, workDir, pushRemote, pushBranch, msg, spec.Mode != "edit", m.logger)
+		commit, err := m.commitAndPush(runCtx, workDir, pushRemote, pushBranch, msg, spec.Mode != "edit", gate)
+		meta.commit = commit
 		if err != nil {
 			log.Error("git push failed", "err", err)
 			if runCtx.Err() != nil && ctx.Err() == nil {
 				m.finishCancelled(ctx, job, meta)
 			} else {
-				m.finishFailed(ctx, job, "git push failed: "+err.Error(), meta)
+				m.finishFailed(ctx, job, err.Error(), meta)
 			}
 			return
 		}
 		commitSHA = commit
-		meta.commit = commit
 		log.Info("git pushed", "branch", pushBranch, "commit", commit, "remote", pushRemote)
-		if gate != nil {
-			if err := gate.afterPush(runCtx, workDir, pushRemote, pushBranch, commit, m.logger); err != nil {
-				log.Error("the pushed commit was refused", "err", err)
-				if runCtx.Err() != nil && ctx.Err() == nil {
-					m.finishCancelled(ctx, job, meta)
-				} else {
-					m.finishFailed(ctx, job, err.Error(), meta)
-				}
-				return
-			}
-		}
 		// Surface the push in the live stream so it also lands in the saved trace:
 		// the operator sees exactly what was committed and where it went.
 		m.publish(job.ID, domain.BuildEventMsg{
@@ -1244,7 +1239,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 			return "", err
 		}
 		defer os.RemoveAll(exported)
-		if err := buildstep.ExportCommit(ctx, workDir, commitSHA, exported); err != nil {
+		if err := buildstep.ExportCommit(ctx, gate.repo.Dir, commitSHA, exported); err != nil {
 			return "", fmt.Errorf("candidate acceptance: %w", err)
 		}
 		buildDir = exported
@@ -1290,7 +1285,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	m.writeArtifactBundle(ctx, workDir, appTag, log)
 
 	// v3 is pushed but not released: it reads as this build's image only once it passes.
-	digest, err = m.acceptCandidate(ctx, workDir, buildDir, spec, job, appTag, digest, commitSHA, gate, log)
+	digest, err = m.acceptCandidate(ctx, buildDir, spec, job, appTag, digest, commitSHA, gate, log)
 	if err != nil {
 		m.publish(job.ID, domain.BuildEventMsg{
 			Kind: domain.WSError, Text: err.Error(),
@@ -1326,7 +1321,7 @@ func (m *manager) SetForbiddenValuesDir(dir string) { m.forbiddenValuesDir = dir
 // machine's CPU; this one runs on the linux/amd64 image the registry holds, named by the
 // digest the registry gives, and returns that digest. Any other app keeps the path it
 // had. buildDir holds what the image was built from: the mode is read from there.
-func (m *manager) acceptCandidate(ctx context.Context, workDir, buildDir string, spec payloadSpec, job *domain.Job, appTag, pushedDigest, commitSHA string, gate *jobGate, log *slog.Logger) (string, error) {
+func (m *manager) acceptCandidate(ctx context.Context, buildDir string, spec payloadSpec, job *domain.Job, appTag, pushedDigest, commitSHA string, gate *jobGate, log *slog.Logger) (string, error) {
 	if gate == nil {
 		return pushedDigest, nil
 	}
@@ -1366,7 +1361,7 @@ func (m *manager) acceptCandidate(ctx context.Context, workDir, buildDir string,
 	if m.artifactDir != "" {
 		acceptance.ReceiptPath = filepath.Join(m.artifactDir, "acceptance", job.ID.String()+".json")
 	}
-	if err := buildstep.AcceptCandidate(ctx, workDir, acceptance, log); err != nil {
+	if err := buildstep.AcceptCandidate(ctx, gate.repo.Dir, acceptance, log); err != nil {
 		return "", err
 	}
 	gate.accepted = true
@@ -1690,6 +1685,19 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 	if err := m.notifier.Notify(ctx, ev); err != nil {
 		m.logger.Error("notify failed", "job_id", jobID, "event_type", kind, "err", err)
 	}
+}
+
+// commitAndPush publishes what the build left in workDir. A listed project goes through
+// its gate; the error says what to report either way.
+func (m *manager) commitAndPush(ctx context.Context, workDir, remote, branch, message string, force bool, gate *jobGate) (string, error) {
+	if gate != nil {
+		return gate.commitAndPush(ctx, workDir, remote, branch, message, force, m.logger)
+	}
+	commit, err := buildstep.GitCommitAndPush(ctx, workDir, remote, branch, message, force, m.logger)
+	if err != nil {
+		return "", fmt.Errorf("git push failed: %w", err)
+	}
+	return commit, nil
 }
 
 // ftcCallback POSTs a build-status callback to FTC DV, IN ADDITION to the

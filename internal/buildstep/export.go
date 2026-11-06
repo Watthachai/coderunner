@@ -21,9 +21,7 @@ var commitID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 // gitObjects runs git over the object store, as the commit names it: refs/replace in a
 // workspace cannot answer other bytes for the same id.
 func gitObjects(ctx context.Context, dir string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-replace-objects", "-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	return cmd
+	return gitCommand(ctx, dir, append([]string{"--no-replace-objects"}, args...)...)
 }
 
 type treeEntry struct {
@@ -193,10 +191,8 @@ func requestBlob(in io.Writer, objects *bufio.Reader, e treeEntry) (int64, error
 	return strconv.ParseInt(fields[2], 10, 64)
 }
 
-// ScanCommitHistory reads every object this build added to the branch: each commit, its
-// message, its trees (file names) and its blobs. The final tree alone would miss a value
-// committed and removed again, and git would still push it. base is the head before the
-// agent ran; empty reads all the commit reaches.
+// ScanCommitHistory reads every object commit adds to base: each commit, its message, its
+// trees (file names) and its blobs. An empty base reads all the commit reaches.
 func ScanCommitHistory(ctx context.Context, dir, base, commit string, scanner *ForbiddenScanner) error {
 	if !commitID.MatchString(commit) || (base != "" && !commitID.MatchString(base)) {
 		return errors.New("history scan: not a commit id")

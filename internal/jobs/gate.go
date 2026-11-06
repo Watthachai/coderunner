@@ -28,6 +28,8 @@ type jobGate struct {
 	scan *buildstep.ForbiddenScanner
 	// base is the branch's head before the agent ran; "" for a new build.
 	base string
+	// repo is the repository this build commits from and reads back; nil before the commit.
+	repo *buildstep.CleanRepo
 	// accepted is set when the candidate gate passed on the registry's digest.
 	accepted bool
 }
@@ -58,6 +60,9 @@ func (m *manager) openGate(job *domain.Job) (*jobGate, error) {
 func (m *manager) closeGate(jobID uuid.UUID) {
 	m.gateMu.Lock()
 	defer m.gateMu.Unlock()
+	if gate := m.gates[jobID]; gate != nil && gate.repo != nil {
+		gate.repo.Close()
+	}
 	delete(m.gates, jobID)
 }
 
@@ -122,20 +127,37 @@ func (m *manager) beforeCommit(workDir string, gate *jobGate) error {
 	return gate.check()
 }
 
-// afterPush confirms the remote holds the commit, and reads every object the build
-// added: a value committed and removed again is not in the final tree, but it was pushed.
-func (g *jobGate) afterPush(ctx context.Context, workDir, remote, branch, commit string, log *slog.Logger) error {
-	head, err := buildstep.RemoteHead(ctx, workDir, remote, branch, log)
+// commitAndPush commits and pushes from a repository CRN made for this build, so nothing
+// an agent left in the workspace's .git has any say. Every object the commit adds is read
+// before it leaves, and the remote must then say the branch is on it. The commit comes back
+// with the error once it has been pushed, for the trace.
+func (g *jobGate) commitAndPush(ctx context.Context, workDir, remote, branch, message string, force bool, log *slog.Logger) (string, error) {
+	repo, err := buildstep.OpenCleanRepo(ctx, remote, branch, g.base, log)
 	if err != nil {
-		return fmt.Errorf("candidate acceptance: %w", err)
+		return "", fmt.Errorf("candidate acceptance: %w", err)
+	}
+	g.repo = repo
+	commit, err := repo.Commit(ctx, workDir, message)
+	if err != nil {
+		return "", fmt.Errorf("candidate acceptance: %w", err)
+	}
+	if err := buildstep.ScanCommitHistory(ctx, repo.Dir, g.base, commit, g.scan); err != nil {
+		return "", fmt.Errorf("candidate acceptance: %w", err)
+	}
+	if err := g.check(); err != nil {
+		return "", err
+	}
+	if err := repo.Push(ctx, commit, force); err != nil {
+		return "", fmt.Errorf("candidate acceptance: %w", err)
+	}
+	head, err := buildstep.RemoteHead(ctx, repo.Dir, remote, branch, log)
+	if err != nil {
+		return commit, fmt.Errorf("candidate acceptance: %w", err)
 	}
 	if head != commit {
-		return fmt.Errorf("candidate acceptance: the remote's %s is on %s, the build pushed %s", branch, head, commit)
+		return commit, fmt.Errorf("candidate acceptance: the remote's %s is on %s, the build pushed %s", branch, head, commit)
 	}
-	if err := buildstep.ScanCommitHistory(ctx, workDir, g.base, commit, g.scan); err != nil {
-		return fmt.Errorf("candidate acceptance: %w", err)
-	}
-	return g.check()
+	return commit, g.check()
 }
 
 // beforeRelease is the last gate before "released": the candidate passed, the list has

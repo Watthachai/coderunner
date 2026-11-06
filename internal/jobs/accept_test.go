@@ -249,6 +249,10 @@ type pipelineOpts struct {
 	receipt  func(r map[string]any) // changes the passing receipt
 	list     func(t *testing.T, path string)
 	noList   bool
+	// before runs before the build, on the workspace an earlier build would have left.
+	before func(t *testing.T, workDir, remote string)
+	// remoteHook is the remote's post-receive hook: the remote's own, not the workspace's.
+	remoteHook func(workDir string) string
 }
 
 func runPipeline(t *testing.T, accept, deliveryJSON string, env map[string]string) pipelineRun {
@@ -328,6 +332,9 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 		"crn-delivery.json": o.delivery,
 		"crn.runtime.json":  `{"env":[]}`,
 	} {
+		if body == noDeliveryFile {
+			continue
+		}
 		if err := os.WriteFile(filepath.Join(seed, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -349,6 +356,18 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 		fmt.Fprintln(f, line)
 	}
 	run := pipelineRun{remote: remote, branch: branch, seed: git(t, seed, "rev-parse", "HEAD"), workDir: filepath.Join(root, "projects", project.String()), context: contextCopy}
+	if o.before != nil {
+		o.before(t, run.workDir, remote)
+	}
+	if o.remoteHook != nil {
+		hook := filepath.Join(remote, "hooks", "post-receive")
+		if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(hook, []byte(o.remoteHook(run.workDir)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	terminal := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -473,6 +492,9 @@ next:
 	}
 	return -1
 }
+
+// noDeliveryFile as pipelineOpts.delivery seeds a branch with no crn-delivery.json.
+const noDeliveryFile = "none"
 
 const tlsDelivery = `{"schema_version":1,"database":true,"database_mode":"external-tls-only","database_ca_file":"/run/fitt-ca/ca.pem"}`
 const wantImage = "172.168.1.234:5050/fitt/ftcdv-uat/crn-demo-app-"
@@ -760,15 +782,33 @@ func TestAnAgentCannotTakeAListedProjectOutOfTheGate(t *testing.T) {
 // The mode that counts is the commit's. A delivery file kept only in the workspace passes
 // the look before the commit, so the gate reads it again from what the image was built from.
 func TestTheDatabaseModeIsReadFromTheCommit(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{delivery: noDeliveryFile, agent: func(a agentRun) {
+		for name, body := range map[string]string{"crn-delivery.json": tlsDelivery, ".gitignore": "crn-delivery.json\n"} {
+			if err := os.WriteFile(filepath.Join(a.spec.WorkDir, name), []byte(body), 0o644); err != nil {
+				a.t.Fatal(err)
+			}
+		}
+	}})
+	failedAndNeverReleased(t, run)
+	if indexOf(run.events, "node accept-candidate.mjs") >= 0 {
+		t.Errorf("the gate ran on a commit that is not external-tls-only")
+	}
+}
+
+// The commit starts from the branch, not from the index the agent left: a file the branch
+// tracks stays in it, whatever the agent told its own index.
+func TestAnAgentsIndexDoesNotDecideWhatIsCommitted(t *testing.T) {
 	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) {
 		git(a.t, a.spec.WorkDir, "rm", "-q", "--cached", "crn-delivery.json")
 		if err := os.WriteFile(filepath.Join(a.spec.WorkDir, ".gitignore"), []byte("crn-delivery.json\n"), 0o644); err != nil {
 			a.t.Fatal(err)
 		}
 	}})
-	failedAndNeverReleased(t, run)
-	if indexOf(run.events, "node accept-candidate.mjs") >= 0 {
-		t.Errorf("the gate ran on a commit that is not external-tls-only")
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", strings.Join(run.events, "\n"), run.logs)
+	}
+	if got := git(t, run.remote, "show", run.head(t)+":crn-delivery.json"); got != tlsDelivery {
+		t.Errorf("crn-delivery.json in the commit = %q", got)
 	}
 }
 
@@ -791,14 +831,10 @@ func TestTheImageIsBuiltFromThePushedCommitOnly(t *testing.T) {
 				a.t.Fatal(err)
 			}
 		}
-		// A file that appears after the commit took its snapshot is untracked at build time.
-		hook := filepath.Join(a.spec.WorkDir, ".git/hooks/post-commit")
-		if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
-			a.t.Fatal(err)
-		}
-		if err := os.WriteFile(hook, []byte("#!/bin/sh\necho untracked > untracked.txt\necho edited > app.js\n"), 0o755); err != nil {
-			a.t.Fatal(err)
-		}
+	}, remoteHook: func(workDir string) string {
+		// The workspace moves on after the commit took its snapshot, as a process the agent
+		// left behind could make it: a file that is untracked at build time, and an edit.
+		return fmt.Sprintf("#!/bin/sh\necho untracked > %q\necho edited > %q\n", filepath.Join(workDir, "untracked.txt"), filepath.Join(workDir, "app.js"))
 	}})
 	if !hasStatus(run, "released") {
 		t.Fatalf("no released:\n%s\n%s", strings.Join(run.events, "\n"), run.logs)
@@ -852,19 +888,20 @@ func TestTheImageIsBuiltFromThePushedCommitOnly(t *testing.T) {
 	}
 }
 
-// The commit the image is built from must be the one the remote holds. A hook in the
-// workspace can leave the checkout on another commit than the one it pushed.
+// The commit the image is built from must be the one the remote holds. Here the remote
+// itself puts the branch back after the push.
 func TestACommitTheRemoteDoesNotHoldFailsTheBuild(t *testing.T) {
 	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) {
-		hook := filepath.Join(a.spec.WorkDir, ".git/hooks/pre-push")
-		if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(a.spec.WorkDir, "app.js"), []byte("changed\n"), 0o644); err != nil {
 			a.t.Fatal(err)
 		}
-		if err := os.WriteFile(hook, []byte("#!/bin/sh\ngit commit -q --allow-empty -m 'not pushed' --no-verify\nexit 0\n"), 0o755); err != nil {
-			a.t.Fatal(err)
-		}
+	}, remoteHook: func(string) string {
+		return "#!/bin/sh\nwhile read old new ref; do git update-ref \"$ref\" \"$old\"; done\n"
 	}})
 	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "the remote's") {
+		t.Errorf("the failure does not say why: %s", failedMessage(run))
+	}
 	if indexOf(run.events, "docker build") >= 0 {
 		t.Errorf("it built from a commit the remote does not hold:\n%s", strings.Join(run.events, "\n"))
 	}
@@ -891,8 +928,44 @@ func TestLabelsAreReadFromTheCommitNotTheWorkspace(t *testing.T) {
 
 // --- 3. what the commit's history holds -----------------------------------------------------
 
-// A value committed and removed again is not in the final tree, but git pushed it.
-func TestAValueInAnEarlierCommitFailsTheBuild(t *testing.T) {
+// A real value in what the build would commit stops it before the push: the remote never
+// holds it.
+func TestAValueInTheCommitIsReadBeforeThePush(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) {
+		if err := os.WriteFile(filepath.Join(a.spec.WorkDir, "notes.txt"), []byte("dial "+testValueHost+"\n"), 0o644); err != nil {
+			a.t.Fatal(err)
+		}
+	}})
+	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "the commits this build added") {
+		t.Errorf("the failure does not say where: %s", failedMessage(run))
+	}
+	if head := run.head(t); head != run.seed {
+		t.Errorf("the remote moved to %s, a commit with a real value in it was pushed", head)
+	}
+	if indexOf(run.events, "docker build") >= 0 {
+		t.Errorf("it went on to build:\n%s", strings.Join(run.events, "\n"))
+	}
+}
+
+// What the push prints is read too, and stops the build before the image.
+func TestARealValueThePushPrintsStopsTheBuild(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) {
+		if err := os.WriteFile(filepath.Join(a.spec.WorkDir, "app.js"), []byte("changed\n"), 0o644); err != nil {
+			a.t.Fatal(err)
+		}
+	}, remoteHook: func(string) string {
+		return "#!/bin/sh\necho 'dial " + testValueHost + "'\n"
+	}})
+	failedAndNeverReleased(t, run)
+	if indexOf(run.events, "docker build") >= 0 {
+		t.Errorf("it went on to build:\n%s", strings.Join(run.events, "\n"))
+	}
+}
+
+// A value the agent committed and removed again stays in the workspace's .git. CRN commits
+// the files it finds, on top of the branch, so that history never reaches the remote.
+func TestAnAgentsOwnCommitsAreNotPushed(t *testing.T) {
 	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) {
 		dir := a.spec.WorkDir
 		if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("dial "+testValueHost+"\n"), 0o644); err != nil {
@@ -903,10 +976,22 @@ func TestAValueInAnEarlierCommitFailsTheBuild(t *testing.T) {
 		if err := os.Remove(filepath.Join(dir, "notes.txt")); err != nil {
 			a.t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(dir, "app.js"), []byte("kept\n"), 0o644); err != nil {
+			a.t.Fatal(err)
+		}
 	}})
-	failedAndNeverReleased(t, run)
-	if !strings.Contains(failedMessage(run), "the commits this build added") {
-		t.Errorf("the failure does not say where: %s", failedMessage(run))
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", strings.Join(run.events, "\n"), run.logs)
+	}
+	head := run.head(t)
+	if parent := git(t, run.remote, "rev-parse", head+"^"); parent != run.seed {
+		t.Errorf("the pushed commit's parent is %s, want the branch's head %s", parent, run.seed)
+	}
+	if got := git(t, run.remote, "show", head+":app.js"); got != "kept" {
+		t.Errorf("app.js = %q", got)
+	}
+	if objects := git(t, run.remote, "rev-list", "--objects", "--all"); strings.Contains(objects, "notes.txt") {
+		t.Errorf("the agent's commit reached the remote:\n%s", objects)
 	}
 }
 

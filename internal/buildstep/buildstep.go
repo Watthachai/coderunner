@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -186,14 +185,15 @@ func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, 
 	}
 
 	// Commit. A "nothing to commit" exit is non-fatal — we still push HEAD.
-	if _, err := runGit(ctx, dir, log, "-c", "commit.gpgsign=false", "commit", "-m", message); err != nil {
+	if _, err := runGit(ctx, dir, log, "commit", "-m", message); err != nil {
 		log.Info("git commit produced no new commit (continuing to push HEAD)", "detail", err.Error())
 	}
 
+	// To the URL, not to "origin": a pushurl in the repo's config would win over set-url.
 	refspec := "HEAD:refs/heads/" + branch
-	push := []string{"push", "origin", refspec}
+	push := []string{"push", remote, refspec}
 	if force {
-		push = []string{"push", "--force", "origin", refspec}
+		push = []string{"push", "--force", remote, refspec}
 	}
 	if _, err := runGit(ctx, dir, log, push...); err != nil {
 		return "", err
@@ -204,6 +204,20 @@ func GitCommitAndPush(ctx context.Context, dir, remote, branch, message string, 
 		return "", err
 	}
 	return strings.TrimSpace(sha), nil
+}
+
+// gitVerb is the subcommand among args, past any leading options.
+func gitVerb(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-c" {
+			i++
+			continue
+		}
+		if !strings.HasPrefix(args[i], "-") {
+			return args[i]
+		}
+	}
+	return ""
 }
 
 // excludeBody is the .git/info/exclude content applied to every build repo so
@@ -278,9 +292,7 @@ func GitCloneOrPull(ctx context.Context, dir, remote, branch string, logger *slo
 // logger, and returns stdout. A non-zero exit yields an error that includes the
 // captured output so callers can log/inspect it.
 func runGit(ctx context.Context, dir string, log *slog.Logger, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd := gitCommand(ctx, dir, args...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -289,7 +301,7 @@ func runGit(ctx context.Context, dir string, log *slog.Logger, args ...string) (
 	err := cmd.Run()
 	out := strings.TrimRight(stdout.String(), "\n")
 	errOut := strings.TrimRight(stderr.String(), "\n")
-	recordOutput(ctx, "git "+args[0], append(stdout.Bytes(), stderr.Bytes()...))
+	recordOutput(ctx, "git "+gitVerb(args), append(stdout.Bytes(), stderr.Bytes()...))
 	log.Info("git", "args", strings.Join(args, " "), "stdout", out, "stderr", errOut)
 	if err != nil {
 		return out, fmt.Errorf("buildstep: git %s: %w: %s", strings.Join(args, " "), err, errOut)
