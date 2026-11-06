@@ -405,9 +405,10 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	org := uuid.New()
 	st := &pipelineStore{}
 	var logs strings.Builder
-	logger := slog.New(slog.NewTextHandler(&syncWriter{w: &logs}, nil))
+	sink := &syncWriter{w: &logs}
+	logger := slog.New(slog.NewTextHandler(sink, nil))
 	if testing.Verbose() {
-		logger = slog.New(slog.NewTextHandler(io.MultiWriter(&syncWriter{w: &logs}, os.Stderr), nil))
+		logger = slog.New(slog.NewTextHandler(io.MultiWriter(sink, os.Stderr), nil))
 	}
 	var mgr *manager
 	var runner domain.ClaudeRunner
@@ -437,7 +438,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	defer mu.Unlock()
 	run.events = strings.Split(strings.TrimSpace(string(raw)), "\n")
 	run.store = st
-	run.logs = logs.String()
+	run.logs = sink.read(&logs)
 	if seen, err := os.ReadFile(listSeen); err == nil {
 		run.listSeen = string(seen)
 	}
@@ -477,6 +478,13 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.w.Write(p)
+}
+
+// read takes what was written so far. A callback's goroutine can still be logging.
+func (s *syncWriter) read(logs *strings.Builder) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return logs.String()
 }
 
 // indexOf is the position of the first event holding every part, -1 when none.
