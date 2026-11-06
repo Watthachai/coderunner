@@ -308,7 +308,8 @@ case "${1:-}" in
 	tags_after=$(read_tags) || stop "the tags could not be read after the revoke"
 	say "--- every tag, after"
 	say "$tags_after"
-	changed=$(diff <(printf '%s\n' "$tags_before") <(printf '%s\n' "$tags_after") | grep -E '^[<>]' || true)
+	# An image's first tag replaces its "(no tags)" line: that is this tag, not another change.
+	changed=$(diff <(printf '%s\n' "$tags_before") <(printf '%s\n' "$tags_after") | grep -E '^[<>]' | grep -vxF "< ${image%:*} (no tags)" || true)
 	case "$changed" in
 	"> ${image%:*} ${image##*:} "*)
 		[ "$(printf '%s\n' "$changed" | wc -l | tr -d ' ')" = 1 ] || stop "more than the one tag changed"

@@ -84,6 +84,7 @@ func (m *machineFake) run(stdin string, env []string, args ...string) (string, e
 	cmd.Env = append([]string{"HOME=" + m.home, "CRN_PUSH_WINDOW_PATH=" + m.bin + ":/opt/homebrew/bin:/usr/bin:/bin"}, env...)
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
+	m.t.Logf("push-window.sh %s: exit %v\n%s", strings.Join(args, " "), err, out)
 	return string(out), err
 }
 
@@ -496,6 +497,10 @@ root@*)
 	*) step=unknown ;;
 	esac
 	note "$step $cmd"
+	if [ "$step" = show ]; then
+		n=$(( $(cat "$FAKE/shows" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE/shows"
+		fails "show-$n" && { echo "show $n failed" >&2; exit 1; }
+	fi
 	if fails "$step"; then
 		[ "$step" = writelog ] && printf '== summary\nWRONG: a write outside the allowed image\nWRITE LOG FAILED: 1 problem(s)\n'
 		echo "$step failed" >&2
@@ -505,6 +510,7 @@ root@*)
 	create)
 		n=$(( $(cat "$FAKE/made" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE/made"
 		fails create-unnamed && { echo "CRNTOKEN gitlab+deploy-token-$n:gldt-secret-$n"; exit 0; }
+		fails create-noid && { echo "CRNMETA name=crn-push-window-10$n live_before=0 live_after=1 username=u expires_epoch=2 gitlab_clock=t scopes=s"; echo "CRNTOKEN gitlab+deploy-token-$n:gldt-secret-$n"; exit 0; }
 		fails create-tokenless && { echo "CRNMETA id=$n name=crn-push-window-10$n live_before=0 live_after=1 username=u expires_epoch=2 gitlab_clock=t scopes=s"; exit 0; }
 		before=0; fails create-count && before=1
 		echo "CRNMETA id=$n name=crn-push-window-10$n live_before=$before live_after=1 username=gitlab+deploy-token-$n created_at=c expires_at=e expires_epoch=2 gitlab_clock=t scopes=read_registry,write_registry"
@@ -524,7 +530,9 @@ macagents@*)
 		n=$(( $(cat "$FAKE/tagreads" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE/tagreads"
 		note tags
 		{ fails tags || fails "tags-$n"; } && { echo TAGS FAILED >&2; exit 1; }
-		if [ "$n" -gt 1 ] && [ -f "$FAKE/tags-after" ]; then cat "$FAKE/tags-after"; else echo "fitt/x/ntc v2 sha256:2"; fi ;;
+		if [ "$n" -gt 1 ] && [ -f "$FAKE/tags-after" ]; then cat "$FAKE/tags-after"
+		elif [ -f "$FAKE/tags-before" ]; then cat "$FAKE/tags-before"
+		else echo "fitt/x/ntc v2 sha256:2"; fi ;;
 	*" baseline") note baseline; fails baseline && { echo "baseline saved: 1 lines, sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; exit 1; }; echo "baseline saved: 1 lines, sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
 	*" status "*) cat "$FAKE/status" ;;
 	*" check "*) note "check $cmd"; fails check && { echo CHECK FAILED; exit 1; }; echo CHECK PASSED ;;
@@ -560,8 +568,8 @@ func runWindow(t *testing.T, failing []string, stdin string, args ...string) win
 	writeShim(t, bin, "ssh", sshFake)
 	writeShim(t, bin, "sleep", `echo "$1" >> "$FAKE/sleeps"`)
 	for _, name := range failing {
-		if content, ok := strings.CutPrefix(name, "tags-after="); ok {
-			if err := os.WriteFile(filepath.Join(fake, "tags-after"), []byte(content), 0o600); err != nil {
+		if file, content, ok := strings.Cut(name, "="); ok {
+			if err := os.WriteFile(filepath.Join(fake, file), []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			continue
@@ -693,7 +701,7 @@ func TestTheRehearsalPassesOnlyWhenEveryStepHeld(t *testing.T) {
 	}
 
 	nothingMade := map[string]bool{"connect": true, "sessions": true, "tags": true, "tags-1": true}
-	for _, failing := range []string{"connect", "sessions", "tags-1", "create", "create-unnamed", "create-tokenless", "create-two", "create-count", "scope", "show", "show-no-jwt", "revoke", "dead", "tags-2", "writelog", "tags-after=fitt/x/ntc v2 sha256:other\n"} {
+	for _, failing := range []string{"connect", "sessions", "tags-1", "create", "create-unnamed", "create-tokenless", "create-two", "create-count", "create-noid", "scope", "show", "show-1", "show-2", "show-no-jwt", "revoke", "dead", "tags-2", "writelog", "tags-after=fitt/x/ntc v2 sha256:other\n"} {
 		t.Run(failing, func(t *testing.T) {
 			run := runWindow(t, []string{failing}, "", "--rehearse")
 			run.mustStop(t)
@@ -701,10 +709,10 @@ func TestTheRehearsalPassesOnlyWhenEveryStepHeld(t *testing.T) {
 			if nothingMade[failing] && strings.Contains(run.steps(), "create") {
 				t.Errorf("a token was made: %s", run.steps())
 			}
-			if strings.HasPrefix(failing, "create") && failing != "create" && failing != "create-unnamed" && !strings.Contains(run.steps(), "revoke ") {
+			if strings.HasPrefix(failing, "create") && failing != "create" && failing != "create-unnamed" && failing != "create-noid" && !strings.Contains(run.steps(), "revoke ") {
 				t.Errorf("a token it knew was not revoked by id: %s", run.steps())
 			}
-			if strings.Contains(run.steps(), "revoke-unknown") && failing != "create" && failing != "create-unnamed" {
+			if strings.Contains(run.steps(), "revoke-unknown") && failing != "create" && failing != "create-unnamed" && failing != "create-noid" {
 				t.Errorf("revoked by name when it knew the id: %s", run.steps())
 			}
 			if !nothingMade[failing] && !strings.Contains(run.steps(), "writelog") {
@@ -713,9 +721,11 @@ func TestTheRehearsalPassesOnlyWhenEveryStepHeld(t *testing.T) {
 		})
 	}
 	t.Run("a token it cannot name is not used", func(t *testing.T) {
-		run := runWindow(t, []string{"create-unnamed"}, "", "--rehearse")
-		if strings.Contains(run.steps(), "scope") {
-			t.Errorf("it went on with a token it cannot revoke by id: %s", run.steps())
+		for _, failing := range []string{"create-unnamed", "create-noid"} {
+			run := runWindow(t, []string{failing}, "", "--rehearse")
+			if strings.Contains(run.steps(), "scope") {
+				t.Errorf("%s: it went on with a token it cannot revoke by id: %s", failing, run.steps())
+			}
 		}
 	})
 	t.Run("the emergency revoke is never a pass", func(t *testing.T) {
@@ -791,24 +801,25 @@ func TestThePushWindowPassesOnlyWhenEveryStepHeld(t *testing.T) {
 		// made is whether a token existed, so one must have been revoked.
 		made bool
 	}{
-		"the check fails":           {[]string{"check"}, "yes\n", false},
-		"no baseline recorded":      {[]string{"no-record"}, "yes\n", false},
-		"the operator says no":      {nil, "no\n", false},
-		"nobody answers":            {nil, "", false},
-		"no connection":             {[]string{"connect"}, "yes\n", false},
-		"the tags cannot be read":   {[]string{"tags-1"}, "yes\n", false},
-		"scope fails":               {[]string{"scope"}, "yes\n", true},
-		"receive fails":             {[]string{"receive"}, "yes\n", true},
-		"show fails":                {[]string{"show"}, "yes\n", true},
-		"no PUSHED in time":         {[]string{"never-pushed"}, "yes\n", true},
-		"revoke fails":              {[]string{"revoke"}, "yes\n", true},
-		"it is not dead":            {[]string{"dead"}, "yes\n", true},
-		"the write log fails":       {[]string{"writelog"}, "yes\n", true},
-		"the tags after are unread": {[]string{"tags-2"}, "yes\n", true},
-		"no new tag":                {[]string{"tags-after=fitt/x/ntc v2 sha256:2\n"}, "yes\n", true},
-		"another tag moved":         {[]string{"tags-after=fitt/x/ntc v2 sha256:other\nfitt/x/ntc v3 sha256:3\n"}, "yes\n", true},
-		"a second new tag":          {[]string{"tags-after=fitt/x/ntc v2 sha256:2\nfitt/x/ntc v3 sha256:3\nfitt/x/ntc v4 sha256:4\n"}, "yes\n", true},
-		"another image got the tag": {[]string{"tags-after=fitt/x/hello v3 sha256:3\nfitt/x/ntc v2 sha256:2\n"}, "yes\n", true},
+		"the check fails":                  {[]string{"check"}, "yes\n", false},
+		"no baseline recorded":             {[]string{"no-record"}, "yes\n", false},
+		"the operator says no":             {nil, "no\n", false},
+		"nobody answers":                   {nil, "", false},
+		"no connection":                    {[]string{"connect"}, "yes\n", false},
+		"the tags cannot be read":          {[]string{"tags-1"}, "yes\n", false},
+		"scope fails":                      {[]string{"scope"}, "yes\n", true},
+		"receive fails":                    {[]string{"receive"}, "yes\n", true},
+		"show fails":                       {[]string{"show"}, "yes\n", true},
+		"no PUSHED in time":                {[]string{"never-pushed"}, "yes\n", true},
+		"revoke fails":                     {[]string{"revoke"}, "yes\n", true},
+		"it is not dead":                   {[]string{"dead"}, "yes\n", true},
+		"the write log fails":              {[]string{"writelog"}, "yes\n", true},
+		"the tags after are unread":        {[]string{"tags-2"}, "yes\n", true},
+		"no new tag":                       {[]string{"tags-after=fitt/x/ntc v2 sha256:2\n"}, "yes\n", true},
+		"another tag moved":                {[]string{"tags-after=fitt/x/ntc v2 sha256:other\nfitt/x/ntc v3 sha256:3\n"}, "yes\n", true},
+		"a second new tag":                 {[]string{"tags-after=fitt/x/ntc v2 sha256:2\nfitt/x/ntc v3 sha256:3\nfitt/x/ntc v4 sha256:4\n"}, "yes\n", true},
+		"another image got the tag":        {[]string{"tags-after=fitt/x/hello v3 sha256:3\nfitt/x/ntc v2 sha256:2\n"}, "yes\n", true},
+		"another image lost its emptiness": {[]string{"tags-before=fitt/x/hello (no tags)\nfitt/x/ntc (no tags)\n", "tags-after=fitt/x/hello v1 sha256:1\nfitt/x/ntc v3 sha256:3\n"}, "yes\n", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			run := runWindow(t, c.failing, c.stdin, testProject, testJob, testImage)
@@ -825,6 +836,10 @@ func TestThePushWindowPassesOnlyWhenEveryStepHeld(t *testing.T) {
 			}
 		})
 	}
+	t.Run("an image's first tag is that tag", func(t *testing.T) {
+		run := runWindow(t, []string{"tags-before=fitt/x/hello (no tags)\nfitt/x/ntc (no tags)\n", "tags-after=fitt/x/hello (no tags)\nfitt/x/ntc v3 sha256:3\n"}, "yes\n", testProject, testJob, testImage)
+		run.mustPass(t, "PUSH WINDOW")
+	})
 	t.Run("a scope failure hands nothing over", func(t *testing.T) {
 		run := runWindow(t, []string{"scope"}, "yes\n", testProject, testJob, testImage)
 		if strings.Contains(run.steps(), "receive") {
@@ -833,6 +848,7 @@ func TestThePushWindowPassesOnlyWhenEveryStepHeld(t *testing.T) {
 	})
 	for name, args := range map[string][]string{
 		"no job named":          {testProject},
+		"a bad job":             {testProject, "not-a-job", testImage},
 		"no image named":        {testProject, testJob},
 		"a bad image":           {testProject, testJob, "ntc:v3"},
 		"an image with a space": {testProject, testJob, "fitt/x/ntc:v3 bash"},
@@ -869,6 +885,7 @@ func runRegistryScript(t *testing.T, script, rails string, env ...string) (strin
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	t.Logf("%s %v: exit %v, stdout %q", script, env, err, stdout.String())
 	return stdout.String(), marks, err
 }
 
@@ -1203,6 +1220,13 @@ func TestARehearsalsWriteLogAllowsNoWrite(t *testing.T) {
 	t.Run("logs that show nothing prove nothing", func(t *testing.T) {
 		f := newWriteLogFake(t)
 		if out, err := f.run(""); err == nil || !strings.Contains(out, "shows nothing") {
+			t.Errorf("exit %v", err)
+		}
+	})
+	t.Run("nginx showing nothing proves nothing", func(t *testing.T) {
+		f := newWriteLogFake(t)
+		f.registryOnly("00:10", "POST", outside, 401)
+		if out, err := f.run(""); err == nil || !strings.Contains(out, "nginx: no line") {
 			t.Errorf("exit %v", err)
 		}
 	})
