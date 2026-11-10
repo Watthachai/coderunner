@@ -361,7 +361,7 @@ func TestAPushCredentialErrorNeverQuotesTheFile(t *testing.T) {
 }
 
 func TestTheBuildsDockerConfigHoldsNoLogin(t *testing.T) {
-	dir, err := NewBuildDockerConfig()
+	dir, err := NewBuildDockerConfig("172.168.1.234:5050")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,11 +369,48 @@ func TestTheBuildsDockerConfigHoldsNoLogin(t *testing.T) {
 	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
 		t.Errorf("the directory: %v, %v", info, err)
 	}
-	if raw, _ := os.ReadFile(filepath.Join(dir, "config.json")); strings.TrimSpace(string(raw)) != "{}" {
+	if raw, _ := os.ReadFile(filepath.Join(dir, "config.json")); strings.TrimSpace(string(raw)) != `{"auths":{"172.168.1.234:5050":{}}}` {
 		t.Errorf("the file holds %q", raw)
+	}
+	for _, bad := range []string{"", "172.168.1.234:5050/fitt", "a b", `a"b`} {
+		if dir, err := NewBuildDockerConfig(bad); err == nil {
+			_ = os.RemoveAll(dir)
+			t.Errorf("a config for host %q", bad)
+		}
 	}
 	if target, err := os.Readlink(filepath.Join(dir, "cli-plugins", "docker-buildx")); err != nil || target != buildxPlugin {
 		t.Errorf("the plugin links to %q, %v", target, err)
+	}
+}
+
+// NTC build 3, 9 Nov: the acceptance step read the registry with the keychain's revoked
+// crn-push. A config that names no login is not a config without one: docker then looks
+// for the platform's credential store (on macOS docker-credential-osxkeychain) by itself.
+func TestTheBuildsDockerConfigAsksNoCredentialStore(t *testing.T) {
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skip("no docker CLI")
+	}
+	bin, marks := t.TempDir(), t.TempDir()
+	helper := "#!/bin/sh\necho \"$0 $1\" >> '" + filepath.Join(marks, "asked") + "'\n" +
+		`printf '{"ServerURL":"127.0.0.1:1","Username":"leak","Secret":"leak"}'` + "\n"
+	for _, name := range []string{"docker-credential-osxkeychain", "docker-credential-desktop", "docker-credential-secretservice", "docker-credential-pass", "docker-credential-wincred"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(helper), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+filepath.Dir(docker)+string(os.PathListSeparator)+"/usr/bin:/bin")
+	dir, err := NewBuildDockerConfig("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	ctx, cancel := context.WithTimeout(WithDockerConfig(context.Background(), dir), 30*time.Second)
+	defer cancel()
+	// Nothing answers there: only whether docker asked a store for a login matters.
+	out, _ := dockerCommand(ctx, "manifest", "inspect", "--insecure", "127.0.0.1:1/crn/accept:v1").CombinedOutput()
+	if raw, err := os.ReadFile(filepath.Join(marks, "asked")); err == nil {
+		t.Errorf("docker asked a credential store for a login: %s(docker said %q)", raw, strings.TrimSpace(string(out)))
 	}
 }
 
@@ -1189,7 +1226,7 @@ func TestDockerUsesOnlyTheConfigItIsGivenForReal(t *testing.T) {
 	writeTree(t, build, "Dockerfile", "FROM scratch\nCOPY a.txt /a.txt\n")
 	writeTree(t, build, "a.txt", fmt.Sprintf("push window %d\n", time.Now().UnixNano()))
 
-	noLogin, err := NewBuildDockerConfig()
+	noLogin, err := NewBuildDockerConfig(host)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -140,7 +140,19 @@ func ReadPushCredential(path string, notBefore time.Time, registryHost string) (
 
 // NewBuildDockerConfig makes the docker config a listed build uses for everything but the
 // push: no login, and Docker Desktop's own buildx. The caller removes it.
-func NewBuildDockerConfig() (string, error) {
+//
+// It names registryHost, the delivery registry, with an empty login. A config that names no
+// login at all is not one without a login: docker then picks the platform's credential store
+// by itself (on macOS docker-credential-osxkeychain, which holds the machine's standing login)
+// and sends what it finds. With one login named, empty, docker asks no store, for any host.
+func NewBuildDockerConfig(registryHost string) (string, error) {
+	if registryHost == "" || strings.ContainsAny(registryHost, "/ \t\n\"\\") {
+		return "", fmt.Errorf("a registry host, not %q", registryHost)
+	}
+	config, err := json.Marshal(map[string]any{"auths": map[string]any{registryHost: map[string]any{}}})
+	if err != nil {
+		return "", err
+	}
 	dir, err := os.MkdirTemp("", "crn-docker-")
 	if err != nil {
 		return "", err
@@ -150,7 +162,7 @@ func NewBuildDockerConfig() (string, error) {
 		err = os.Symlink(buildxPlugin, filepath.Join(plugins, "docker-buildx"))
 	}
 	if err == nil {
-		err = os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}\n"), 0o600)
+		err = os.WriteFile(filepath.Join(dir, "config.json"), append(config, '\n'), 0o600)
 	}
 	if err != nil {
 		_ = os.RemoveAll(dir)

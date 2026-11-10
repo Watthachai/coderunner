@@ -186,6 +186,26 @@ func TestACredentialThatIsNotAsAgreedIsRefused(t *testing.T) {
 	}
 }
 
+// namesNoLogin says a docker config holds no login and lets docker find none: it names at
+// least one registry, every one with an empty login, and no credential store or helper. A
+// config naming no registry at all ("{}") makes docker ask the platform's store by itself.
+func namesNoLogin(config string) bool {
+	var c struct {
+		Auths       map[string]map[string]any `json:"auths"`
+		CredsStore  *string                   `json:"credsStore"`
+		CredHelpers map[string]string         `json:"credHelpers"`
+	}
+	if json.Unmarshal([]byte(config), &c) != nil || c.CredsStore != nil || len(c.CredHelpers) != 0 || len(c.Auths) == 0 {
+		return false
+	}
+	for _, login := range c.Auths {
+		if len(login) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // docker gets a config of its own for the build and another for the push, and never reads
 // ~/.docker, which an agent can write. What the operator left is moved, not copied.
 func TestThePushUsesOnlyTheCredentialItWasGiven(t *testing.T) {
@@ -206,8 +226,8 @@ func TestThePushUsesOnlyTheCredentialItWasGiven(t *testing.T) {
 				seen[verb] = dir
 			}
 		}
-		if rest, ok := strings.CutPrefix(line, "docker-auth build "); ok && rest != "{}" {
-			t.Errorf("docker build held a login: %s", rest)
+		if rest, ok := strings.CutPrefix(line, "docker-auth build "); ok && !namesNoLogin(rest) {
+			t.Errorf("docker build held a login, or could ask a store for one: %s", rest)
 		}
 		if rest, ok := strings.CutPrefix(line, "docker-auth push "); ok && rest != goodCredential {
 			t.Errorf("docker push read %q", rest)

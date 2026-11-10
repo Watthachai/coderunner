@@ -1301,8 +1301,9 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		if m.registryFor(job) == "" {
 			return "", errors.New("candidate acceptance: an external-tls-only build needs a registry to push to")
 		}
-		// docker reads no ~/.docker, which an agent can write, from here on.
-		if gate.dockerDir, err = buildstep.NewBuildDockerConfig(); err != nil {
+		// docker reads no ~/.docker, which an agent can write, from here on, and no keychain.
+		registryHost, _, _ := strings.Cut(m.registryFor(job), "/")
+		if gate.dockerDir, err = buildstep.NewBuildDockerConfig(registryHost); err != nil {
 			return "", fmt.Errorf("candidate acceptance: %w", err)
 		}
 		ctx = buildstep.WithDockerConfig(ctx, gate.dockerDir)
