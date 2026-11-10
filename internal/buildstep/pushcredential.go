@@ -42,8 +42,8 @@ func WithDockerConfig(ctx context.Context, dir string) context.Context {
 // builder or plugin, whatever config it is given.
 var dockerSteering = []string{"DOCKER_", "BUILDX_", "BUILDKIT_", "COMPOSE_"}
 
-// dockerEnv is this process's environment without any of that, and with the one config.
-func dockerEnv(dir string) []string {
+// unsteeredEnv is this process's environment without any of that.
+func unsteeredEnv() []string {
 	var env []string
 	for _, entry := range os.Environ() {
 		steers := false
@@ -54,7 +54,12 @@ func dockerEnv(dir string) []string {
 			env = append(env, entry)
 		}
 	}
-	return append(env, "DOCKER_CONFIG="+dir)
+	return env
+}
+
+// dockerEnv is this process's environment without any of that, and with the one config.
+func dockerEnv(dir string) []string {
+	return append(unsteeredEnv(), "DOCKER_CONFIG="+dir)
 }
 
 // dockerCommand is how this package runs docker.

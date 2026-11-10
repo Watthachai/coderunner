@@ -13,5 +13,6 @@ fi
 refuse_if_busy
 git pull --ff-only
 go build -o bin/crn-server ./cmd/server
+go build -o bin/crn-push ./cmd/crn-push
 launchctl kickstart -k "$domain/$label"
 wait_healthy

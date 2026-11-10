@@ -134,7 +134,10 @@ type manager struct {
 	forbiddenValuesDir string
 	// pushCredentialDir, pushCredentialWait and pushCredentialPoll belong to the push
 	// window (pushwindow.go).
-	pushCredentialDir  string
+	pushCredentialDir string
+	// pushHelper, when set, pushes a listed project's build instead of the window
+	// (autopush.go).
+	pushHelper         []string
 	pushCredentialWait time.Duration
 	pushCredentialPoll time.Duration
 	pushWindowLimit    time.Duration
@@ -1321,7 +1324,11 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	digest := ""
 	registry := m.registryFor(job)
 	if registry != "" && gate != nil {
-		if digest, err = m.pushThroughWindow(ctx, job, gate, appTag, log); err != nil {
+		push := m.pushThroughWindow
+		if len(m.pushHelper) > 0 {
+			push = m.pushAutomatically
+		}
+		if digest, err = push(ctx, job, gate, appTag, log); err != nil {
 			return "", err
 		}
 	} else if registry != "" {

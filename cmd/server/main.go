@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/Watthachai/fitt-coderunner/internal/api"
@@ -142,6 +143,10 @@ func run() error {
 	}
 	if gated, ok := jobManager.(interface{ SetPushCredentialDir(string) }); ok {
 		gated.SetPushCredentialDir(cfg.PushCredentialDir)
+	}
+	if helped, ok := jobManager.(interface{ SetPushHelper([]string) }); ok && len(cfg.PushHelper) > 0 {
+		helped.SetPushHelper(cfg.PushHelper)
+		logger.Info("listed builds push through the push helper", "helper", strings.Join(cfg.PushHelper, " "))
 	}
 	if hooked, ok := jobManager.(interface{ SetBeforeBuild(func(context.Context)) }); ok {
 		hooked.SetBeforeBuild(authMonitor.CheckStatus)

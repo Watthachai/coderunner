@@ -158,6 +158,12 @@ type Config struct {
 	// next to it. Default $HOME/crn-secrets/push.
 	PushCredentialDir string
 
+	// PushHelper is the command that pushes a listed project's build by itself, through
+	// the push helper (cmd/crn-push) that alone reads the registry login, such as
+	// "sudo -n -u _crnpush /opt/crn-push/crn-push". Empty keeps the push window, where an
+	// operator hands over a token for each push.
+	PushHelper []string
+
 	// MaxConcurrentBuilds caps how many builds run at once, server-wide. Builds
 	// of different projects run in parallel (they share no working dir), so this
 	// is the resource brake, not a correctness rule: each build ends in a docker
@@ -241,6 +247,7 @@ func Load() (*Config, error) {
 		ArtifactDir:        os.Getenv("CRN_ARTIFACT_DIR"),
 		ForbiddenValuesDir: getEnv("CRN_FORBIDDEN_VALUES_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "forbidden")),
 		PushCredentialDir:  getEnv("CRN_PUSH_CREDENTIAL_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "push")),
+		PushHelper:         strings.Fields(os.Getenv("CRN_PUSH_HELPER")),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
 		TerminalShell:      os.Getenv("CRN_TERMINAL_SHELL"),

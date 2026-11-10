@@ -47,6 +47,9 @@ case "$1" in
     [ -n "$FAKE_BUILD_RUNS" ] && eval "$FAKE_BUILD_RUNS"
     [ -n "$FAKE_BUILD_FAILS" ] && exit 1
     ;;
+  save)
+    printf 'oci layout of %s' "$2"
+    ;;
   push)
     [ -n "$FAKE_PUSH_OUTPUT" ] && echo "$FAKE_PUSH_OUTPUT"
     [ -n "$FAKE_PUSH_RUNS" ] && eval "$FAKE_PUSH_RUNS"
@@ -54,6 +57,16 @@ case "$1" in
     ;;
 esac
 exit 0
+`
+
+// A shell standing in for crn-push (cmd/crn-push): it records the call and what it was
+// given, and says the registry's digest. FAKE_HELPER_FAILS makes it refuse.
+const fakeHelper = `#!/bin/sh
+echo "crn-push $*" >> "$EVENTS"
+cat > "$HELPER_STDIN"
+env > "$HELPER_ENV"
+if [ -n "$FAKE_HELPER_FAILS" ]; then echo "crn-push: refused: $FAKE_HELPER_FAILS" >&2; exit 1; fi
+echo "pushed $2 ${FAKE_HELPER_DIGEST:-$FAKE_REGISTRY_DIGEST}"
 `
 
 // A shell standing in for Node: the release checker passes, and the candidate gate takes
@@ -293,6 +306,8 @@ type pipelineOpts struct {
 	queuedAgo time.Duration
 	// remoteHook is the remote's post-receive hook: the remote's own, not the workspace's.
 	remoteHook func(workDir string) string
+	// helper sets CRN's push helper to the fake crn-push, so no operator is involved.
+	helper bool
 }
 
 func runPipeline(t *testing.T, accept, deliveryJSON string, env map[string]string) pipelineRun {
@@ -322,7 +337,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for name, body := range map[string]string{"docker": pipelineDocker, "fake-node": fakeNode} {
+	for name, body := range map[string]string{"docker": pipelineDocker, "fake-node": fakeNode, "fake-crn-push": fakeHelper} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -349,6 +364,8 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	t.Setenv("FAKE_REGISTRY_DIGEST", fakeDigest)
 	t.Setenv("CONTEXT_COPY", contextCopy)
 	t.Setenv("LIST_SEEN", listSeen)
+	t.Setenv("HELPER_STDIN", filepath.Join(root, "helper-stdin"))
+	t.Setenv("HELPER_ENV", filepath.Join(root, "helper-env"))
 	dockerConfigs := filepath.Join(root, "docker-configs")
 	t.Setenv("CRN_TEST_DOCKER_LOG", dockerConfigs)
 	containers := filepath.Join(root, "containers")
@@ -361,7 +378,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.test")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.test")
-	for _, name := range []string{"FAKE_BUILD_OUTPUT", "FAKE_BUILD_RUNS", "FAKE_BUILD_FAILS", "FAKE_PUSH_OUTPUT", "FAKE_PUSH_FAILS", "FAKE_PUSH_RUNS", "FAKE_VERIFY_OUTPUT", "FAKE_ACCEPT_OUTPUT", "FAKE_ACCEPT_RUNS"} {
+	for _, name := range []string{"FAKE_BUILD_OUTPUT", "FAKE_BUILD_RUNS", "FAKE_BUILD_FAILS", "FAKE_PUSH_OUTPUT", "FAKE_PUSH_FAILS", "FAKE_PUSH_RUNS", "FAKE_VERIFY_OUTPUT", "FAKE_ACCEPT_OUTPUT", "FAKE_ACCEPT_RUNS", "FAKE_HELPER_FAILS", "FAKE_HELPER_DIGEST"} {
 		t.Setenv(name, "")
 	}
 	for k, v := range o.env {
@@ -492,7 +509,8 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 		}
 		pushed := false
 		if raw, err := os.ReadFile(events); err == nil {
-			pushed = strings.Contains(string(raw), "docker push") && os.Getenv("FAKE_PUSH_FAILS") == ""
+			pushed = (strings.Contains(string(raw), "docker push") && os.Getenv("FAKE_PUSH_FAILS") == "") ||
+				(strings.Contains(string(raw), "crn-push push") && os.Getenv("FAKE_HELPER_FAILS") == "")
 		}
 		if pushed {
 			tags[ref.Repository][ref.Tag] = fakeDigest
@@ -529,6 +547,9 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 		}
 		return nil, nil
 	}
+	if o.helper {
+		mgr.SetPushHelper([]string{filepath.Join(bin, "fake-crn-push")})
+	}
 	if o.manager != nil {
 		o.manager(mgr)
 	}
@@ -554,7 +575,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	operatorDone := make(chan struct{})
 	go func() {
 		defer close(operatorDone)
-		if o.noCredential || o.credentialFirst {
+		if o.noCredential || o.credentialFirst || o.helper {
 			return
 		}
 		ready := filepath.Join(run.credentialDir, "READY")
