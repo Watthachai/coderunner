@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 )
@@ -128,5 +129,61 @@ func TestWithAPushHelperAMachineThatChangedIsNeverPushed(t *testing.T) {
 	failedAndNeverReleased(t, run)
 	if indexOf(run.events, "crn-push") >= 0 {
 		t.Errorf("it pushed from a changed machine:\n%s", events(run))
+	}
+}
+
+// A project without a list pushes through the helper too, with nothing of the window.
+const localDelivery = `{"schema_version":1,"database":true}`
+
+func TestAnUnlistedBuildPushesThroughTheHelper(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery, agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
+	}
+	if indexOf(run.events, "crn-push push 172.168.1.234:5050/fitt/ftcdv-uat/crn-demo-app-") < 0 {
+		t.Errorf("the helper did not push:\n%s", events(run))
+	}
+	noRegistryWrite(t, run)
+	for _, b := range run.bodies {
+		if b["status"] == "released" && b["image_digest"] != fakeDigest {
+			t.Errorf("released carries digest %v, want %s", b["image_digest"], fakeDigest)
+		}
+	}
+}
+
+// The helper refuses while any agent runs; another build's agent may, so the build waits.
+func TestAnUnlistedBuildWaitsWhileAnotherAgentRuns(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery,
+		env:     map[string]string{"FAKE_HELPER_BUSY_TIMES": "2"},
+		manager: func(m *manager) { m.helperRetry = 5 * time.Millisecond },
+		agent:   func(a agentRun) { change(t, a.spec.WorkDir) }})
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
+	}
+	if n := strings.Count(events(run), "crn-push push"); n != 3 {
+		t.Errorf("the helper was asked %d times, want 3:\n%s", n, events(run))
+	}
+}
+
+func TestAnUnlistedBuildStopsWaitingInTime(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery,
+		env:     map[string]string{"FAKE_HELPER_BUSY_TIMES": "1000"},
+		manager: func(m *manager) { m.helperRetry = 5 * time.Millisecond; m.helperWait = 50 * time.Millisecond },
+		agent:   func(a agentRun) { change(t, a.spec.WorkDir) }})
+	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "an agent is running") {
+		t.Errorf("the failure does not say why: %s", failedMessage(run))
+	}
+}
+
+// Any other refusal is final: a tag that is there is never pushed again.
+func TestAnUnlistedBuildDoesNotRetryAnotherRefusal(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery,
+		env:     map[string]string{"FAKE_HELPER_FAILS": "the tag is already in the registry"},
+		manager: func(m *manager) { m.helperRetry = 5 * time.Millisecond },
+		agent:   func(a agentRun) { change(t, a.spec.WorkDir) }})
+	failedAndNeverReleased(t, run)
+	if n := strings.Count(events(run), "crn-push push"); n != 1 {
+		t.Errorf("the helper was asked %d times, want 1:\n%s", n, events(run))
 	}
 }

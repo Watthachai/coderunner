@@ -137,7 +137,11 @@ type manager struct {
 	pushCredentialDir string
 	// pushHelper, when set, pushes a listed project's build instead of the window
 	// (autopush.go).
-	pushHelper         []string
+	pushHelper []string
+	// helperWait and helperRetry bound how an unlisted build waits for the helper while
+	// another build's agent runs (autopush.go).
+	helperWait         time.Duration
+	helperRetry        time.Duration
 	pushCredentialWait time.Duration
 	pushCredentialPoll time.Duration
 	pushWindowLimit    time.Duration
@@ -1330,6 +1334,14 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 		}
 		if digest, err = push(ctx, job, gate, appTag, log); err != nil {
 			return "", err
+		}
+	} else if registry != "" && len(m.pushHelper) > 0 {
+		if digest, err = m.pushUnlisted(ctx, job, appTag, log); err != nil {
+			m.publish(job.ID, domain.BuildEventMsg{
+				Kind: domain.WSError, Text: "docker push (app) failed: " + err.Error(),
+				JobID: job.ID.String(), Timestamp: time.Now().UTC(),
+			})
+			return "", fmt.Errorf("docker push (app) failed: %w", err)
 		}
 	} else if registry != "" {
 		if err := buildstep.PushImage(ctx, appTag, log); err != nil {

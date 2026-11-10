@@ -158,10 +158,11 @@ type Config struct {
 	// next to it. Default $HOME/crn-secrets/push.
 	PushCredentialDir string
 
-	// PushHelper is the command that pushes a listed project's build by itself, through
-	// the push helper (cmd/crn-push) that alone reads the registry login, such as
-	// "sudo -n -u _crnpush /opt/crn-push/crn-push". Empty keeps the push window, where an
-	// operator hands over a token for each push.
+	// PushHelper is the command through which every build pushes by itself: the push
+	// helper (cmd/crn-push) that alone reads the registry login, such as
+	// "sudo -n -u _crnpush /opt/crn-push/crn-push". Empty keeps the push window for a
+	// listed project (an operator hands over a token for each push) and docker's own
+	// login for any other.
 	PushHelper []string
 
 	// MaxConcurrentBuilds caps how many builds run at once, server-wide. Builds

@@ -66,6 +66,10 @@ echo "crn-push $*" >> "$EVENTS"
 cat > "$HELPER_STDIN"
 env > "$HELPER_ENV"
 if [ -n "$FAKE_HELPER_FAILS" ]; then echo "crn-push: refused: $FAKE_HELPER_FAILS" >&2; exit 1; fi
+if [ -n "$FAKE_HELPER_BUSY_TIMES" ]; then
+  n=$(cat "$HELPER_STDIN.count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$HELPER_STDIN.count"
+  if [ "$n" -le "$FAKE_HELPER_BUSY_TIMES" ]; then echo "crn-push: refused: an agent is running (4242 claude): CRN pushes only once every agent has stopped" >&2; exit 1; fi
+fi
 echo "pushed $2 ${FAKE_HELPER_DIGEST:-$FAKE_REGISTRY_DIGEST}"
 `
 
@@ -378,7 +382,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.test")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.test")
-	for _, name := range []string{"FAKE_BUILD_OUTPUT", "FAKE_BUILD_RUNS", "FAKE_BUILD_FAILS", "FAKE_PUSH_OUTPUT", "FAKE_PUSH_FAILS", "FAKE_PUSH_RUNS", "FAKE_VERIFY_OUTPUT", "FAKE_ACCEPT_OUTPUT", "FAKE_ACCEPT_RUNS", "FAKE_HELPER_FAILS", "FAKE_HELPER_DIGEST"} {
+	for _, name := range []string{"FAKE_BUILD_OUTPUT", "FAKE_BUILD_RUNS", "FAKE_BUILD_FAILS", "FAKE_PUSH_OUTPUT", "FAKE_PUSH_FAILS", "FAKE_PUSH_RUNS", "FAKE_VERIFY_OUTPUT", "FAKE_ACCEPT_OUTPUT", "FAKE_ACCEPT_RUNS", "FAKE_HELPER_FAILS", "FAKE_HELPER_DIGEST", "FAKE_HELPER_BUSY_TIMES"} {
 		t.Setenv(name, "")
 	}
 	for k, v := range o.env {

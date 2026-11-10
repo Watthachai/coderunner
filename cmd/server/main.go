@@ -146,7 +146,7 @@ func run() error {
 	}
 	if helped, ok := jobManager.(interface{ SetPushHelper([]string) }); ok && len(cfg.PushHelper) > 0 {
 		helped.SetPushHelper(cfg.PushHelper)
-		logger.Info("listed builds push through the push helper", "helper", strings.Join(cfg.PushHelper, " "))
+		logger.Info("every build pushes through the push helper", "helper", strings.Join(cfg.PushHelper, " "))
 	}
 	if hooked, ok := jobManager.(interface{ SetBeforeBuild(func(context.Context)) }); ok {
 		hooked.SetBeforeBuild(authMonitor.CheckStatus)

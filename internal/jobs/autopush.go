@@ -5,15 +5,18 @@ import (
 
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
+	"github.com/Watthachai/fitt-coderunner/internal/registrypush"
 )
 
-// SetPushHelper has a listed project's build push by itself, through CRN's push helper
-// (cmd/crn-push), instead of waiting for an operator's token. helper is the command that
-// runs it, such as sudo -n -u _crnpush /opt/crn-push/crn-push; empty keeps the push window.
+// SetPushHelper has every build push by itself, through CRN's push helper (cmd/crn-push):
+// a listed project's build instead of waiting for an operator's token, any other instead
+// of docker's own login. helper is the command that runs it, such as
+// sudo -n -u _crnpush /opt/crn-push/crn-push; empty keeps the window and docker's login.
 func (m *manager) SetPushHelper(helper []string) { m.pushHelper = append([]string(nil), helper...) }
 
 // pushAutomatically is the push of a listed project's build when CRN has a push helper. It
@@ -82,4 +85,39 @@ func countTags(tags buildstep.RegistryTags) int {
 		n += len(t)
 	}
 	return n
+}
+
+const (
+	// helperWait is how long an unlisted build waits for other builds' agents to stop.
+	helperWait = 30 * time.Minute
+	// helperRetry is how often it asks the helper again meanwhile.
+	helperRetry = 30 * time.Second
+)
+
+// pushUnlisted is the push of a project without a list when CRN has a push helper. It has
+// no gate: it pushes as soon as the helper agrees. The helper refuses while any agent runs
+// on the machine, and another build's agent may be running, so it asks again until none
+// is, for at most helperWait. Any other refusal is final.
+func (m *manager) pushUnlisted(ctx context.Context, job *domain.Job, appTag string, log *slog.Logger) (string, error) {
+	deadline := time.Now().Add(orDefault(m.helperWait, helperWait))
+	waiting := false
+	for {
+		digest, err := buildstep.PushThroughHelper(ctx, m.pushHelper, appTag, log)
+		if err == nil {
+			m.publishText(job.ID, fmt.Sprintf("Pushed %s = %s through CRN's push helper.", appTag, digest))
+			return digest, nil
+		}
+		if !strings.Contains(err.Error(), registrypush.AgentRunning) || time.Now().After(deadline) {
+			return "", err
+		}
+		if !waiting {
+			waiting = true
+			m.publishText(job.ID, "Waiting for the other builds' agents to stop: the push helper pushes only when no agent runs.")
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(orDefault(m.helperRetry, helperRetry)):
+		}
+	}
 }

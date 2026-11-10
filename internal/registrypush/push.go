@@ -41,6 +41,9 @@ const (
 	maxConfig   = 4 << 20
 )
 
+// AgentRunning is how a refusal for a running agent begins: a caller may try again later.
+const AgentRunning = "an agent is running"
+
 // Config is root's: which registry, which projects, where the login and the log are.
 type Config struct {
 	Registry   string   `json:"registry"`   // host:port the images are named with
@@ -146,7 +149,7 @@ func Push(ctx context.Context, cfg Config, ref string, layout io.Reader, deps De
 		return "", refused(fmt.Errorf("cannot tell whether an agent runs: %w", err))
 	}
 	if len(agents) > 0 {
-		return "", refused(fmt.Errorf("an agent is running (%s): CRN pushes only once every agent has stopped", strings.Join(agents, "; ")))
+		return "", refused(fmt.Errorf("%s (%s): CRN pushes only once every agent has stopped", AgentRunning, strings.Join(agents, "; ")))
 	}
 	user, password, err := readLogin(cfg)
 	if err != nil {
