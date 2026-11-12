@@ -81,6 +81,19 @@ func (m *manager) openGate(job *domain.Job) (*jobGate, error) {
 	return gate, nil
 }
 
+// gatedJob says, before the build starts, whether it will have a gate (openGate): a list of
+// forbidden values for its project, or a customer project for its image.
+func (m *manager) gatedJob(job *domain.Job) bool {
+	if m.windowProject(job) {
+		return true
+	}
+	if m.forbiddenValuesDir == "" {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(m.forbiddenValuesDir, job.ProjectID.String()+".txt"))
+	return err == nil
+}
+
 // windowProject says whether job's image goes to a customer project, whose every build
 // pushes through the window.
 func (m *manager) windowProject(job *domain.Job) bool {
