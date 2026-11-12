@@ -3,7 +3,7 @@
 //
 //	docker save <ref> | sudo -n -u _crnpush /opt/crn-push/crn-push push <ref>
 //
-// It prints "pushed <ref> <digest>" and exits 0, or says why not and exits non-zero. Its
+// It prints "pushed <ref> <digest> <login>" and exits 0, or says why not and exits non-zero. Its
 // config is /opt/crn-push/crn-push.json, which only root can change.
 package main
 
@@ -35,10 +35,10 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	ref := os.Args[2]
-	digest, err := registrypush.Push(ctx, cfg, ref, os.Stdin, registrypush.Deps{AgentSessions: registrypush.AgentSessions, Caller: os.Getenv("SUDO_USER")})
+	res, err := registrypush.Push(ctx, cfg, ref, os.Stdin, registrypush.Deps{AgentSessions: registrypush.AgentSessions, Caller: os.Getenv("SUDO_USER")})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "crn-push:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("pushed %s %s\n", ref, digest)
+	fmt.Printf("pushed %s %s %s\n", ref, res.Digest, res.Login)
 }

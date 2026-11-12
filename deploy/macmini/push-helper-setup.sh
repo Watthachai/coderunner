@@ -3,11 +3,13 @@
 #
 #   ssh -t macagents@172.168.1.171 'sudo zsh ~/fitt-coderunner/deploy/macmini/push-helper-setup.sh'
 #
-# It makes a hidden user, _crnpush, that alone can read the registry login (/var/crnpush,
+# It makes a hidden user, _crnpush, that alone can read the registry logins (/var/crnpush,
 # mode 700), installs crn-push and its config where only root can change them (/opt/crn-push),
 # and lets CRN's user run that one command as _crnpush, and nothing else
-# (/etc/sudoers.d/crn-push). It puts no login anywhere: push-helper-login.sh does, from the
-# laptop. Running it again changes nothing that is already right.
+# (/etc/sudoers.d/crn-push). The config names each GitLab project the helper serves and the
+# file of its one login (CRN_PUSH_LOGINS, "group/project=file ..."). It puts no login
+# anywhere and makes no token: push-helper-login.sh installs one that DV gave. Running it
+# again changes nothing that is already right.
 set -eu
 [ "$(id -u)" = 0 ] || { echo "run it with sudo" >&2; exit 1; }
 crn_user="${CRN_USER:-macagents}"
@@ -16,7 +18,7 @@ helper_user=_crnpush
 home=/var/crnpush
 opt=/opt/crn-push
 registry="${CRN_PUSH_REGISTRY:-172.168.1.234:5050}"
-projects="${CRN_PUSH_PROJECTS:-fitt/ftcdv-uat}"
+logins="${CRN_PUSH_LOGINS:-fitt/demos=$home/logins/fitt-demos.json}"
 
 [ -x "$repo/bin/crn-push" ] || { echo "no $repo/bin/crn-push: run deploy.sh first" >&2; exit 1; }
 
@@ -47,16 +49,19 @@ else
 fi
 
 echo "--- $home, for the login and the log"
-install -d -o "$helper_user" -g "$helper_user" -m 700 "$home" "$home/tmp"
+install -d -o "$helper_user" -g "$helper_user" -m 700 "$home" "$home/tmp" "$home/logins"
 
 echo "--- $opt, which only root can change"
 install -d -o root -g wheel -m 755 "$opt"
 install -o root -g wheel -m 755 "$repo/bin/crn-push" "$opt/crn-push.new"
 mv -f "$opt/crn-push.new" "$opt/crn-push"
-project_list=""
-for p in ${=projects}; do project_list="${project_list:+$project_list,}\"$p\""; done
+login_list=""
+for pair in ${=logins}; do
+	project="${pair%%=*}" file="${pair#*=}"
+	login_list="${login_list:+$login_list,}\"$project\":\"$file\""
+done
 cat >"$opt/crn-push.json.new" <<EOF
-{"registry":"$registry","scheme":"http","projects":[$project_list],"credential":"$home/auth.json","log":"$home/push.log","work_dir":"$home/tmp"}
+{"registry":"$registry","scheme":"http","logins":{$login_list},"log":"$home/push.log","work_dir":"$home/tmp"}
 EOF
 chown root:wheel "$opt/crn-push.json.new"
 chmod 644 "$opt/crn-push.json.new"
@@ -105,9 +110,12 @@ case "$answer" in
 *"a password is required"* | *"not allowed"* | *"may not run"*) echo "$crn_user cannot run anything else as $helper_user: OK" ;;
 *) echo "PROBLEM: $crn_user ran cat as $helper_user: $answer"; problems=$((problems + 1)) ;;
 esac
-if [ -e "$home/auth.json" ]; then
-	echo "login: $home/auth.json is there ($(stat -f '%Su %Lp %z bytes' "$home/auth.json"))"
-else
-	echo "login: none yet; run deploy/macmini/push-helper-login.sh from the laptop"
-fi
+for pair in ${=logins}; do
+	file="${pair#*=}"
+	if [ -e "$file" ]; then
+		echo "login of ${pair%%=*}: $file is there ($(stat -f '%Su %Lp %z bytes' "$file"))"
+	else
+		echo "login of ${pair%%=*}: none yet; install the one DV gave with push-helper-login.sh"
+	fi
+done
 if [ "$problems" = 0 ]; then echo "=== PUSH HELPER SETUP: PASS"; else echo "=== PUSH HELPER SETUP: $problems PROBLEM(S)"; exit 1; fi

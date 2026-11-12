@@ -30,13 +30,13 @@ func fakeHelperSetup(t *testing.T, answer string, exit int) (helper []string, go
 
 func TestPushThroughHelperGivesTheHelperTheSavedImageAndTakesItsDigest(t *testing.T) {
 	ref := "172.168.1.234:5050/fitt/ftcdv-uat/crn-demo-x-12345678:v5"
-	helper, got := fakeHelperSetup(t, "pushed "+ref+" "+helperDigest, 0)
-	digest, err := PushThroughHelper(context.Background(), helper, ref, nil)
+	helper, got := fakeHelperSetup(t, "pushed "+ref+" "+helperDigest+" gitlab+deploy-token-1", 0)
+	digest, login, err := PushThroughHelper(context.Background(), helper, ref, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest != helperDigest {
-		t.Errorf("digest %s", digest)
+	if digest != helperDigest || login != "gitlab+deploy-token-1" {
+		t.Errorf("digest %s login %s", digest, login)
 	}
 	seen, _ := os.ReadFile(got)
 	if want := "args --as pusher push " + ref + "\nlayout of " + ref; string(seen) != want {
@@ -54,7 +54,7 @@ func TestPushThroughHelperBelievesOnlyAnAnswerAboutThisTag(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			helper, _ := fakeHelperSetup(t, answer, 0)
-			if _, err := PushThroughHelper(context.Background(), helper, ref, nil); err == nil {
+			if _, _, err := PushThroughHelper(context.Background(), helper, ref, nil); err == nil {
 				t.Errorf("it took %q", answer)
 			}
 		})
@@ -64,7 +64,7 @@ func TestPushThroughHelperBelievesOnlyAnAnswerAboutThisTag(t *testing.T) {
 func TestPushThroughHelperSaysWhyTheHelperFailed(t *testing.T) {
 	ref := "172.168.1.234:5050/fitt/ftcdv-uat/crn-demo-x-12345678:v5"
 	helper, _ := fakeHelperSetup(t, "", 1)
-	_, err := PushThroughHelper(context.Background(), helper, ref, nil)
+	_, _, err := PushThroughHelper(context.Background(), helper, ref, nil)
 	if err == nil || !strings.Contains(err.Error(), "helper said no") {
 		t.Errorf("err = %v", err)
 	}

@@ -6,9 +6,11 @@ package config
 import (
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -135,6 +137,10 @@ type Config struct {
 	// fitt/ftcdv-uat, which it may read anonymously while the shared project stays
 	// closed. Set as CRN_ORG_IMAGE_REGISTRIES="<org uuid>=<registry>,...".
 	OrgImageRegistries map[uuid.UUID]string
+	// ProjectImageRegistries sends one project's images to a registry project of its
+	// own, before its org's: an internal project of a customer org pushes to fitt/demos.
+	// Set as CRN_PROJECT_IMAGE_REGISTRIES="<project uuid>=<registry>,...".
+	ProjectImageRegistries map[uuid.UUID]string
 	// MirrorRegistry, when set (with ImageRegistry), receives a digest-identical
 	// copy of every pushed image except those of an org in OrgImageRegistries, e.g. "asia-southeast1-docker.pkg.dev/<project>/<repo>"
 	// for the GCP deploy path. The host must be logged in to it (gcloud
@@ -164,6 +170,10 @@ type Config struct {
 	// listed project (an operator hands over a token for each push) and docker's own
 	// login for any other.
 	PushHelper []string
+	// PushHelperProjects are the GitLab projects (group/project) the push helper holds a
+	// login for: only a build whose registry is one of them goes through the helper. Set
+	// as CRN_PUSH_HELPER_PROJECTS="fitt/demos ...". Needed with PushHelper, and only with it.
+	PushHelperProjects []string
 
 	// MaxConcurrentBuilds caps how many builds run at once, server-wide. Builds
 	// of different projects run in parallel (they share no working dir), so this
@@ -301,6 +311,22 @@ func Load() (*Config, error) {
 	}
 	cfg.OrgImageRegistries = orgRegistries
 
+	projectRegistries, err := parseRegistryMap("CRN_PROJECT_IMAGE_REGISTRIES", "<project uuid>=<registry>", os.Getenv("CRN_PROJECT_IMAGE_REGISTRIES"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.ProjectImageRegistries = projectRegistries
+
+	cfg.PushHelperProjects = strings.Fields(os.Getenv("CRN_PUSH_HELPER_PROJECTS"))
+	if (len(cfg.PushHelper) > 0) != (len(cfg.PushHelperProjects) > 0) {
+		return nil, errors.New("config: CRN_PUSH_HELPER and CRN_PUSH_HELPER_PROJECTS go together")
+	}
+	for _, p := range cfg.PushHelperProjects {
+		if !gitlabProject.MatchString(p) {
+			return nil, fmt.Errorf("config: CRN_PUSH_HELPER_PROJECTS entry %q is not group/project", p)
+		}
+	}
+
 	callbackOrgs, err := parseOrgList("CRN_FTC_DV_CALLBACK_ORGS", os.Getenv("CRN_FTC_DV_CALLBACK_ORGS"))
 	if err != nil {
 		return nil, err
@@ -359,22 +385,31 @@ func (c *Config) validate() error {
 // malformed pair is an error: it would send that org's images to the shared
 // registry without a word.
 func parseOrgRegistries(raw string) (map[uuid.UUID]string, error) {
+	return parseRegistryMap("CRN_ORG_IMAGE_REGISTRIES", "<org uuid>=<registry>", raw)
+}
+
+// parseRegistryMap reads "<uuid>=<registry>" pairs separated by commas for the variable
+// name; a malformed pair is an error.
+func parseRegistryMap(name, shape, raw string) (map[uuid.UUID]string, error) {
 	out := map[uuid.UUID]string{}
 	for _, pair := range strings.Split(raw, ",") {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
 			continue
 		}
-		org, registry, ok := strings.Cut(pair, "=")
-		id, err := uuid.Parse(strings.TrimSpace(org))
+		key, registry, ok := strings.Cut(pair, "=")
+		id, err := uuid.Parse(strings.TrimSpace(key))
 		registry = strings.TrimRight(strings.TrimSpace(registry), "/")
 		if !ok || err != nil || registry == "" {
-			return nil, fmt.Errorf("config: CRN_ORG_IMAGE_REGISTRIES entry %q is not <org uuid>=<registry>", pair)
+			return nil, fmt.Errorf("config: %s entry %q is not %s", name, pair, shape)
 		}
 		out[id] = registry
 	}
 	return out, nil
 }
+
+// gitlabProject is group/project (or deeper), as a registry path names it.
+var gitlabProject = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*(?:/[a-z0-9][a-z0-9._-]*)+$`)
 
 // parseTokenHashes reads CRN_INTERNAL_TOKEN_SHA256: comma-separated
 // <name>=<sha256 hex> entries.

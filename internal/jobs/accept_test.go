@@ -70,7 +70,7 @@ if [ -n "$FAKE_HELPER_BUSY_TIMES" ]; then
   n=$(cat "$HELPER_STDIN.count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$HELPER_STDIN.count"
   if [ "$n" -le "$FAKE_HELPER_BUSY_TIMES" ]; then echo "crn-push: refused: an agent is running (4242 claude): CRN pushes only once every agent has stopped" >&2; exit 1; fi
 fi
-echo "pushed $2 ${FAKE_HELPER_DIGEST:-$FAKE_REGISTRY_DIGEST}"
+echo "pushed $2 ${FAKE_HELPER_DIGEST:-$FAKE_REGISTRY_DIGEST} gitlab+deploy-token-9"
 `
 
 // A shell standing in for Node: the release checker passes, and the candidate gate takes
@@ -310,8 +310,12 @@ type pipelineOpts struct {
 	queuedAgo time.Duration
 	// remoteHook is the remote's post-receive hook: the remote's own, not the workspace's.
 	remoteHook func(workDir string) string
-	// helper sets CRN's push helper to the fake crn-push, so no operator is involved.
-	helper bool
+	// helper sets CRN's push helper to the fake crn-push, so no operator is involved, for
+	// helperProjects (fitt/ftcdv-uat when nil).
+	helper         bool
+	helperProjects []string
+	// projectRegistry sends this project's images there instead of its org's registry.
+	projectRegistry string
 }
 
 func runPipeline(t *testing.T, accept, deliveryJSON string, env map[string]string) pipelineRun {
@@ -553,6 +557,14 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	}
 	if o.helper {
 		mgr.SetPushHelper([]string{filepath.Join(bin, "fake-crn-push")})
+		projects := o.helperProjects
+		if projects == nil {
+			projects = []string{"fitt/ftcdv-uat"}
+		}
+		mgr.SetPushHelperProjects(projects)
+	}
+	if o.projectRegistry != "" {
+		mgr.SetProjectRegistries(map[uuid.UUID]string{project: o.projectRegistry})
 	}
 	if o.manager != nil {
 		o.manager(mgr)
@@ -579,7 +591,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	operatorDone := make(chan struct{})
 	go func() {
 		defer close(operatorDone)
-		if o.noCredential || o.credentialFirst || o.helper {
+		if o.noCredential || o.credentialFirst || (o.helper && o.helperProjects == nil) {
 			return
 		}
 		ready := filepath.Join(run.credentialDir, "READY")

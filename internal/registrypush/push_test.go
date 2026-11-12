@@ -25,9 +25,17 @@ import (
 // wrote it, and it can only ever add one new tag of one image of the projects it serves.
 
 const (
-	testUser     = "crn-auto-push"
-	testPassword = "glpat-test-secret-value"
+	testUser      = "gitlab+deploy-token-3"
+	testPassword  = "gldt-test-secret-uat"
+	demosUser     = "gitlab+deploy-token-1"
+	demosPassword = "gldt-test-secret-demos"
 )
+
+// fakeLogins is what the fake GitLab knows: each deploy token reaches its own project only.
+var fakeLogins = map[string]struct{ password, project string }{
+	testUser:  {testPassword, "fitt/ftcdv-uat"},
+	demosUser: {demosPassword, "fitt/demos"},
+}
 
 func digestOf(b []byte) string {
 	sum := sha256.Sum256(b)
@@ -65,11 +73,17 @@ func (r *fakeRegistry) serve(w http.ResponseWriter, req *http.Request) {
 	}
 	if req.URL.Path == "/jwt/auth" {
 		user, pass, ok := req.BasicAuth()
-		if !ok || user != testUser || pass != testPassword {
+		login, known := fakeLogins[user]
+		if !ok || !known || pass != login.password {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": "bearer-" + req.URL.Query().Get("scope")})
+		scope := req.URL.Query().Get("scope")
+		if !strings.HasPrefix(scope, "repository:"+login.project+"/") {
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "none"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "bearer-" + scope})
 		return
 	}
 	if !strings.HasPrefix(req.Header.Get("Authorization"), "Bearer bearer-") {
@@ -220,23 +234,35 @@ type setup struct {
 	logPath string
 }
 
+func writeLogin(t *testing.T, path, host, user, password string) {
+	t.Helper()
+	auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+	if err := os.WriteFile(path, []byte(`{"auths":{"`+host+`":{"auth":"`+auth+`"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newSetup(t *testing.T) *setup {
 	t.Helper()
 	reg := newFakeRegistry(t)
 	dir := t.TempDir()
-	cred := filepath.Join(dir, "auth.json")
-	auth := base64.StdEncoding.EncodeToString([]byte(testUser + ":" + testPassword))
-	if err := os.WriteFile(cred, []byte(`{"auths":{"`+reg.host()+`":{"auth":"`+auth+`"}}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	uat, demos := filepath.Join(dir, "fitt-ftcdv-uat.json"), filepath.Join(dir, "fitt-demos.json")
+	writeLogin(t, uat, reg.host(), testUser, testPassword)
+	writeLogin(t, demos, reg.host(), demosUser, demosPassword)
 	s := &setup{reg: reg, logPath: filepath.Join(dir, "push.log")}
-	s.cfg = Config{Registry: reg.host(), Scheme: "http", Projects: []string{"fitt/ftcdv-uat", "fitt/demos"}, Credential: cred, Log: s.logPath, WorkDir: dir}
+	s.cfg = Config{Registry: reg.host(), Scheme: "http", Logins: map[string]string{"fitt/ftcdv-uat": uat, "fitt/demos": demos}, Log: s.logPath, WorkDir: dir}
 	return s
+}
+
+func (s *setup) pushResult(t *testing.T, ref string, layout io.Reader) (Result, error) {
+	t.Helper()
+	return Push(context.Background(), s.cfg, ref, layout, Deps{AgentSessions: func() ([]string, error) { return s.agents, nil }, Caller: "macagents"})
 }
 
 func (s *setup) push(t *testing.T, ref string, layout io.Reader) (string, error) {
 	t.Helper()
-	return Push(context.Background(), s.cfg, ref, layout, Deps{AgentSessions: func() ([]string, error) { return s.agents, nil }, Caller: "macagents"})
+	res, err := s.pushResult(t, ref, layout)
+	return res.Digest, err
 }
 
 func (s *setup) ref(project, image, tag string) string {
@@ -448,7 +474,7 @@ func TestTheLoginMustBeItsOwnPrivateFile(t *testing.T) {
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := newSetup(t)
-			change(s.cfg.Credential)
+			change(s.cfg.Logins["fitt/ftcdv-uat"])
 			ref := s.ref("fitt/ftcdv-uat", "crn-demo-ntc-film-job-efa0ff04", "v5")
 			_, err := s.push(t, ref, newImage(ref).tar(t))
 			if err == nil {
@@ -476,10 +502,49 @@ func TestAFailedPushIsLoggedWithoutTheLogin(t *testing.T) {
 	noSecret(t, string(log))
 }
 
+// Each project's own login, and only for that project: a token is never sent for another.
+func TestItUsesTheLoginOfTheImagesProjectAndSaysWhichOne(t *testing.T) {
+	s := newSetup(t)
+	ref := s.ref("fitt/demos", "crn-demo-digital-value-okr-4ddc9371", "v1")
+	res, err := s.pushResult(t, ref, newImage(ref).tar(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Login != demosUser {
+		t.Errorf("login %q, want %q", res.Login, demosUser)
+	}
+	for _, b := range s.reg.basic {
+		if !strings.HasPrefix(b, demosUser+":") {
+			t.Errorf("another login was sent for fitt/demos: %s", strings.SplitN(b, ":", 2)[0])
+		}
+	}
+	log, _ := os.ReadFile(s.logPath)
+	if !strings.Contains(string(log), demosUser) {
+		t.Errorf("the log does not say which login pushed: %s", log)
+	}
+	noSecret(t, string(log))
+	if strings.Contains(string(log), demosPassword) {
+		t.Errorf("the demos token is in the log: %s", log)
+	}
+}
+
+func TestItRefusesAProjectItHoldsNoLoginFor(t *testing.T) {
+	s := newSetup(t)
+	delete(s.cfg.Logins, "fitt/ftcdv-uat")
+	ref := s.ref("fitt/ftcdv-uat", "crn-demo-audit-planning-task-management-160001c3", "v4")
+	_, err := s.push(t, ref, newImage(ref).tar(t))
+	if err == nil || !strings.Contains(err.Error(), "not one this helper serves") {
+		t.Fatalf("err = %v, want a refusal for the project", err)
+	}
+	if len(s.reg.requests) > 0 {
+		t.Errorf("it asked the registry: %v", s.reg.requests)
+	}
+}
+
 func TestLoadConfigReadsOnlyAFileNoOneElseCanWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "crn-push.json")
-	body := `{"registry":"172.168.1.234:5050","scheme":"http","projects":["fitt/ftcdv-uat"],"credential":"/var/crnpush/auth.json","log":"/var/crnpush/push.log","work_dir":"/var/crnpush/tmp"}`
+	body := `{"registry":"172.168.1.234:5050","scheme":"http","logins":{"fitt/demos":"/var/crnpush/logins/fitt-demos.json"},"log":"/var/crnpush/push.log","work_dir":"/var/crnpush/tmp"}`
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +552,7 @@ func TestLoadConfigReadsOnlyAFileNoOneElseCanWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Registry != "172.168.1.234:5050" || len(cfg.Projects) != 1 || cfg.WorkDir != "/var/crnpush/tmp" {
+	if cfg.Registry != "172.168.1.234:5050" || cfg.Logins["fitt/demos"] != "/var/crnpush/logins/fitt-demos.json" || len(cfg.Logins) != 1 || cfg.WorkDir != "/var/crnpush/tmp" {
 		t.Errorf("config %+v", cfg)
 	}
 	if err := os.Chmod(path, 0o666); err != nil {
@@ -501,5 +566,26 @@ func TestLoadConfigReadsOnlyAFileNoOneElseCanWrite(t *testing.T) {
 	}
 	if _, err := LoadConfig(path, os.Getuid()+1); err == nil {
 		t.Error("it read a config owned by someone else")
+	}
+}
+
+func TestLoadConfigRefusesALoginThatIsNotOneProjectsFile(t *testing.T) {
+	for name, logins := range map[string]string{
+		"none":             `{}`,
+		"a group":          `{"fitt":"/var/crnpush/logins/fitt.json"}`,
+		"a relative file":  `{"fitt/demos":"logins/fitt-demos.json"}`,
+		"a path in a name": `{"fitt/../demos":"/var/crnpush/logins/x.json"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "crn-push.json")
+			body := `{"registry":"172.168.1.234:5050","scheme":"http","logins":` + logins + `,"log":"/var/crnpush/push.log","work_dir":"/var/crnpush/tmp"}`
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path, os.Getuid()); err == nil {
+				t.Errorf("it took %s", logins)
+			}
+		})
 	}
 }

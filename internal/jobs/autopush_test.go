@@ -149,6 +149,10 @@ func TestAnUnlistedBuildPushesThroughTheHelper(t *testing.T) {
 			t.Errorf("released carries digest %v, want %s", b["image_digest"], fakeDigest)
 		}
 	}
+	raw, _ := json.Marshal(run.store.trace)
+	if !strings.Contains(string(raw), "gitlab+deploy-token-9") {
+		t.Errorf("the build's record does not say which login pushed:\n%s", raw)
+	}
 }
 
 // The helper refuses while any agent runs; another build's agent may, so the build waits.
@@ -185,5 +189,44 @@ func TestAnUnlistedBuildDoesNotRetryAnotherRefusal(t *testing.T) {
 	failedAndNeverReleased(t, run)
 	if n := strings.Count(events(run), "crn-push push"); n != 1 {
 		t.Errorf("the helper was asked %d times, want 1:\n%s", n, events(run))
+	}
+}
+
+// A project of its own registry: OKR's images go to fitt/demos, not to its org's project.
+func TestAProjectsOwnRegistryComesBeforeItsOrgs(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, helperProjects: []string{"fitt/demos"}, noList: true, delivery: localDelivery,
+		projectRegistry: "172.168.1.234:5050/fitt/demos", agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
+	}
+	if indexOf(run.events, "crn-push push 172.168.1.234:5050/fitt/demos/crn-demo-app-") < 0 {
+		t.Errorf("it did not push to fitt/demos:\n%s", events(run))
+	}
+	if strings.Contains(events(run), "fitt/ftcdv-uat") {
+		t.Errorf("the org's project appears:\n%s", events(run))
+	}
+}
+
+// The helper serves only its projects: elsewhere an unlisted build keeps docker's login...
+func TestTheHelperIsNotUsedForAnotherProjectsUnlistedBuild(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, helperProjects: []string{"fitt/demos"}, noList: true, delivery: localDelivery,
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
+	if indexOf(run.events, "crn-push") >= 0 {
+		t.Errorf("the helper was asked about fitt/ftcdv-uat:\n%s", events(run))
+	}
+	if indexOf(run.events, "docker push 172.168.1.234:5050/fitt/ftcdv-uat/") < 0 {
+		t.Errorf("it did not push as before:\n%s", events(run))
+	}
+}
+
+// ...and a listed build keeps the push window.
+func TestTheHelperIsNotUsedForAnotherProjectsListedBuild(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, helperProjects: []string{"fitt/demos"}, agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
+	released(t, run, "app.js", "changed")
+	if indexOf(run.events, "crn-push") >= 0 {
+		t.Errorf("the helper was asked about a listed build of fitt/ftcdv-uat:\n%s", events(run))
+	}
+	if indexOf(run.events, "operator: ready for a token") < 0 {
+		t.Errorf("it did not wait for the push window:\n%s", events(run))
 	}
 }

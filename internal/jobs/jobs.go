@@ -135,9 +135,12 @@ type manager struct {
 	// pushCredentialDir, pushCredentialWait and pushCredentialPoll belong to the push
 	// window (pushwindow.go).
 	pushCredentialDir string
-	// pushHelper, when set, pushes a listed project's build instead of the window
+	// pushHelper, when set, pushes the build of a project in pushHelperProjects
 	// (autopush.go).
-	pushHelper []string
+	pushHelper         []string
+	pushHelperProjects map[string]bool
+	// projectRegistries overrides orgRegistries for one project (SetProjectRegistries).
+	projectRegistries map[uuid.UUID]string
 	// helperWait and helperRetry bound how an unlisted build waits for the helper while
 	// another build's agent runs (autopush.go).
 	helperWait         time.Duration
@@ -1189,6 +1192,9 @@ func (m *manager) imageTag(spec payloadSpec, job *domain.Job) string {
 // registryFor is where this build's image is pushed: the org's own registry
 // project when it has one, else the shared imageRegistry ("" = no push).
 func (m *manager) registryFor(job *domain.Job) string {
+	if registry, ok := m.projectRegistries[job.ProjectID]; ok {
+		return registry
+	}
 	if registry, ok := m.orgRegistries[job.OrgID]; ok {
 		return registry
 	}
@@ -1243,6 +1249,9 @@ func (m *manager) writeImageBundle(workDir string, spec payloadSpec, job *domain
 // takes delivery from it alone, so its images are not copied anywhere else.
 func (m *manager) mirrorImage(ctx context.Context, appTag string, job *domain.Job, log *slog.Logger) {
 	if _, own := m.orgRegistries[job.OrgID]; own {
+		return
+	}
+	if _, own := m.projectRegistries[job.ProjectID]; own {
 		return
 	}
 	registry := m.registryFor(job)
@@ -1329,13 +1338,13 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	registry := m.registryFor(job)
 	if registry != "" && gate != nil {
 		push := m.pushThroughWindow
-		if len(m.pushHelper) > 0 {
+		if m.helperPushes(job) {
 			push = m.pushAutomatically
 		}
 		if digest, err = push(ctx, job, gate, appTag, log); err != nil {
 			return "", err
 		}
-	} else if registry != "" && len(m.pushHelper) > 0 {
+	} else if registry != "" && m.helperPushes(job) {
 		if digest, err = m.pushUnlisted(ctx, job, appTag, log); err != nil {
 			m.publish(job.ID, domain.BuildEventMsg{
 				Kind: domain.WSError, Text: "docker push (app) failed: " + err.Error(),

@@ -44,15 +44,25 @@ const (
 // AgentRunning is how a refusal for a running agent begins: a caller may try again later.
 const AgentRunning = "an agent is running"
 
-// Config is root's: which registry, which projects, where the login and the log are.
+// Config is root's: which registry, each served project's login, where the log is.
 type Config struct {
-	Registry   string   `json:"registry"`   // host:port the images are named with
-	Scheme     string   `json:"scheme"`     // http for the on-prem registry
-	Projects   []string `json:"projects"`   // group/project the helper may add tags to
-	Credential string   `json:"credential"` // a docker config with one login, mode 600, the helper's
-	Log        string   `json:"log"`        // one line per push or refusal; never the login
-	WorkDir    string   `json:"work_dir"`   // where the layout is unpacked
+	Registry string `json:"registry"` // host:port the images are named with
+	Scheme   string `json:"scheme"`   // http for the on-prem registry
+	// Logins is each GitLab project the helper serves, group/project, and the file of that
+	// project's one login (a docker config, mode 600, the helper's). A push uses the login
+	// of its image's project and no other; a project with no login here is refused.
+	Logins  map[string]string `json:"logins"`
+	Log     string            `json:"log"`      // one line per push or refusal; never a token
+	WorkDir string            `json:"work_dir"` // where the layout is unpacked
 }
+
+// Result is what a push did: the digest the registry gave it, and which login pushed it.
+type Result struct {
+	Digest string
+	Login  string
+}
+
+var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*(?:/[a-z0-9][a-z0-9._-]*)+$`)
 
 // Deps is what the helper asks of the machine.
 type Deps struct {
@@ -85,8 +95,13 @@ func LoadConfig(file string, owner int) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return cfg, fmt.Errorf("config: %w", err)
 	}
-	if cfg.Registry == "" || len(cfg.Projects) == 0 || cfg.Credential == "" || cfg.Log == "" || cfg.WorkDir == "" {
-		return cfg, errors.New("config: registry, projects, credential, log and work_dir are all needed")
+	if cfg.Registry == "" || len(cfg.Logins) == 0 || cfg.Log == "" || cfg.WorkDir == "" {
+		return cfg, errors.New("config: registry, logins, log and work_dir are all needed")
+	}
+	for project, file := range cfg.Logins {
+		if !projectName.MatchString(project) || strings.Contains(project, "..") || !filepath.IsAbs(file) || filepath.Clean(file) != file {
+			return cfg, fmt.Errorf("config: login %q = %q is not group/project = an absolute file", project, file)
+		}
 	}
 	if cfg.Scheme != "http" && cfg.Scheme != "https" {
 		return cfg, errors.New("config: scheme is http or https")
@@ -103,7 +118,7 @@ var (
 
 // target is a ref the helper may push: registry/group/project/crn-demo-...:vN.
 type target struct {
-	ref, repository, tag string
+	ref, project, repository, tag string
 }
 
 func parseTarget(cfg Config, ref string) (target, error) {
@@ -121,10 +136,7 @@ func parseTarget(cfg Config, ref string) (target, error) {
 		return target{}, fmt.Errorf("%q is not group/project/image", ref)
 	}
 	project, name := repository[:j], repository[j+1:]
-	served := false
-	for _, p := range cfg.Projects {
-		served = served || p == project
-	}
+	_, served := cfg.Logins[project]
 	switch {
 	case !served:
 		return target{}, fmt.Errorf("project %q is not one this helper serves", project)
@@ -133,53 +145,63 @@ func parseTarget(cfg Config, ref string) (target, error) {
 	case !tagName.MatchString(tag):
 		return target{}, fmt.Errorf("tag %q is not a build's tag (v1, v2, ...)", tag)
 	}
-	return target{ref: ref, repository: repository, tag: tag}, nil
+	return target{ref: ref, project: project, repository: repository, tag: tag}, nil
 }
 
-// Push checks everything, then pushes the layout's one image as ref, and returns the digest
-// the registry gave it. Every outcome is logged; the login never is.
-func Push(ctx context.Context, cfg Config, ref string, layout io.Reader, deps Deps) (digest string, err error) {
-	defer func() { writeLog(cfg, deps.Caller, ref, digest, err) }()
+// Push checks everything, then pushes the layout's one image as ref with the login of ref's
+// project, and says the digest the registry gave it and which login that was. Every outcome
+// is logged; a token never is.
+func Push(ctx context.Context, cfg Config, ref string, layout io.Reader, deps Deps) (res Result, err error) {
+	defer func() { writeLog(cfg, deps.Caller, ref, res, err) }()
+	digest, user, err := push(ctx, cfg, ref, layout, deps)
+	if err != nil {
+		return Result{Login: user}, err
+	}
+	return Result{Digest: digest, Login: user}, nil
+}
+
+func push(ctx context.Context, cfg Config, ref string, layout io.Reader, deps Deps) (string, string, error) {
 	t, err := parseTarget(cfg, ref)
 	if err != nil {
-		return "", refused(err)
+		return "", "", refused(err)
 	}
 	agents, err := deps.AgentSessions()
 	if err != nil {
-		return "", refused(fmt.Errorf("cannot tell whether an agent runs: %w", err))
+		return "", "", refused(fmt.Errorf("cannot tell whether an agent runs: %w", err))
 	}
 	if len(agents) > 0 {
-		return "", refused(fmt.Errorf("%s (%s): CRN pushes only once every agent has stopped", AgentRunning, strings.Join(agents, "; ")))
+		return "", "", refused(fmt.Errorf("%s (%s): CRN pushes only once every agent has stopped", AgentRunning, strings.Join(agents, "; ")))
 	}
-	user, password, err := readLogin(cfg)
+	user, password, err := readLogin(cfg, t.project)
 	if err != nil {
-		return "", refused(err)
+		return "", "", refused(err)
 	}
 	if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
-		return "", err
+		return "", user, err
 	}
 	dir, err := os.MkdirTemp(cfg.WorkDir, "layout-")
 	if err != nil {
-		return "", err
+		return "", user, err
 	}
 	defer os.RemoveAll(dir)
 	img, err := unpack(layout, dir, t.ref)
 	if err != nil {
-		return "", refused(err)
+		return "", user, refused(err)
 	}
 	c := &client{cfg: cfg, user: user, password: password, http: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if err := c.tagAbsent(ctx, t); err != nil {
-		return "", err
+		return "", user, err
 	}
 	for _, d := range img.blobs {
 		if err := c.pushBlob(ctx, t, d, filepath.Join(dir, strings.TrimPrefix(d.Digest, "sha256:"))); err != nil {
-			return "", err
+			return "", user, err
 		}
 	}
 	if err := c.tagAbsent(ctx, t); err != nil {
-		return "", err
+		return "", user, err
 	}
-	return c.putManifest(ctx, t, img)
+	digest, err := c.putManifest(ctx, t, img)
+	return digest, user, err
 }
 
 type refusal struct{ err error }
@@ -189,11 +211,14 @@ func (r refusal) Unwrap() error { return r.err }
 
 func refused(err error) error { return refusal{err} }
 
-func writeLog(cfg Config, caller, ref, digest string, err error) {
+func writeLog(cfg Config, caller, ref string, res Result, err error) {
 	entry := map[string]string{"time": time.Now().UTC().Format(time.RFC3339), "caller": caller, "ref": ref}
+	if res.Login != "" {
+		entry["login"] = res.Login
+	}
 	switch {
 	case err == nil:
-		entry["outcome"], entry["digest"] = "pushed", digest
+		entry["outcome"], entry["digest"] = "pushed", res.Digest
 	case errors.As(err, new(refusal)):
 		entry["outcome"], entry["error"] = "refused", err.Error()
 	default:
@@ -208,9 +233,14 @@ func writeLog(cfg Config, caller, ref, digest string, err error) {
 	_, _ = f.Write(append(line, '\n'))
 }
 
-// readLogin reads the helper's one login: its own regular file, mode 600, one name.
-func readLogin(cfg Config) (string, string, error) {
-	f, err := os.OpenFile(cfg.Credential, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+// readLogin reads the login of one project: the helper's own regular file, mode 600, one
+// name, holding one login for the registry.
+func readLogin(cfg Config, project string) (string, string, error) {
+	file, ok := cfg.Logins[project]
+	if !ok {
+		return "", "", fmt.Errorf("no login for %s", project)
+	}
+	f, err := os.OpenFile(file, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", "", errors.New("the login file cannot be opened")
 	}

@@ -8,16 +8,42 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 	"github.com/Watthachai/fitt-coderunner/internal/registrypush"
 )
 
-// SetPushHelper has every build push by itself, through CRN's push helper (cmd/crn-push):
-// a listed project's build instead of waiting for an operator's token, any other instead
-// of docker's own login. helper is the command that runs it, such as
-// sudo -n -u _crnpush /opt/crn-push/crn-push; empty keeps the window and docker's login.
+// SetPushHelper has a build whose image goes to one of the helper's projects
+// (SetPushHelperProjects) push by itself, through CRN's push helper (cmd/crn-push): a
+// listed project's build instead of waiting for an operator's token, any other instead of
+// docker's own login. helper is the command that runs it, such as
+// sudo -n -u _crnpush /opt/crn-push/crn-push. Any other build keeps the window or docker's
+// login.
 func (m *manager) SetPushHelper(helper []string) { m.pushHelper = append([]string(nil), helper...) }
+
+// SetPushHelperProjects names the GitLab projects (group/project) the push helper holds a
+// login for.
+func (m *manager) SetPushHelperProjects(projects []string) {
+	m.pushHelperProjects = map[string]bool{}
+	for _, p := range projects {
+		m.pushHelperProjects[p] = true
+	}
+}
+
+// SetProjectRegistries sends a project's images to its own registry project, before its
+// org's (orgRegistries) and the default.
+func (m *manager) SetProjectRegistries(registries map[uuid.UUID]string) {
+	m.projectRegistries = registries
+}
+
+// helperPushes says whether job's image goes through the push helper: one is set, and the
+// GitLab project of the job's registry is one it holds a login for.
+func (m *manager) helperPushes(job *domain.Job) bool {
+	_, project, _ := strings.Cut(m.registryFor(job), "/")
+	return len(m.pushHelper) > 0 && m.pushHelperProjects[project]
+}
 
 // pushAutomatically is the push of a listed project's build when CRN has a push helper. It
 // makes the same checks as the push window: every other build has finished and none may
@@ -60,7 +86,7 @@ func (m *manager) pushThroughHelper(ctx context.Context, job *domain.Job, gate *
 	}
 	m.publishPhase(job.ID, "push")
 	m.publishText(job.ID, fmt.Sprintf("Pushing %s through CRN's push helper. %s holds %d tags before.", appTag, ref.Project, countTags(before)))
-	digest, err = buildstep.PushThroughHelper(ctx, m.pushHelper, appTag, log)
+	digest, login, err := buildstep.PushThroughHelper(ctx, m.pushHelper, appTag, log)
 	if err != nil {
 		m.publish(job.ID, domain.BuildEventMsg{Kind: domain.WSError, Text: "docker push (app) failed: " + err.Error(), JobID: job.ID.String(), Timestamp: time.Now().UTC()})
 		return "", false, fmt.Errorf("docker push (app) failed: %w", err)
@@ -73,8 +99,8 @@ func (m *manager) pushThroughHelper(ctx context.Context, job *domain.Job, gate *
 		m.publishText(job.ID, "The registry holds something this build did not push: stop this lane until both sides have talked.")
 		return "", true, err
 	}
-	m.publishText(job.ID, fmt.Sprintf("Pushed %s = %s at %s. %s: %d tags before, %d after; the only new tag is %s:%s, and every other tag is as it was.",
-		appTag, digest, time.Now().UTC().Format(time.RFC3339), ref.Project, countTags(before), countTags(after), ref.Repository, ref.Tag))
+	m.publishText(job.ID, fmt.Sprintf("Pushed %s = %s with %s at %s. %s: %d tags before, %d after; the only new tag is %s:%s, and every other tag is as it was.",
+		appTag, digest, login, time.Now().UTC().Format(time.RFC3339), ref.Project, countTags(before), countTags(after), ref.Repository, ref.Tag))
 	m.releaseBuilds(gate)
 	return digest, true, nil
 }
@@ -102,9 +128,9 @@ func (m *manager) pushUnlisted(ctx context.Context, job *domain.Job, appTag stri
 	deadline := time.Now().Add(orDefault(m.helperWait, helperWait))
 	waiting := false
 	for {
-		digest, err := buildstep.PushThroughHelper(ctx, m.pushHelper, appTag, log)
+		digest, login, err := buildstep.PushThroughHelper(ctx, m.pushHelper, appTag, log)
 		if err == nil {
-			m.publishText(job.ID, fmt.Sprintf("Pushed %s = %s through CRN's push helper.", appTag, digest))
+			m.publishText(job.ID, fmt.Sprintf("Pushed %s = %s through CRN's push helper, with %s, at %s.", appTag, digest, login, time.Now().UTC().Format(time.RFC3339)))
 			return digest, nil
 		}
 		if !strings.Contains(err.Error(), registrypush.AgentRunning) || time.Now().After(deadline) {

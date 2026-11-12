@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/google/uuid"
+
 	"github.com/Watthachai/fitt-coderunner/internal/api"
 	"github.com/Watthachai/fitt-coderunner/internal/buildinfo"
 	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
@@ -144,9 +146,19 @@ func run() error {
 	if gated, ok := jobManager.(interface{ SetPushCredentialDir(string) }); ok {
 		gated.SetPushCredentialDir(cfg.PushCredentialDir)
 	}
-	if helped, ok := jobManager.(interface{ SetPushHelper([]string) }); ok && len(cfg.PushHelper) > 0 {
+	if helped, ok := jobManager.(interface {
+		SetPushHelper([]string)
+		SetPushHelperProjects([]string)
+	}); ok && len(cfg.PushHelper) > 0 {
 		helped.SetPushHelper(cfg.PushHelper)
-		logger.Info("every build pushes through the push helper", "helper", strings.Join(cfg.PushHelper, " "))
+		helped.SetPushHelperProjects(cfg.PushHelperProjects)
+		logger.Info("builds for these projects push through the push helper", "helper", strings.Join(cfg.PushHelper, " "), "projects", strings.Join(cfg.PushHelperProjects, " "))
+	}
+	if routed, ok := jobManager.(interface {
+		SetProjectRegistries(map[uuid.UUID]string)
+	}); ok && len(cfg.ProjectImageRegistries) > 0 {
+		routed.SetProjectRegistries(cfg.ProjectImageRegistries)
+		logger.Info("projects with a registry of their own", "projects", len(cfg.ProjectImageRegistries))
 	}
 	if hooked, ok := jobManager.(interface{ SetBeforeBuild(func(context.Context)) }); ok {
 		hooked.SetBeforeBuild(authMonitor.CheckStatus)

@@ -87,6 +87,62 @@ func TestOrgImageRegistriesTypoStopsStartup(t *testing.T) {
 	}
 }
 
+// One project's images can go elsewhere than its org's: OKR's go to fitt/demos.
+func TestProjectImageRegistriesComeFromEnv(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_PROJECT_IMAGE_REGISTRIES", "4ddc9371-7938-4cab-ad33-23cc1d8eee75=172.168.1.234:5050/fitt/demos/")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := uuid.MustParse("4ddc9371-7938-4cab-ad33-23cc1d8eee75")
+	if got := cfg.ProjectImageRegistries[project]; got != "172.168.1.234:5050/fitt/demos" || len(cfg.ProjectImageRegistries) != 1 {
+		t.Errorf("ProjectImageRegistries = %v", cfg.ProjectImageRegistries)
+	}
+}
+
+func TestProjectImageRegistriesTypoStopsStartup(t *testing.T) {
+	for _, bad := range []string{"4ddc9371=reg/fitt/demos", "4ddc9371-7938-4cab-ad33-23cc1d8eee75", "4ddc9371-7938-4cab-ad33-23cc1d8eee75="} {
+		requiredEnv(t)
+		t.Setenv("CRN_PROJECT_IMAGE_REGISTRIES", bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_PROJECT_IMAGE_REGISTRIES") {
+			t.Errorf("%q: err = %v, want one naming CRN_PROJECT_IMAGE_REGISTRIES", bad, err)
+		}
+	}
+}
+
+// The helper is used only for the GitLab projects it holds a login for.
+func TestPushHelperProjectsComeFromEnv(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_PUSH_HELPER", "/usr/bin/sudo -n -u _crnpush /opt/crn-push/crn-push")
+	t.Setenv("CRN_PUSH_HELPER_PROJECTS", " fitt/demos ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.PushHelper) != 5 || len(cfg.PushHelperProjects) != 1 || cfg.PushHelperProjects[0] != "fitt/demos" {
+		t.Errorf("PushHelper = %q, PushHelperProjects = %q", cfg.PushHelper, cfg.PushHelperProjects)
+	}
+}
+
+func TestPushHelperProjectsMustBeProjectsAndNeedTheHelper(t *testing.T) {
+	for name, env := range map[string][2]string{
+		"a group":         {"/opt/crn-push/crn-push", "fitt"},
+		"an image":        {"/opt/crn-push/crn-push", "172.168.1.234:5050/fitt/demos"},
+		"no helper":       {"", "fitt/demos"},
+		"helper, no list": {"/opt/crn-push/crn-push", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			requiredEnv(t)
+			t.Setenv("CRN_PUSH_HELPER", env[0])
+			t.Setenv("CRN_PUSH_HELPER_PROJECTS", env[1])
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_PUSH_HELPER") {
+				t.Errorf("err = %v, want one naming CRN_PUSH_HELPER", err)
+			}
+		})
+	}
+}
+
 func TestTerminalIsOffUnlessEnabled(t *testing.T) {
 	requiredEnv(t)
 	for env, want := range map[string]bool{"": false, "false": false, "yes please": false, "true": true, "1": true} {
