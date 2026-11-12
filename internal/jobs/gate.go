@@ -48,23 +48,30 @@ type jobGate struct {
 	overBudget atomic.Bool
 }
 
-// openGate pins the project's list. No list means no gate; a list that is not as agreed
-// is an error, so the build stops before the agent costs anything.
+// openGate pins the project's list. A list that is not as agreed is an error, so the build
+// stops before the agent costs anything. A project without a list whose images go to a
+// customer project (pushWindowProjects) has a gate too, without a list: it has the push
+// window and everything that comes before a token, and nothing of the list. Any other
+// project has no gate.
 func (m *manager) openGate(job *domain.Job) (*jobGate, error) {
-	if m.forbiddenValuesDir == "" {
-		return nil, nil
+	var list *buildstep.ForbiddenList
+	if m.forbiddenValuesDir != "" {
+		pinned, err := buildstep.PinForbiddenList(filepath.Join(m.forbiddenValuesDir, job.ProjectID.String()+".txt"))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		list = pinned
 	}
-	list, err := buildstep.PinForbiddenList(filepath.Join(m.forbiddenValuesDir, job.ProjectID.String()+".txt"))
-	if errors.Is(err, fs.ErrNotExist) {
+	if list == nil && !m.windowProject(job) {
 		return nil, nil
-	}
-	if err != nil {
-		return nil, err
 	}
 	if err := m.refuseEarlyCredential(job); err != nil {
 		return nil, err
 	}
-	gate := &jobGate{list: list, scan: list.NewScanner()}
+	gate := &jobGate{list: list}
+	if list != nil {
+		gate.scan = list.NewScanner()
+	}
 	m.gateMu.Lock()
 	defer m.gateMu.Unlock()
 	if m.gates == nil {
@@ -73,6 +80,17 @@ func (m *manager) openGate(job *domain.Job) (*jobGate, error) {
 	m.gates[job.ID] = gate
 	return gate, nil
 }
+
+// windowProject says whether job's image goes to a customer project, whose every build
+// pushes through the window.
+func (m *manager) windowProject(job *domain.Job) bool {
+	_, project, _ := strings.Cut(m.registryFor(job), "/")
+	return m.pushWindowProjects[project]
+}
+
+// listed says whether the build is of a project with a list of forbidden values: the list,
+// the scanner, the clean repository and the candidate gate are its alone.
+func (g *jobGate) listed() bool { return g != nil && g.list != nil }
 
 func (m *manager) closeGate(jobID uuid.UUID) {
 	m.gateMu.Lock()
@@ -118,6 +136,9 @@ func (m *manager) publishText(jobID uuid.UUID, text string) {
 // check is whether the build may go on: the list has not moved and nothing printed so
 // far holds a real value.
 func (g *jobGate) check() error {
+	if !g.listed() {
+		return nil
+	}
 	if err := g.list.CheckUnchanged(); err != nil {
 		return err
 	}
@@ -135,7 +156,7 @@ func (m *manager) beforeCommit(workDir string, gate *jobGate) error {
 	if err != nil {
 		return err
 	}
-	if gate == nil {
+	if !gate.listed() {
 		if mode == buildstep.DBModeExternalTLS {
 			return errors.New("candidate acceptance: no list of forbidden values for this project")
 		}
@@ -196,7 +217,7 @@ func (g *jobGate) beforeRelease(callback []byte) error {
 
 // safeMessage is msg, unless it holds a real value: a failure message leaves CRN.
 func (m *manager) safeMessage(jobID uuid.UUID, msg string) string {
-	if gate := m.gateOf(jobID); gate != nil && gate.list.Holds([]byte(msg)) {
+	if gate := m.gateOf(jobID); gate.listed() && gate.list.Holds([]byte(msg)) {
 		return withheldFailure
 	}
 	return msg
@@ -205,7 +226,7 @@ func (m *manager) safeMessage(jobID uuid.UUID, msg string) string {
 // readEvent has the gate read one live event, as the trace will store it.
 func (m *manager) readEvent(jobID uuid.UUID, msg domain.BuildEventMsg) {
 	gate := m.gateOf(jobID)
-	if gate == nil {
+	if !gate.listed() {
 		return
 	}
 	if raw, err := json.Marshal(msg); err == nil {
@@ -245,7 +266,9 @@ func (w gateLogWriter) Write(p []byte) (int, error) {
 	w.m.gateMu.RLock()
 	defer w.m.gateMu.RUnlock()
 	for _, gate := range w.m.gates {
-		gate.scan.Scan("CRN's log", p)
+		if gate.listed() {
+			gate.scan.Scan("CRN's log", p)
+		}
 	}
 	return len(p), nil
 }

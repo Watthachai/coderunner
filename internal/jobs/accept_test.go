@@ -316,6 +316,8 @@ type pipelineOpts struct {
 	helperProjects []string
 	// projectRegistry sends this project's images there instead of its org's registry.
 	projectRegistry string
+	// windowProjects are the GitLab projects every build of which pushes through the window.
+	windowProjects []string
 }
 
 func runPipeline(t *testing.T, accept, deliveryJSON string, env map[string]string) pipelineRun {
@@ -562,6 +564,9 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 			projects = []string{"fitt/ftcdv-uat"}
 		}
 		mgr.SetPushHelperProjects(projects)
+	}
+	if o.windowProjects != nil {
+		mgr.SetPushWindowProjects(o.windowProjects)
 	}
 	if o.projectRegistry != "" {
 		mgr.SetProjectRegistries(map[uuid.UUID]string{project: o.projectRegistry})

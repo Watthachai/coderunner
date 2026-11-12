@@ -175,6 +175,12 @@ type Config struct {
 	// as CRN_PUSH_HELPER_PROJECTS="fitt/demos ...". Needed with PushHelper, and only with it.
 	PushHelperProjects []string
 
+	// PushWindowProjects are the GitLab projects (group/project) that hold customers'
+	// images: every build whose registry is one of them pushes through the push window,
+	// with an operator's token for that build only, whether or not the project holds a
+	// list of forbidden values. Set as CRN_PUSH_WINDOW_PROJECTS="fitt/ftcdv-uat ...".
+	PushWindowProjects []string
+
 	// MaxConcurrentBuilds caps how many builds run at once, server-wide. Builds
 	// of different projects run in parallel (they share no working dir), so this
 	// is the resource brake, not a correctness rule: each build ends in a docker
@@ -324,6 +330,12 @@ func Load() (*Config, error) {
 	for _, p := range cfg.PushHelperProjects {
 		if !gitlabProject.MatchString(p) {
 			return nil, fmt.Errorf("config: CRN_PUSH_HELPER_PROJECTS entry %q is not group/project", p)
+		}
+	}
+	cfg.PushWindowProjects = strings.Fields(os.Getenv("CRN_PUSH_WINDOW_PROJECTS"))
+	for _, p := range cfg.PushWindowProjects {
+		if !gitlabProject.MatchString(p) {
+			return nil, fmt.Errorf("config: CRN_PUSH_WINDOW_PROJECTS entry %q is not group/project", p)
 		}
 	}
 

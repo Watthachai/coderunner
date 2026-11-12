@@ -143,6 +143,25 @@ func TestPushHelperProjectsMustBeProjectsAndNeedTheHelper(t *testing.T) {
 	}
 }
 
+// Every build whose images go to a customer project pushes through the push window.
+func TestPushWindowProjectsComeFromEnv(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_PUSH_WINDOW_PROJECTS", " fitt/ftcdv-uat  fitt/cust-aec ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.PushWindowProjects, ",") != "fitt/ftcdv-uat,fitt/cust-aec" {
+		t.Errorf("PushWindowProjects = %q", cfg.PushWindowProjects)
+	}
+	for _, bad := range []string{"fitt", "172.168.1.234:5050/fitt/ftcdv-uat"} {
+		t.Setenv("CRN_PUSH_WINDOW_PROJECTS", bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_PUSH_WINDOW_PROJECTS") {
+			t.Errorf("%q: err = %v, want one naming CRN_PUSH_WINDOW_PROJECTS", bad, err)
+		}
+	}
+}
+
 func TestTerminalIsOffUnlessEnabled(t *testing.T) {
 	requiredEnv(t)
 	for env, want := range map[string]bool{"": false, "false": false, "yes please": false, "true": true, "1": true} {

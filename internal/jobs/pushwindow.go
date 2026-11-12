@@ -342,3 +342,13 @@ func (m *manager) pushThroughWindow(ctx context.Context, job *domain.Job, gate *
 	}
 	return digest, nil
 }
+
+// SetPushWindowProjects names the GitLab projects (group/project) whose every build pushes
+// through the push window, whether or not the project holds a list of forbidden values: the
+// projects that hold customers' images.
+func (m *manager) SetPushWindowProjects(projects []string) {
+	m.pushWindowProjects = map[string]bool{}
+	for _, p := range projects {
+		m.pushWindowProjects[p] = true
+	}
+}

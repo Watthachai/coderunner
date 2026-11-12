@@ -154,6 +154,10 @@ func run() error {
 		helped.SetPushHelperProjects(cfg.PushHelperProjects)
 		logger.Info("builds for these projects push through the push helper", "helper", strings.Join(cfg.PushHelper, " "), "projects", strings.Join(cfg.PushHelperProjects, " "))
 	}
+	if windowed, ok := jobManager.(interface{ SetPushWindowProjects([]string) }); ok && len(cfg.PushWindowProjects) > 0 {
+		windowed.SetPushWindowProjects(cfg.PushWindowProjects)
+		logger.Info("every build for these projects pushes through the push window", "projects", strings.Join(cfg.PushWindowProjects, " "))
+	}
 	if routed, ok := jobManager.(interface {
 		SetProjectRegistries(map[uuid.UUID]string)
 	}); ok && len(cfg.ProjectImageRegistries) > 0 {

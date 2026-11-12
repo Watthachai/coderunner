@@ -163,6 +163,40 @@ func TestTheOperatorsCheckIgnoresTheSystemsOwnNoise(t *testing.T) {
 	}
 }
 
+// iCloud Photos' daemon and iTerm's process-info helper come and go every few minutes: on 9
+// and 10 Nov they stopped the window four times, gone or back, with nothing else changed.
+// CRN's own sweep ends anything the agent started, whatever its name, before READY.
+func TestTheOperatorsCheckIgnoresMacOSAndITermHelpersComingAndGoing(t *testing.T) {
+	uid := os.Getuid()
+	with := fmt.Sprintf("1 %d /Users/macagents/bin/crn-server\n1 %d cloudphotod\n1 %d /Applications/iTerm.app/Contents/XPCServices/pidinfo.xpc/Contents/MacOS/pidinfo\n", uid, uid, uid)
+	without := fmt.Sprintf("1 %d /Users/macagents/bin/crn-server\n", uid)
+	for name, states := range map[string][2]string{"gone": {with, without}, "back": {without, with}} {
+		t.Run(name, func(t *testing.T) {
+			m := newMachineFake(t)
+			m.set("processes", states[0])
+			hash := m.baseline()
+			if err := os.WriteFile(filepath.Join(m.pushDir(), "READY"), []byte(testJob+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			m.set("processes", states[1])
+			if out, err := m.run("", []string{"CRN_BASELINE_SHA256=" + hash}, "check", testProject, testJob); err != nil || !strings.Contains(out, "CHECK PASSED") {
+				t.Errorf("%v: %s", err, out)
+			}
+		})
+	}
+	t.Run("a pidinfo elsewhere still counts", func(t *testing.T) {
+		m := newMachineFake(t)
+		hash := m.baseline()
+		if err := os.WriteFile(filepath.Join(m.pushDir(), "READY"), []byte(testJob+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m.set("processes", fmt.Sprintf("1 %d /Users/macagents/bin/crn-server\n1 %d /tmp/pidinfo.xpc/Contents/MacOS/pidinfo\n", uid, uid))
+		if out, err := m.run("", []string{"CRN_BASELINE_SHA256=" + hash}, "check", testProject, testJob); err == nil || !strings.Contains(out, "CHECK FAILED") {
+			t.Errorf("a look-alike passed: %v: %s", err, out)
+		}
+	})
+}
+
 func TestTheOperatorsCheckFailsWhenTheBaselineOrREADYDoNotMatch(t *testing.T) {
 	type setup struct {
 		m    *machineFake
@@ -322,12 +356,19 @@ const (
 
 func (f *registryFake) ask(t *testing.T, sub string) (string, error) {
 	t.Helper()
+	return f.askAllowed(t, sub, inNTC+" "+inHello)
+}
+
+// askAllowed is ask with CRN_SCOPE_ALLOWED as given; empty means the project's images as
+// they are when the window opens.
+func (f *registryFake) askAllowed(t *testing.T, sub, allowed string) (string, error) {
+	t.Helper()
 	srv := f.serve(t)
 	defer srv.Close()
 	m := newMachineFake(t)
 	return m.run(aLogin+"\n", []string{
 		"CRN_GITLAB_URL=" + srv.URL, "CRN_REGISTRY_URL=" + srv.URL, "CRN_SCOPE_PROJECT=fitt/ftcdv-uat",
-		"CRN_SCOPE_ALLOWED=" + inNTC + " " + inHello, "CRN_SCOPE_OUTSIDE=" + outDemos,
+		"CRN_SCOPE_ALLOWED=" + allowed, "CRN_SCOPE_OUTSIDE=" + outDemos,
 	}, sub)
 }
 
@@ -404,6 +445,52 @@ func TestScopePassesOnlyWhenTheTokenWritesExactlyThisProject(t *testing.T) {
 			t.Errorf("it opened a push with a token that holds push: %v", f.openings)
 		}
 	})
+}
+
+// A customer's first image adds an image to the project, so a list written in the script
+// would stop the next window. Without one, the scope is the project's images as GitLab
+// lists them when the window opens: each must be pull,push, nothing outside, as before.
+func TestScopeWithoutAListIsTheProjectAsItIs(t *testing.T) {
+	f := goodScope()
+	f.images = append(f.images, "fitt/ftcdv-uat/crn-demo-new-12345678")
+	f.grants["fitt/ftcdv-uat/crn-demo-new-12345678"] = "pull,push"
+	out, err := f.askAllowed(t, "scope", "")
+	if err != nil || !strings.HasSuffix(strings.TrimSpace(out), "SCOPE PASSED") {
+		t.Fatalf("%v: %s", err, out)
+	}
+	for _, image := range f.images {
+		if !strings.Contains(out, image+" pull,push OK") {
+			t.Errorf("%s was not checked: %s", image, out)
+		}
+	}
+	if !strings.Contains(out, "the project holds:") {
+		t.Errorf("the evidence does not list the project's images: %s", out)
+	}
+	for name, change := range map[string]func(f *registryFake){
+		"pull only on the new image": func(f *registryFake) { f.grants["fitt/ftcdv-uat/crn-demo-new-12345678"] = "pull" },
+		"push outside the project":   func(f *registryFake) { f.grants[outDemos] = "pull,push" },
+		"the list does not end":      func(f *registryFake) { f.noHeader = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := goodScope()
+			f.images = append(f.images, "fitt/ftcdv-uat/crn-demo-new-12345678")
+			f.grants["fitt/ftcdv-uat/crn-demo-new-12345678"] = "pull,push"
+			change(f)
+			if out, err := f.askAllowed(t, "scope", ""); err == nil || !strings.Contains(out, "SCOPE FAILED") {
+				t.Errorf("%v: %s", err, out)
+			}
+		})
+	}
+}
+
+func TestDeadWithoutAListChecksEveryImageOfTheProject(t *testing.T) {
+	f := goodScope()
+	f.images = append(f.images, "fitt/ftcdv-uat/crn-demo-new-12345678")
+	f.grants = map[string]string{"fitt/ftcdv-uat/crn-demo-new-12345678": "pull,push"}
+	out, err := f.askAllowed(t, "dead", "")
+	if err == nil || !strings.Contains(out, "crn-demo-new-12345678 WRONG: it can still push") {
+		t.Errorf("a live push on the new image was not seen: %v: %s", err, out)
+	}
 }
 
 func TestDeadPassesOnlyWhenTheTokenCannotPush(t *testing.T) {

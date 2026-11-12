@@ -21,14 +21,18 @@ export CRN_REGISTRY_HOST="${CRN_REGISTRY_HOST:-172.168.1.234:5050}"
 export CRN_REGISTRY_URL="${CRN_REGISTRY_URL:-http://$CRN_REGISTRY_HOST}"
 export CRN_GITLAB_URL="${CRN_GITLAB_URL:-http://172.168.1.234}"
 export CRN_SCOPE_PROJECT="${CRN_SCOPE_PROJECT:-fitt/ftcdv-uat}"
-export CRN_SCOPE_ALLOWED="${CRN_SCOPE_ALLOWED:-fitt/ftcdv-uat/crn-demo-ntc-film-job-efa0ff04 fitt/ftcdv-uat/crn-demo-hello-fitt-c0241b87 fitt/ftcdv-uat/crn-demo-atelier-minimal-earth-cafca94c fitt/ftcdv-uat/crn-demo-audit-planning-task-management-160001c3 fitt/ftcdv-uat/crn-demo-digital-value-okr-4ddc9371}"
+# Empty: the scope is the project's images as GitLab lists them when the window opens, so a
+# customer's first image does not stop the next window. A list here must match exactly.
+export CRN_SCOPE_ALLOWED="${CRN_SCOPE_ALLOWED:-}"
 export CRN_SCOPE_OUTSIDE="${CRN_SCOPE_OUTSIDE:-fitt/demos/crn-demo-scope-check}"
 push_dir="${CRN_PUSH_CREDENTIAL_DIR:-$HOME/crn-secrets/push}"
 baseline="$push_dir/baseline.txt"
 
 # What the machine looks like. It leaves out what macOS and Docker Desktop change on their own,
 # the same things the build leaves out (launchdIgnored and strayExempt in internal/buildstep),
-# since a check that always fails gets ignored. What it cannot read it says so about.
+# since a check that always fails gets ignored, and two helpers that come and go every few
+# minutes: iCloud Photos' cloudphotod and iTerm's pidinfo, each by its exact name. What it
+# cannot read it says so about.
 state() {
 	echo "## launch agents"
 	ls -1 "$HOME/Library/LaunchAgents" 2>/dev/null || true
@@ -43,7 +47,8 @@ state() {
 	echo "## orphans of this user"
 	orphans=$(ps -axo ppid=,uid=,comm=) || echo "UNREADABLE processes"
 	printf '%s\n' "${orphans:-}" | awk -v uid="$(id -u)" '$1==1 && $2==uid {sub(/^ *[0-9]+ +[0-9]+ +/,""); print}' |
-		{ grep -vE '^(/System/|/usr/libexec/|/usr/sbin/|/sbin/|/Library/Apple/|/Applications/Docker\.app/)' || true; } | sort -u
+		{ grep -vE '^(/System/|/usr/libexec/|/usr/sbin/|/sbin/|/Library/Apple/|/Applications/Docker\.app/)' || true; } |
+		{ grep -vxE 'cloudphotod|/Applications/iTerm\.app/Contents/XPCServices/pidinfo\.xpc/Contents/MacOS/pidinfo' || true; } | sort -u
 }
 
 # Any agent's session left on the machine could read what the build is about to hold.
@@ -171,10 +176,11 @@ def main():
         return 0
     if mode == "scope":
         held = repositories()
-        if sorted(held) != sorted(allowed):
+        print("the project holds:", " ".join(sorted(held)) or "no image")
+        if allowed and sorted(held) != sorted(allowed):
             problems.append("the project's images are not the allowed ones")
-            print("WRONG the project holds:", " ".join(sorted(held)))
-        for repo in allowed:
+            print("WRONG the allowed ones are:", " ".join(sorted(allowed)))
+        for repo in allowed or held:
             granted, _ = actions_on(repo)
             if granted == ["pull", "push"]:
                 print(repo, "pull,push OK")
@@ -197,7 +203,7 @@ def main():
                 if status == 202 and answer.get("Location"):
                     ask(urllib.parse.urljoin(registry, answer["Location"]), headers, "DELETE")
     else:
-        for repo in allowed:
+        for repo in allowed or repositories():
             granted, _ = actions_on(repo)
             if granted is None or "push" not in granted:
                 print(repo, "login refused OK" if granted is None else "no push OK")

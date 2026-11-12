@@ -139,6 +139,9 @@ type manager struct {
 	// (autopush.go).
 	pushHelper         []string
 	pushHelperProjects map[string]bool
+	// pushWindowProjects are the GitLab projects whose every build pushes through the
+	// window (SetPushWindowProjects).
+	pushWindowProjects map[string]bool
 	// projectRegistries overrides orgRegistries for one project (SetProjectRegistries).
 	projectRegistries map[uuid.UUID]string
 	// helperWait and helperRetry bound how an unlisted build waits for the helper while
@@ -550,7 +553,9 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	if gate != nil {
 		defer m.closeGate(job.ID)
-		runCtx = m.readCommands(runCtx, job.ID, gate)
+		if gate.listed() {
+			runCtx = m.readCommands(runCtx, job.ID, gate)
+		}
 		defer m.startBudget(job, gate, cancel).Stop()
 		if gate.machine, err = m.captureMachine(runCtx); err != nil {
 			m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), traceMeta{mode: buildMode(parsePayload(job.Payload, m.logger))})
@@ -637,7 +642,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			return
 		}
 		m.publishPhase(job.ID, "pull")
-		if gate != nil {
+		if gate.listed() {
 			if err := buildstep.ReplaceGitDir(runCtx, workDir, pushBranch, m.logger); err != nil {
 				m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), meta)
 				return
@@ -653,7 +658,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			return
 		}
 		log.Info("edit workspace ready", "workdir", workDir, "branch", pushBranch)
-		if gate != nil {
+		if gate.listed() {
 			if gate.base, err = buildstep.HeadCommit(runCtx, workDir, m.logger); err != nil {
 				m.finishFailed(ctx, job, "read the branch's head: "+err.Error(), meta)
 				return
@@ -726,7 +731,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			Model:           claudeCfg.Model,
 			Effort:          claudeCfg.Effort,
 		}
-		if gate != nil {
+		if gate.listed() {
 			// What the agent reads and prints is read too; a real value in the request
 			// stops here, before it reaches the model.
 			gate.scan.Scan("the agent's input", []byte(claudePrompt))
@@ -736,6 +741,9 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			}
 			runSpec.StdoutTrace = gate.scan.Source("the agent's output")
 			runSpec.StderrTrace = gate.scan.Source("the agent's errors")
+		}
+		if gate != nil {
+			// The agent's process group dies with it, and the machine is taken as it is.
 			runSpec.StopGroupOnExit = true
 			if gate.containers, err = buildstep.ContainerIDs(runCtx, log); err != nil {
 				m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), meta)
@@ -984,7 +992,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		return
 	}
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
-	if gate != nil {
+	if gate.listed() {
 		body, err := callbackBody(job.ID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx)
 		if err == nil {
 			err = gate.beforeRelease(body)
@@ -1295,7 +1303,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	m.publishPhase(job.ID, "docker")
 	appTag := m.imageTag(spec, job)
 	buildDir := workDir
-	if gate != nil {
+	if gate.listed() {
 		if commitSHA == "" {
 			return "", errors.New("candidate acceptance: this build has no commit to build from")
 		}
@@ -1315,7 +1323,7 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	}
 	if gate != nil {
 		if m.registryFor(job) == "" {
-			return "", errors.New("candidate acceptance: an external-tls-only build needs a registry to push to")
+			return "", errors.New("candidate acceptance: a build that pushes through the window needs a registry to push to")
 		}
 		// docker reads no ~/.docker, which an agent can write, from here on, and no keychain.
 		registryHost, _, _ := strings.Cut(m.registryFor(job), "/")
@@ -1414,7 +1422,7 @@ func (m *manager) SetPushCredentialDir(dir string) { m.pushCredentialDir = dir }
 // digest the registry gives, and returns that digest. Any other app keeps the path it
 // had. buildDir holds what the image was built from: the mode is read from there.
 func (m *manager) acceptCandidate(ctx context.Context, buildDir string, spec payloadSpec, job *domain.Job, appTag, pushedDigest, commitSHA string, gate *jobGate, log *slog.Logger) (string, error) {
-	if gate == nil {
+	if !gate.listed() {
 		return pushedDigest, nil
 	}
 	mode, err := buildstep.ReadDBMode(buildDir)
@@ -1782,7 +1790,7 @@ func (m *manager) notify(ctx context.Context, jobID uuid.UUID, kind domain.Build
 // commitAndPush publishes what the build left in workDir. A listed project goes through
 // its gate; the error says what to report either way.
 func (m *manager) commitAndPush(ctx context.Context, workDir, remote, branch, message string, force bool, gate *jobGate) (string, error) {
-	if gate != nil {
+	if gate.listed() {
 		return gate.commitAndPush(ctx, workDir, remote, branch, message, force, m.logger)
 	}
 	commit, err := buildstep.GitCommitAndPush(ctx, workDir, remote, branch, message, force, m.logger)
