@@ -84,7 +84,8 @@ function oneLine(s: string): string {
 // tools show their target file when present, else the bare tool name.
 function toolDetail(e: FeedEvent): string {
   if (e.tool === "Bash") {
-    const cmd = oneLine(e.text ?? "");
+    // Traces saved before 13 Nov carry the command in file.
+    const cmd = oneLine(e.text || e.file || "");
     return cmd ? `$ ${cmd}` : "$";
   }
   if (e.file) return e.file;

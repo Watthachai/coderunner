@@ -35,7 +35,8 @@ function oneLine(s: string): string {
 function currentAction(e: FeedEvent): string {
   const tool = e.tool ?? "tool";
   if (e.tool === "Bash") {
-    const cmd = oneLine(e.text ?? "");
+    // Traces saved before 13 Nov carry the command in file.
+    const cmd = oneLine(e.text || e.file || "");
     return cmd ? `$ ${cmd}` : "bash";
   }
   if (e.file) return `${tool} ${e.file}`;
@@ -56,7 +57,7 @@ function readTelemetry(events: FeedEvent[]): Telemetry {
     } else if (e.event === "tool_call") {
       rank = Math.max(rank, 1); // Claude is working
       tools += 1;
-      if (e.file) files.add(e.file);
+      if (e.file && e.tool !== "Bash") files.add(e.file);
       current = currentAction(e);
     } else if (e.event === "assistant_text") {
       rank = Math.max(rank, 1);

@@ -2535,7 +2535,7 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 		if ev.ToolName != "" {
 			msg.Kind = domain.WSToolCall
 			msg.Tool = ev.ToolName
-			msg.File = detailFromToolInput(ev.ToolInput)
+			msg.File, msg.Text = detailFromToolInput(ev.ToolInput)
 			msg.Before, msg.After = codeFromToolInput(ev.ToolName, ev.ToolInput)
 		} else {
 			msg.Kind = domain.WSAssistantText
@@ -2544,7 +2544,7 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 	case domain.ClaudeToolUse:
 		msg.Kind = domain.WSToolCall
 		msg.Tool = ev.ToolName
-		msg.File = detailFromToolInput(ev.ToolInput)
+		msg.File, msg.Text = detailFromToolInput(ev.ToolInput)
 		msg.Before, msg.After = codeFromToolInput(ev.ToolName, ev.ToolInput)
 	case domain.ClaudeToolResult:
 		msg.Kind = domain.WSToolResult
@@ -2561,11 +2561,12 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 }
 
 // detailFromToolInput best-effort extracts a human-meaningful detail from a
-// tool_use input so the live console reads like Claude's actions: the file path
-// (Read/Edit/Write), the command (Bash), the pattern (Grep/Glob), or a URL.
-func detailFromToolInput(input json.RawMessage) string {
+// tool_use input so the live console reads like Claude's actions. A file path
+// (Read/Edit/Write) is the file; the command (Bash), the pattern (Grep/Glob) or a
+// URL is text, so the console can show it and FILES counts only files.
+func detailFromToolInput(input json.RawMessage) (file, text string) {
 	if len(input) == 0 {
-		return ""
+		return "", ""
 	}
 	var in struct {
 		FilePath string `json:"file_path"`
@@ -2575,21 +2576,21 @@ func detailFromToolInput(input json.RawMessage) string {
 		URL      string `json:"url"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
-		return ""
+		return "", ""
 	}
 	switch {
 	case in.FilePath != "":
-		return in.FilePath
-	case in.Path != "":
-		return in.Path
+		return in.FilePath, ""
 	case in.Command != "":
-		return truncateOneLine(in.Command, 100)
+		return "", truncateOneLine(in.Command, 100)
 	case in.Pattern != "":
-		return in.Pattern
+		return "", in.Pattern
+	case in.Path != "":
+		return in.Path, ""
 	case in.URL != "":
-		return in.URL
+		return "", in.URL
 	}
-	return ""
+	return "", ""
 }
 
 // maxDiffRunes caps the code carried per Write/Edit event so large files don't
