@@ -291,3 +291,21 @@ func TestClaudeAuthMonitorSettings(t *testing.T) {
 		t.Fatal("a malformed expiry date was accepted")
 	}
 }
+
+func TestInternalOpenIPsComeFromEnv(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_INTERNAL_OPEN_IPS", " 172.168.1.128, ::1 ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.InternalOpenIPs) != 2 || cfg.InternalOpenIPs[0].String() != "172.168.1.128" || cfg.InternalOpenIPs[1].String() != "::1" {
+		t.Errorf("InternalOpenIPs = %v", cfg.InternalOpenIPs)
+	}
+	for _, raw := range []string{"172.168.1.0/24", "laptop", "172.168.1.128:80"} {
+		t.Setenv("CRN_INTERNAL_OPEN_IPS", raw)
+		if _, err := Load(); err == nil {
+			t.Errorf("CRN_INTERNAL_OPEN_IPS=%q loaded; want an error: one address each, no ranges", raw)
+		}
+	}
+}

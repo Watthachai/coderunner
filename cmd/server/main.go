@@ -104,6 +104,9 @@ func run() error {
 	if len(cfg.InternalTokenHashes) == 0 {
 		logger.Warn("CRN_INTERNAL_TOKEN_SHA256 names no token: /internal/* takes requests without one")
 	}
+	if len(cfg.InternalOpenIPs) > 0 {
+		logger.Info("/internal/* takes requests without a token from these addresses", "ips", cfg.InternalOpenIPs)
+	}
 	if cfg.FTCDVCallbackURL != "" && len(cfg.FTCDVCallbackOrgs) == 0 {
 		logger.Warn("CRN_FTC_DV_CALLBACK_URL is set but CRN_FTC_DV_CALLBACK_ORGS names no org: no build-status callback is sent")
 	}
@@ -173,7 +176,7 @@ func run() error {
 	// --- HTTP / WebSocket server (chi router) ---
 	// api.NewServer registers all routes and returns an http.Handler. The git
 	// remote is echoed back to FBD in the ingest response.
-	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote, cfg.GithubOwner, cfg.ProjectsDir, cfg.TerminalShell, cfg.TerminalEnabled, cfg.ClaudeBinPath, claudeDefaults, cfg.InternalTokenHashes, authMonitor.Status)
+	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote, cfg.GithubOwner, cfg.ProjectsDir, cfg.TerminalShell, cfg.TerminalEnabled, cfg.ClaudeBinPath, claudeDefaults, cfg.InternalTokenHashes, cfg.InternalOpenIPs, authMonitor.Status)
 
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,

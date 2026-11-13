@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -122,6 +123,12 @@ type Config struct {
 	// CRN_INTERNAL_TOKEN_SHA256="fittcore=<sha256>,operator=<sha256>"; empty
 	// leaves /internal open, and a malformed entry stops startup.
 	InternalTokenHashes map[string]string
+
+	// InternalOpenIPs may call /internal/* without a token: the addresses their
+	// connections come from, as the server sees them (never a forwarded header).
+	// Set as CRN_INTERNAL_OPEN_IPS="172.168.1.128" (comma or space separated, one
+	// address each, no ranges). Only matters once InternalTokenHashes is set.
+	InternalOpenIPs []netip.Addr
 
 	// BuildImage toggles the docker-image pipeline: after a successful build CRN
 	// runs `docker build` on the produced Next standalone app and (if
@@ -350,6 +357,14 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.InternalTokenHashes = tokenHashes
+
+	for _, raw := range strings.FieldsFunc(os.Getenv("CRN_INTERNAL_OPEN_IPS"), func(r rune) bool { return r == ',' || r == ' ' }) {
+		ip, err := netip.ParseAddr(raw)
+		if err != nil {
+			return nil, fmt.Errorf("config: CRN_INTERNAL_OPEN_IPS entry %q is not one IP address", raw)
+		}
+		cfg.InternalOpenIPs = append(cfg.InternalOpenIPs, ip)
+	}
 
 	if path := os.Getenv("CRN_FTC_DV_CALLBACK_CA"); path != "" {
 		raw, err := os.ReadFile(path)

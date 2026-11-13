@@ -36,6 +36,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -94,6 +95,9 @@ type server struct {
 	// internalTokens are the bearer tokens /internal/* accepts, name -> SHA-256
 	// hex (internalAuth). Empty leaves /internal open.
 	internalTokens map[string]string
+	// internalOpenIPs may call /internal/* without a token, judged by the address
+	// peerAddr saw the connection come from.
+	internalOpenIPs map[netip.Addr]bool
 }
 
 // defaultOrgID is the org an ingest call is attributed to when the body carries
@@ -107,7 +111,7 @@ var defaultOrgID = uuid.MustParse("00000000-0000-0000-0000-0000000000fb")
 // + issues endpoints). projectsDir is the per-project working-dir root used by
 // the interactive terminal WS, and terminalShell is the optional shell override
 // for that terminal.
-func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell string, terminalEnabled bool, claudeBin string, claudeDefaults buildsettings.Defaults, internalTokens map[string]string, claudeAuth func() domain.ClaudeAuthStatus) http.Handler {
+func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gitRemote, githubOwner, projectsDir, terminalShell string, terminalEnabled bool, claudeBin string, claudeDefaults buildsettings.Defaults, internalTokens map[string]string, internalOpenIPs []netip.Addr, claudeAuth func() domain.ClaudeAuthStatus) http.Handler {
 	s := &server{
 		logger:         logger,
 		store:          store,
@@ -121,9 +125,14 @@ func NewServer(logger *slog.Logger, store domain.Store, jm domain.JobManager, gi
 		claudeDefaults: claudeDefaults,
 		internalTokens: internalTokens,
 	}
+	s.internalOpenIPs = map[netip.Addr]bool{}
+	for _, ip := range internalOpenIPs {
+		s.internalOpenIPs[ip.Unmap()] = true
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(s.peerAddr) // before RealIP, which rewrites RemoteAddr from headers
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(devCORS)
@@ -285,13 +294,35 @@ var internalWSAccept = &websocket.AcceptOptions{
 	Subprotocols:       []string{wsBearerProtocol},
 }
 
+// peerKey holds, in a request's context, the address its connection came from.
+type peerKey struct{}
+
+// peerAddr records the connection's own address before middleware.RealIP replaces
+// RemoteAddr with whatever X-Forwarded-For or X-Real-IP claims.
+func (s *server) peerAddr(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+			r = r.WithContext(context.WithValue(r.Context(), peerKey{}, ap.Addr().Unmap()))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// fromOpenIP reports whether the request's connection came from an address that
+// needs no token. Without peerAddr in front, nothing is open.
+func (s *server) fromOpenIP(r *http.Request) bool {
+	ip, ok := r.Context().Value(peerKey{}).(netip.Addr)
+	return ok && s.internalOpenIPs[ip]
+}
+
 // internalAuth guards /internal/*. With internalTokens set, a request needs
 // Authorization: Bearer <token> whose SHA-256 is one of them; a WebSocket
-// handshake may carry it as the subprotocol after wsBearerProtocol instead.
-// CORS preflights pass. Without tokens /internal stays open.
+// handshake may carry it as the subprotocol after wsBearerProtocol instead. A
+// connection from one of internalOpenIPs needs none. CORS preflights pass.
+// Without tokens /internal stays open.
 func (s *server) internalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.internalTokens) == 0 || r.Method == http.MethodOptions || !strings.HasPrefix(r.URL.Path, "/internal/") {
+		if len(s.internalTokens) == 0 || r.Method == http.MethodOptions || !strings.HasPrefix(r.URL.Path, "/internal/") || s.fromOpenIP(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
