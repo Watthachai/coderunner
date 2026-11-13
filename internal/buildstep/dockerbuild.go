@@ -187,6 +187,11 @@ Published port defaults to {{PORT}}; override APP_PORT. For private registries a
 // use per-project build numbers, so v1 would otherwise overwrite v1). name is
 // sanitized to the docker repo charset.
 func DemoImageTag(registry, name, projectID string, buildNo int) string {
+	return fmt.Sprintf("%s:v%d", demoImageRepo(registry, name, projectID), buildNo)
+}
+
+// demoImageRepo is the image name every build of a project is tagged under.
+func demoImageRepo(registry, name, projectID string) string {
 	id8 := projectID
 	if len(id8) > 8 {
 		id8 = id8[:8]
@@ -198,7 +203,7 @@ func DemoImageTag(registry, name, projectID string, buildNo int) string {
 	if registry != "" {
 		repo = strings.TrimRight(registry, "/") + "/" + repo
 	}
-	return fmt.Sprintf("%s:v%d", repo, buildNo)
+	return repo
 }
 
 // dockerSlug lowercases name and keeps only the docker repo charset
@@ -310,18 +315,28 @@ func BuildImage(ctx context.Context, dir, dockerfile, tag string, labels map[str
 	// Measured against the delivery registry with identical image content: as an
 	// index it failed every push; as a single manifest it pushed first try. A
 	// customer needs an image it can pull, not a supply-chain record.
+	return runDocker(ctx, logger, buildArgsFor(dir, dockerfile, tag, nil, labels)...)
+}
+
+// buildArgsFor is the docker build command line, build arguments and labels in name order.
+func buildArgsFor(dir, dockerfile, tag string, buildArgs, labels map[string]string) []string {
 	args := []string{"build", "--platform", imagePlatform,
 		"--provenance=false", "--sbom=false",
 		"-f", filepath.Join(dir, dockerfile), "-t", tag}
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
+	for _, flag := range []struct {
+		name   string
+		values map[string]string
+	}{{"--build-arg", buildArgs}, {"--label", labels}} {
+		keys := make([]string, 0, len(flag.values))
+		for k := range flag.values {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, flag.name, k+"="+flag.values[k])
+		}
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		args = append(args, "--label", k+"="+labels[k])
-	}
-	return runDocker(ctx, logger, append(args, dir)...)
+	return append(args, dir)
 }
 
 // pushAttempts/pushBackoff bound the retry in PushImage. The race it exists for

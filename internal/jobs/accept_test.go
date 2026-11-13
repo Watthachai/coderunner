@@ -36,11 +36,17 @@ echo "docker-config $1 ${DOCKER_CONFIG:-none}" >> "$CRN_TEST_DOCKER_LOG"
 [ -n "$DOCKER_CONFIG" ] && [ -f "$DOCKER_CONFIG/config.json" ] && echo "docker-auth $1 $(cat "$DOCKER_CONFIG/config.json")" >> "$CRN_TEST_DOCKER_LOG"
 [ "$1" = "ps" ] && cat "$FAKE_CONTAINERS" 2>/dev/null
 case "$1 $2" in
-  "image inspect") echo "[\"$(echo "$3" | sed 's/:v[0-9]*$//')@${FAKE_LOCAL_DIGEST}\"]" ;;
+  "image inspect")
+    if [ "$#" = 3 ]; then
+      printf '%s\n' "$FAKE_IMAGE_JSON" | sed "s|@REVISION@|$(cat "$EVENTS.revision" 2>/dev/null)|g"
+    else
+      echo "[\"$(echo "$3" | sed 's/:v[0-9]*$//')@${FAKE_LOCAL_DIGEST}\"]"
+    fi ;;
   "manifest inspect") echo "{\"Descriptor\":{\"digest\":\"${FAKE_REGISTRY_DIGEST}\"}}" ;;
 esac
 case "$1" in
   build)
+    for a; do case "$a" in *_REVISION=*) echo "${a#*=}" > "$EVENTS.revision" ;; esac; done
     for context; do :; done
     cp -RP "$context" "$CONTEXT_COPY"
     [ -n "$FAKE_BUILD_OUTPUT" ] && echo "$FAKE_BUILD_OUTPUT"
@@ -318,6 +324,11 @@ type pipelineOpts struct {
 	projectRegistry string
 	// windowProjects are the GitLab projects every build of which pushes through the window.
 	windowProjects []string
+	// seed adds files to the branch before the build, or with noDeliveryFile drops one of
+	// the defaults (package.json, crn-delivery.json, crn.runtime.json).
+	seed map[string]string
+	// widget asks for the feedback widget.
+	widget bool
 }
 
 func runPipeline(t *testing.T, accept, deliveryJSON string, env map[string]string) pipelineRun {
@@ -388,7 +399,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.test")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.test")
-	for _, name := range []string{"FAKE_BUILD_OUTPUT", "FAKE_BUILD_RUNS", "FAKE_BUILD_FAILS", "FAKE_PUSH_OUTPUT", "FAKE_PUSH_FAILS", "FAKE_PUSH_RUNS", "FAKE_VERIFY_OUTPUT", "FAKE_ACCEPT_OUTPUT", "FAKE_ACCEPT_RUNS", "FAKE_HELPER_FAILS", "FAKE_HELPER_DIGEST", "FAKE_HELPER_BUSY_TIMES"} {
+	for _, name := range []string{"FAKE_BUILD_OUTPUT", "FAKE_BUILD_RUNS", "FAKE_BUILD_FAILS", "FAKE_PUSH_OUTPUT", "FAKE_PUSH_FAILS", "FAKE_PUSH_RUNS", "FAKE_VERIFY_OUTPUT", "FAKE_ACCEPT_OUTPUT", "FAKE_ACCEPT_RUNS", "FAKE_HELPER_FAILS", "FAKE_HELPER_DIGEST", "FAKE_HELPER_BUSY_TIMES", "FAKE_IMAGE_JSON"} {
 		t.Setenv(name, "")
 	}
 	for k, v := range o.env {
@@ -401,13 +412,20 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	git(t, root, "init", "--bare", "-q", remote)
 	seed := filepath.Join(root, "seed")
 	git(t, root, "init", "-q", "-b", branch, seed)
-	for name, body := range map[string]string{
+	files := map[string]string{
 		"package.json":      `{"name":"app","dependencies":{"next":"16.2.9"}}`,
 		"crn-delivery.json": o.delivery,
 		"crn.runtime.json":  `{"env":[]}`,
-	} {
+	}
+	for name, body := range o.seed {
+		files[name] = body
+	}
+	for name, body := range files {
 		if body == noDeliveryFile {
 			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(seed, name)), 0o755); err != nil {
+			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(seed, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -619,7 +637,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 		}
 	}()
 
-	payload, _ := json.Marshal(map[string]any{"mode": "edit", "change": o.change, "name": "app", "feedback_widget": false})
+	payload, _ := json.Marshal(map[string]any{"mode": "edit", "change": o.change, "name": "app", "feedback_widget": o.widget})
 	job := &domain.Job{ID: uuid.New(), ProjectID: project, OrgID: org, BuildNo: 3, Payload: payload, Status: domain.JobQueued}
 	if o.queuedAgo > 0 {
 		job.QueuedAt = time.Now().Add(-o.queuedAgo)

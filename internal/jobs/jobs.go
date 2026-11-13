@@ -736,6 +736,20 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		resumeSession = job.SessionID
 	}
 
+	// How the image is built is the repository owner's: crn-image.json, and the Dockerfile it
+	// names, as they are before the agent runs (buildstep.RepoImageFile).
+	repoImage, err := buildstep.SnapshotRepoImage(workDir)
+	if err != nil {
+		m.finishFailed(ctx, job, err.Error(), meta)
+		return
+	}
+	if repoImage.Image != nil {
+		log.Info("the image is built with the repository's own Dockerfile", "dockerfile", repoImage.Image.Dockerfile)
+		if spec.Mode == "edit" {
+			claudePrompt = repoImagePrompt(spec.Change, repoImage.Image)
+		}
+	}
+
 	// --- run Claude Code (optional) ---
 	var result domain.RunResult
 	if m.runClaude {
@@ -876,6 +890,13 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// shipped. Injection is best-effort; a widget that cannot be removed fails the
 	// build, because shipping it would break the default.
 	switch inject, removeOld := feedbackWidgetPlan(spec); {
+	case repoImage.Image != nil:
+		// CRN puts the widget into a Next.js app or plain HTML; an app with its own
+		// Dockerfile is its owner's to change (FITT Billing: no widget, web/ untouched).
+		log.Info("feedback widget: not for an app built with its own Dockerfile", "asked", inject)
+		if inject {
+			m.publishText(job.ID, "💬 feedback widget not added: this app is built with its own Dockerfile ("+buildstep.RepoImageFile+"), which CRN does not change.")
+		}
 	case inject:
 		if n, injErr := buildstep.InjectFeedbackWidget(workDir, job.ProjectID.String(), m.feedbackIngestURL, m.logger); injErr != nil {
 			log.Warn("inject feedback widget failed", "err", injErr)
@@ -895,7 +916,9 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// Scaffold a zero-setup runner (docker-compose + QUICKSTART) for DB-backed
 	// demos so a cloned repo "just runs". Best-effort; announce it in the stream
 	// (and thus the saved trace) so the operator sees how to run the result.
-	if scaffolded, sErr := buildstep.ScaffoldRun(workDir, m.logger); sErr != nil {
+	if repoImage.Image != nil {
+		// Nothing to scaffold: the repository says how its image is built.
+	} else if scaffolded, sErr := buildstep.ScaffoldRun(workDir, m.logger); sErr != nil {
 		log.Warn("scaffold run helpers failed", "err", sErr)
 	} else if scaffolded {
 		port := buildstep.ScaffoldPort(workDir)
@@ -915,7 +938,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// durable trace) next to the push line — never fatal, because they are
 	// heuristics and the operator is the one who can tell a legitimate reference
 	// table from leftover demo rows.
-	if findings := buildstep.CheckHarnessRules(workDir); len(findings) > 0 {
+	if findings := buildstep.CheckHarnessRules(workDir); repoImage.Image == nil && len(findings) > 0 {
 		buildstep.LogFindings(findings, log)
 		for _, f := range findings {
 			m.publish(job.ID, domain.BuildEventMsg{
@@ -927,9 +950,16 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 	}
 
+	if err := repoImage.Unchanged(workDir); err != nil {
+		m.finishFailed(ctx, job, err.Error(), meta)
+		return
+	}
+
 	// The AI repairs within its single session; this independent gate cannot be
 	// satisfied by an authored claim of success. Run after widget/scaffold changes.
-	if m.runClaude || m.buildImage {
+	// An app built with its own Dockerfile is checked on the image instead, after the
+	// commit it is built from is pushed (buildAndPushImage).
+	if (m.runClaude || m.buildImage) && repoImage.Image == nil {
 		m.publishPhase(job.ID, "verify")
 		if err := releasePrep(workDir, priorMigrations); err != nil {
 			m.finishFailed(ctx, job, err.Error(), meta)
@@ -954,7 +984,9 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// docker-compose, INSTALL) BEFORE the git push so it is committed alongside the
 	// build. Uses the deterministic image tags the push-time image build produces.
 	// Gated by CRN_BUILD_IMAGE; no-op for non-Next apps.
-	m.writeImageBundle(workDir, spec, job, log)
+	if repoImage.Image == nil {
+		m.writeImageBundle(workDir, spec, job, log)
+	}
 
 	// --- success: git commit + push the build branch (--force only for a new build) ---
 	// pushRemote/pushBranch were resolved above per git model: the owner model
@@ -1004,7 +1036,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// deliverable: if it can't be built/pushed, FAIL the build rather than
 	// releasing with a "branch:main" tag that would make a consumer fall back to
 	// git-cloning the source repo. (When image mode is off, this is a no-op.)
-	imageDigest, err := m.buildAndPushImage(runCtx, workDir, spec, job, commitSHA, gate, log)
+	imageDigest, err := m.buildAndPushImage(runCtx, workDir, spec, job, commitSHA, gate, repoImage, log)
 	if err != nil {
 		log.Error("image build failed; failing the build", "err", err)
 		if runCtx.Err() != nil && ctx.Err() == nil {
@@ -1322,19 +1354,24 @@ func (m *manager) mirrorImage(ctx context.Context, appTag string, job *domain.Jo
 // A gated build (gate.go) takes its image from the commit alone: its context is an export
 // of the pushed commit, so nothing untracked or ignored in the workspace can reach the
 // image, and the labels are read from the same export.
-func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, commitSHA string, gate *jobGate, log *slog.Logger) (string, error) {
+func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec payloadSpec, job *domain.Job, commitSHA string, gate *jobGate, repo *buildstep.RepoImageBase, log *slog.Logger) (string, error) {
 	if !m.buildImage {
 		return "", nil
 	}
-	if !buildstep.IsNextApp(workDir) {
+	// own: the repository's crn-image.json says how its image is built (buildstep.RepoImageFile).
+	own := repo != nil && repo.Image != nil
+	if !own && !buildstep.IsNextApp(workDir) {
 		log.Info("docker image skipped (not a Next app)")
 		return "", nil
 	}
 	m.publishPhase(job.ID, "docker")
 	appTag := m.imageTag(spec, job)
 	buildDir := workDir
-	if gate.listed() {
+	if gate.listed() || own {
 		if commitSHA == "" {
+			if own {
+				return "", errors.New("an app built with its own Dockerfile is built from the commit this build pushed, and there is none")
+			}
 			return "", errors.New("candidate acceptance: this build has no commit to build from")
 		}
 		exported, err := os.MkdirTemp("", "crn-build-context-")
@@ -1342,13 +1379,30 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 			return "", err
 		}
 		defer os.RemoveAll(exported)
-		if err := buildstep.ExportCommit(ctx, gate.repo.Dir, commitSHA, exported); err != nil {
+		source := workDir
+		if gate.listed() {
+			source = gate.repo.Dir
+		}
+		if err := buildstep.ExportCommit(ctx, source, commitSHA, exported); err != nil {
+			if own && !gate.listed() {
+				return "", err
+			}
 			return "", fmt.Errorf("candidate acceptance: %w", err)
 		}
 		buildDir = exported
 	}
-	labels, err := imageLabels(buildDir, job, commitSHA)
-	if err != nil {
+	dockerfile, buildArgs := "Dockerfile", map[string]string(nil)
+	var labels map[string]string
+	var err error
+	if own {
+		// What is built is the pushed commit: it must hold the owner's files as they were.
+		if err := repo.Unchanged(buildDir); err != nil {
+			return "", err
+		}
+		appTag = buildstep.CommitImageTag(m.registryFor(job), spec.Name, job.ProjectID.String(), commitSHA)
+		dockerfile, buildArgs = repo.Image.Dockerfile, repo.Image.BuildArgs(commitSHA)
+		labels = repoImageLabels(job, commitSHA, repo.Image)
+	} else if labels, err = imageLabels(buildDir, job, commitSHA); err != nil {
 		return "", err
 	}
 	if gate != nil {
@@ -1364,12 +1418,23 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	}
 
 	// App image (opaque, self-migrating) — REQUIRED. Build failure fails the build.
-	if err := buildstep.BuildImage(ctx, buildDir, "Dockerfile", appTag, labels, log); err != nil {
+	if err := buildstep.BuildImageFrom(ctx, buildDir, dockerfile, appTag, buildArgs, labels, log); err != nil {
 		m.publish(job.ID, domain.BuildEventMsg{
 			Kind: domain.WSError, Text: "docker build (app) failed: " + err.Error(),
 			JobID: job.ID.String(), Timestamp: time.Now().UTC(),
 		})
 		return "", fmt.Errorf("docker build (app) failed: %w", err)
+	}
+	// An image CRN did not write the Dockerfile of must say what it is before it goes up.
+	if own {
+		if err := buildstep.CheckRepoImage(ctx, appTag, commitSHA, repo.Image.User); err != nil {
+			m.publish(job.ID, domain.BuildEventMsg{
+				Kind: domain.WSError, Text: err.Error(),
+				JobID: job.ID.String(), Timestamp: time.Now().UTC(),
+			})
+			return "", err
+		}
+		m.publishText(job.ID, fmt.Sprintf("✓ built %s with %s from %s: linux/amd64, revision label = the commit%s", appTag, dockerfile, shortSHA(commitSHA), userNote(repo.Image.User)))
 	}
 	// App image must be PULLABLE for a registry consumer — push failure fails too.
 	digest := ""
@@ -1428,9 +1493,13 @@ func (m *manager) buildAndPushImage(ctx context.Context, workDir string, spec pa
 	if registry != "" {
 		dest = registry
 	}
+	built := "✓ image built (self-migrating)"
+	if own {
+		built = "✓ image built with " + dockerfile
+	}
 	m.publish(job.ID, domain.BuildEventMsg{
 		Kind:      domain.WSAssistantText,
-		Text:      fmt.Sprintf("✓ image built (self-migrating) → %s → %s", appTag, dest),
+		Text:      fmt.Sprintf("%s → %s → %s", built, appTag, dest),
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
@@ -1546,6 +1615,41 @@ func imageLabels(workDir string, job *domain.Job, commitSHA string) (map[string]
 		ProjectID: job.ProjectID.String(), JobID: job.ID.String(), Commit: commitSHA,
 		BuildNo: job.BuildNo, Schedule: schedule, RuntimeSHA256: runtimeSHA, DBMode: dbMode,
 	}.Map(), nil
+}
+
+// repoImageLabels are the labels CRN adds to an image built with the repository's own
+// Dockerfile: project and build, and the commit when no build argument carries it to the
+// Dockerfile. None of CRN's run-anywhere labels: CRN did not write or check that app's runtime.
+func repoImageLabels(job *domain.Job, commitSHA string, img *buildstep.RepoImage) map[string]string {
+	labels := map[string]string{
+		"fitt.crn.project_id": job.ProjectID.String(),
+		"fitt.crn.job_id":     job.ID.String(),
+		"fitt.crn.build_no":   strconv.Itoa(job.BuildNo),
+	}
+	if img.RevisionBuildArg == "" {
+		labels["org.opencontainers.image.revision"] = commitSHA
+	}
+	return labels
+}
+
+func userNote(user string) string {
+	if user == "" {
+		return ""
+	}
+	return ", user " + user
+}
+
+// repoImagePrompt is what an edit build asks of the agent when the repository builds its
+// image with its own Dockerfile: CRN builds and pushes it, and the repository's own rules
+// say what the agent may change.
+func repoImagePrompt(change string, img *buildstep.RepoImage) string {
+	return "You are working in an existing repository in the current directory. " +
+		"It builds its image with its own Dockerfile, " + img.Dockerfile + ", named in " + buildstep.RepoImageFile + ". " +
+		"When you finish, CRN commits your changes, builds that commit with that Dockerfile and pushes the image itself: " +
+		"do not run docker build or docker push, and do not add a Dockerfile, crn-delivery.json, Next.js or a feedback widget. " +
+		"Do not change " + buildstep.RepoImageFile + ", " + img.Dockerfile + " or any .dockerignore: a build that does is stopped. " +
+		"Follow the repository's own instructions (CRN.md, AGENTS.md) for what you may change. " +
+		"Apply this change:\n\n" + change
 }
 
 // reusedDigest is the registry digest of a reused build's image, read from the

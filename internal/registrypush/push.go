@@ -110,13 +110,15 @@ func LoadConfig(file string, owner int) (Config, error) {
 }
 
 var (
-	imageName   = regexp.MustCompile(`^crn-demo-[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
-	tagName     = regexp.MustCompile(`^v[1-9][0-9]{0,5}$`)
+	imageName = regexp.MustCompile(`^crn-demo-[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+	// A build's number (v1, v2, ...), or the full commit an app built from its own
+	// Dockerfile was built from (crn-image.json).
+	tagName     = regexp.MustCompile(`^(?:v[1-9][0-9]{0,5}|[0-9a-f]{40})$`)
 	blobName    = regexp.MustCompile(`^blobs/sha256/([0-9a-f]{64})$`)
 	digestValue = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
-// target is a ref the helper may push: registry/group/project/crn-demo-...:vN.
+// target is a ref the helper may push: registry/group/project/crn-demo-...:vN or :<commit>.
 type target struct {
 	ref, project, repository, tag string
 }
@@ -143,7 +145,7 @@ func parseTarget(cfg Config, ref string) (target, error) {
 	case !imageName.MatchString(name):
 		return target{}, fmt.Errorf("image %q is not a CRN image", name)
 	case !tagName.MatchString(tag):
-		return target{}, fmt.Errorf("tag %q is not a build's tag (v1, v2, ...)", tag)
+		return target{}, fmt.Errorf("tag %q is not a build's tag (v1, v2, ... or a full commit SHA)", tag)
 	}
 	return target{ref: ref, project: project, repository: repository, tag: tag}, nil
 }

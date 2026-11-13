@@ -304,6 +304,21 @@ func TestItPushesTheImageItWasGivenAndSaysTheRegistrysDigest(t *testing.T) {
 }
 
 // The one thing an agent could do with the helper is add tags: it never replaces one.
+// An app built from its own Dockerfile is tagged with the commit it was built from
+// (crn-image.json, FITT Billing 13 Nov): the full 40-hex SHA, never written twice either.
+func TestItPushesACommitTag(t *testing.T) {
+	s := newSetup(t)
+	sha := "78614b84d799ff164ab43d906e81c9c80eeaedbf"
+	ref := s.ref("fitt/ftcdv-uat", "crn-demo-fitt-billing-digital-79475c78", sha)
+	img := newImage(ref)
+	if _, err := s.push(t, ref, img.tar(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.reg.tags["fitt/ftcdv-uat/crn-demo-fitt-billing-digital-79475c78"][sha]; !bytes.Equal(got, img.manifest) {
+		t.Errorf("the registry holds another manifest under %s: %s", sha, got)
+	}
+}
+
 func TestItNeverWritesATagThatIsAlreadyThere(t *testing.T) {
 	s := newSetup(t)
 	ref := s.ref("fitt/ftcdv-uat", "crn-demo-hello-fitt-c0241b87", "v2")
@@ -336,6 +351,9 @@ func TestItServesOnlyItsOwnProjectsImagesAndTags(t *testing.T) {
 		"upper case":           s.ref("fitt/ftcdv-uat", "crn-demo-X-12345678", "v1"),
 		"a project like ours":  s.ref("fitt/ftcdv-uat-evil", "crn-demo-x-12345678", "v1"),
 		"a group of a project": s.ref("fitt/ftcdv-uat/sub", "crn-demo-x-12345678", "v1"),
+		"a short commit":       s.ref("fitt/ftcdv-uat", "crn-demo-x-12345678", "78614b8"),
+		"an upper-case commit": s.ref("fitt/ftcdv-uat", "crn-demo-x-12345678", "78614B84D799FF164AB43D906E81C9C80EEAEDBF"),
+		"a commit and more":    s.ref("fitt/ftcdv-uat", "crn-demo-x-12345678", "78614b84d799ff164ab43d906e81c9c80eeaedbf0"),
 	}
 	for name, ref := range cases {
 		t.Run(name, func(t *testing.T) {
