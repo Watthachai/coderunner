@@ -35,6 +35,22 @@ export function assertTestResults(kind, result) {
   if (!s || !(s.expected > 0) || s.unexpected || s.flaky || s.skipped || result.errors?.length) throw new Error('Browser tests must exist and all pass without skips or flaky retries');
   return s.expected;
 }
+// unitFailures names each failed test in a vitest JSON report and why it failed, with paths
+// relative to the app, so a failed "unit tests" check says more than where the report was.
+export function unitFailures(result, cwd) {
+  const clean = text => String(text ?? '').replace(/\u001b\[[0-9;]*m/g, '').split(`${cwd}/`).join('')
+    .split('\n').filter(l => !/^\s*at .*(node_modules|<anonymous>|node:internal)/.test(l)).join('\n').trim();
+  const lines = [];
+  for (const file of result?.testResults ?? []) {
+    const name = clean(file.name);
+    const failed = (file.assertionResults ?? []).filter(a => a.status === 'failed');
+    for (const a of failed) lines.push(`${name} > ${clean(a.fullName)}\n${clean((a.failureMessages ?? []).join('\n')).slice(0, 600)}`);
+    if (!failed.length && file.status === 'failed') lines.push(`${name}: ${clean(file.message).slice(0, 600)}`);
+  }
+  const shown = lines.slice(0, 5);
+  if (lines.length > shown.length) shown.push(`…and ${lines.length - shown.length} more`);
+  return shown.join('\n');
+}
 // The suspension switch (FITT Billing, references/service-status.md): the customer image
 // runs against this fake status server — started from the same image under node — and
 // must answer 503 on / while suspended, keep /api/health reachable, and work normally
@@ -347,7 +363,11 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     if (contract.database) await npm('generate client', 'db:generate');
     await npm('typecheck', 'typecheck');
     const unitFile = path.join(scratch, 'unit.json');
-    await npm('unit tests', 'test:unit', ['--reporter=json', `--outputFile=${unitFile}`]);
+    await npm('unit tests', 'test:unit', ['--reporter=json', `--outputFile=${unitFile}`]).catch(async e => {
+      const failed = await fs.readFile(unitFile, 'utf8').then(t => unitFailures(JSON.parse(t), cwd)).catch(() => '');
+      if (failed) e.message += `\n${redact(failed)}`;
+      throw e;
+    });
     receipt.unit_tests = assertTestResults('unit', JSON.parse(await fs.readFile(unitFile, 'utf8')));
     const suffix = randomBytes(8).toString('hex');
     if (options.image) {

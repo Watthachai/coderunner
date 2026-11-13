@@ -140,3 +140,24 @@ test('the release checker checks the runtime file before building anything', asy
   assert.ok(check < body.indexOf("'locked install'"), 'before npm ci');
   assert.match(body, /name: 'runtime contract'/);
 });
+
+// OKR build 4 (13 Nov) failed "unit tests" with only "JSON report written to …/unit.json":
+// the report, the one place that named the failing test, was deleted with the scratch dir.
+import { unitFailures } from '../internal/buildstep/verify-delivery.mjs';
+test('a unit test failure names the test and why it failed', () => {
+  const report = { testResults: [
+    { name: '/w/app/src/ok.test.ts', status: 'passed', assertionResults: [{ fullName: 'fine', status: 'passed', failureMessages: [] }] },
+    { name: '/w/app/src/platform/architecture.test.ts', status: 'failed', assertionResults: [
+      { fullName: 'environment variables use the MODULE_<name>_ prefix', status: 'failed',
+        failureMessages: ['\u001b[31mAssertionError: expected [ Array(1) ] to deeply equal []\u001b[39m\n- Expected\n+ Received\n+   "src/app/api/fitt-feedback/route.ts: FITT_FEEDBACK_URL",\n    at /w/app/src/platform/architecture.test.ts:72:23\n    at file:///w/app/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at new Promise (<anonymous>)'] },
+    ] },
+    { name: '/w/app/src/broken.test.ts', status: 'failed', message: 'Failed to load url ./missing', assertionResults: [] },
+  ] };
+  const text = unitFailures(report, '/w/app');
+  assert.match(text, /src\/platform\/architecture\.test\.ts > environment variables use the MODULE_<name>_ prefix/);
+  assert.match(text, /AssertionError: expected \[ Array\(1\) \] to deeply equal \[\]/);
+  assert.match(text, /fitt-feedback\/route\.ts: FITT_FEEDBACK_URL/);
+  assert.match(text, /src\/broken\.test\.ts: Failed to load url \.\/missing/);
+  assert.match(text, /at src\/platform\/architecture\.test\.ts:72:23/);
+  assert.doesNotMatch(text, /\u001b\[|fine|\/w\/app\/|node_modules|<anonymous>/);
+});
