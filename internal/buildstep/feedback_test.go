@@ -448,3 +448,21 @@ func TestFeedbackWidgetSendsPinPicturesAsPNG(t *testing.T) {
 		t.Error("sending does not wait for the pictures still being painted")
 	}
 }
+
+// A pinned or cropped region shows as a 64px thumbnail in the panel. The operator asked
+// (13 Nov) to see it whole before sending: a click on the thumbnail opens it full size,
+// and a click anywhere or Esc closes it.
+func TestFeedbackWidgetOpensAPinPictureFullSize(t *testing.T) {
+	for _, want := range []string{
+		`<div class='zoom' hidden`,
+		`.pin img{width:64px;height:auto;max-height:48px;border-radius:4px;border:1px solid #eee;object-fit:cover;cursor:zoom-in}`,
+		`function openZoom(src)`,
+		`zoom.addEventListener("click", closeZoom)`,
+		`if (e.key === "Escape" && !zoom.hidden) closeZoom();`,
+		`if (shot) shot.addEventListener("click", function () { openZoom(p.region_shot); });`,
+	} {
+		if !strings.Contains(feedbackWidgetJS, want) {
+			t.Errorf("the widget lacks %s", want)
+		}
+	}
+}

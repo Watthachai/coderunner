@@ -261,7 +261,12 @@
     ".cropbtn.on{border-color:" + GREEN + ";color:" + GREEN + ";border-style:solid;background:rgba(88,204,2,.06)}" +
     ".pins{list-style:none;margin:0 0 10px;padding:0;display:flex;flex-direction:column;gap:6px}" +
     ".pin{display:flex;gap:8px;align-items:flex-start;border:1px solid #eee;border-radius:8px;padding:6px}" +
-    ".pin img{width:64px;height:auto;max-height:48px;border-radius:4px;border:1px solid #eee;object-fit:cover}" +
+    ".pin img{width:64px;height:auto;max-height:48px;border-radius:4px;border:1px solid #eee;object-fit:cover;cursor:zoom-in}" +
+    // A pin's picture full size, over everything; a click anywhere or Esc closes it.
+    ".zoom{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.8);display:flex;align-items:center;" +
+    "justify-content:center;padding:24px;cursor:zoom-out}" +
+    ".zoom[hidden]{display:none}" +
+    ".zoom img{max-width:100%;max-height:100%;border-radius:8px;background:#fff;box-shadow:0 16px 48px rgba(0,0,0,.5)}" +
     ".pin .pb{flex:1;min-width:0}" +
     ".pin code{font-size:10px;color:" + GREEN + ";display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".pin input{width:100%;border:1px solid #e5e5e5;border-radius:6px;padding:4px 6px;font-size:12px;margin-top:3px}" +
@@ -311,7 +316,8 @@
     "<ul class='elist'></ul>" +
     "<button class='send esend'>🛠 ส่งไปแก้</button>" +
     "<div class='status estatus'></div>" +
-    "</div>";
+    "</div>" +
+    "<div class='zoom' hidden title='คลิกเพื่อปิด'><img alt=''></div>";
 
   var fab = root.querySelector(".fab");
   var panel = root.querySelector(".panel");
@@ -321,6 +327,21 @@
   var noteEl = root.querySelector("textarea");
   var sendBtn = root.querySelector(".send");
   var statusEl = root.querySelector(".status");
+  var zoom = root.querySelector(".zoom");
+  var zoomImg = zoom.querySelector("img");
+
+  function openZoom(src) {
+    zoomImg.src = src;
+    zoom.hidden = false;
+  }
+  function closeZoom() {
+    zoom.hidden = true;
+    zoomImg.removeAttribute("src");
+  }
+  zoom.addEventListener("click", closeZoom);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !zoom.hidden) closeZoom();
+  });
 
   // --- 🐞 error capture (auto-detect) -----------------------------------------
   // A second FAB that only appears once an error is caught. Same confirm-to-send
@@ -478,6 +499,8 @@
         "<div class='pb'><code>" + p.selector + "</code>" +
         "<input placeholder='โน้ตจุดนี้…' value='" + (p.note || "").replace(/'/g, "&#39;") + "'></div>" +
         "<button class='x' title='remove'>✕</button>";
+      var shot = li.querySelector("img");
+      if (shot) shot.addEventListener("click", function () { openZoom(p.region_shot); });
       li.querySelector("input").addEventListener("input", function (e) { pins[i].note = e.target.value; });
       li.querySelector(".x").addEventListener("click", function () { pins.splice(i, 1); renderPins(); });
       pinsEl.appendChild(li);
