@@ -796,9 +796,13 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			gate.agentStarted = time.Now()
 		}
 
-		var backgrounded []string
+		var backgrounded []backgroundCall
+		refused := map[string]bool{}
 		emit := func(ev domain.ClaudeEvent) error {
 			backgrounded = append(backgrounded, backgroundWork(ev)...)
+			for _, id := range refusedCalls(ev) {
+				refused[id] = true
+			}
 			// Persist the session id as soon as it appears so a future build can
 			// --resume even if this run later fails.
 			if ev.SessionID != "" && ev.SessionID != job.SessionID {
@@ -880,11 +884,12 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 				return
 			}
 		}
-		// Claude runs with background tasks off (internal/claude agentEnv). Should a run
-		// still start one, the session may have ended with it unfinished: what it was
+		// Claude runs with background tasks off (internal/claude agentEnv), and refuses a
+		// call that asks for one (OKR #7: the agent then ran it in the foreground). Should
+		// a run still start one, the session may have ended with it unfinished: what it was
 		// doing may not be in the tree, so nothing of this run is committed.
-		if len(backgrounded) > 0 {
-			errMsg := "the agent left work running in the background (" + strings.Join(backgrounded, "; ") +
+		if left := stillInBackground(backgrounded, refused); len(left) > 0 {
+			errMsg := "the agent left work running in the background (" + strings.Join(left, "; ") +
 				"): its session ends with its turn, so that work may be missing from this build; nothing was committed"
 			log.Error("build failed", "err", errMsg, "cost_usd", result.CostUSD)
 			m.finishFailed(ctx, job, errMsg, meta)
@@ -2686,11 +2691,18 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 	return msg
 }
 
-// backgroundWork names each tool call in ev that runs in the background: a sub-agent or
-// a command whose result the agent gets only later, if its session still runs. It reads
-// every call of an assistant line, not only the first that ev.ToolName names.
-func backgroundWork(ev domain.ClaudeEvent) []string {
+// backgroundCall is a tool call the agent asked to run in the background.
+type backgroundCall struct {
+	id   string // the tool_use id; "" when the event does not carry the line
+	what string // e.g. Agent "Investigate BSA feedback items"
+}
+
+// backgroundWork lists each tool call in ev that asks to run in the background: a
+// sub-agent or a command whose result the agent gets only later, if its session still
+// runs. It reads every call of an assistant line, not only the first that ev.ToolName names.
+func backgroundWork(ev domain.ClaudeEvent) []backgroundCall {
 	type call struct {
+		ID    string          `json:"id"`
 		Name  string          `json:"name"`
 		Input json.RawMessage `json:"input"`
 	}
@@ -2711,7 +2723,7 @@ func backgroundWork(ev domain.ClaudeEvent) []string {
 			}
 		}
 	}
-	var found []string
+	var found []backgroundCall
 	for _, c := range calls {
 		var in struct {
 			Background  bool   `json:"run_in_background"`
@@ -2728,9 +2740,45 @@ func backgroundWork(ev domain.ClaudeEvent) []string {
 		if len(what) > 80 {
 			what = what[:80] + "…"
 		}
-		found = append(found, fmt.Sprintf("%s %q", c.Name, what))
+		found = append(found, backgroundCall{id: c.ID, what: fmt.Sprintf("%s %q", c.Name, what)})
 	}
 	return found
+}
+
+// refusedCalls are the tool_use ids whose result in ev is an error: the CLI did not run
+// them (with background tasks off it refuses run_in_background as an unexpected
+// parameter), so a background call among them started nothing.
+func refusedCalls(ev domain.ClaudeEvent) []string {
+	var line struct {
+		Message *struct {
+			Content []struct {
+				Type      string `json:"type"`
+				ToolUseID string `json:"tool_use_id"`
+				IsError   bool   `json:"is_error"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if ev.Type != "user" || json.Unmarshal(ev.Raw, &line) != nil || line.Message == nil {
+		return nil
+	}
+	var ids []string
+	for _, b := range line.Message.Content {
+		if b.Type == "tool_result" && b.IsError && b.ToolUseID != "" {
+			ids = append(ids, b.ToolUseID)
+		}
+	}
+	return ids
+}
+
+// stillInBackground is what of calls the CLI did not refuse.
+func stillInBackground(calls []backgroundCall, refused map[string]bool) []string {
+	var what []string
+	for _, c := range calls {
+		if c.id == "" || !refused[c.id] {
+			what = append(what, c.what)
+		}
+	}
+	return what
 }
 
 // detailFromToolInput best-effort extracts a human-meaningful detail from a

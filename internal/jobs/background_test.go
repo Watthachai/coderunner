@@ -81,3 +81,48 @@ func TestEditPromptsAskForEveryItemAndAReportOnEach(t *testing.T) {
 		}
 	}
 }
+
+// OKR #7 (16 Nov): with background tasks off the CLI refused the agent's one call that
+// asked for one ("An unexpected parameter `run_in_background` was provided"), so nothing
+// ran in the background; the agent ran it again in the foreground and finished all 14
+// items. A refused call started nothing: the build goes on.
+func TestABackgroundCallTheCLIRefusedStartedNothing(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery, agent: func(a agentRun) {
+		change(t, a.spec.WorkDir)
+		call := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"npm test","description":"Run DB-backed tests and the full e2e suite","run_in_background":true}}]}}`
+		refused := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","is_error":true,"content":"<tool_use_error>InputValidationError: Bash failed due to the following issue:\nAn unexpected parameter ` + "`run_in_background`" + ` was provided</tool_use_error>"}]}}`
+		input, _ := json.Marshal(map[string]any{"command": "npm test", "description": "Run DB-backed tests and the full e2e suite", "run_in_background": true})
+		for _, ev := range []domain.ClaudeEvent{
+			{Type: domain.ClaudeAssistant, ToolName: "Bash", ToolInput: input, Raw: json.RawMessage(call)},
+			{Type: domain.ClaudeEventType("user"), Raw: json.RawMessage(refused)},
+		} {
+			if err := a.emit(ev); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}})
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released after a refused background call:\n%s\n%s", events(run), run.logs)
+	}
+}
+
+// One the CLI accepted answers at once that it runs in the background: still stopped.
+func TestABackgroundCallTheCLIAcceptedIsStillStopped(t *testing.T) {
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery, agent: func(a agentRun) {
+		change(t, a.spec.WorkDir)
+		call := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_02","name":"Agent","input":{"description":"Investigate Dealer feedback items","prompt":"…","run_in_background":true}}]}}`
+		accepted := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_02","content":"Async agent launched successfully."}]}}`
+		for _, ev := range []domain.ClaudeEvent{
+			{Type: domain.ClaudeAssistant, ToolName: "Agent", Raw: json.RawMessage(call)},
+			{Type: domain.ClaudeEventType("user"), Raw: json.RawMessage(accepted)},
+		} {
+			if err := a.emit(ev); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}})
+	failedAndNeverReleased(t, run)
+	if !strings.Contains(failedMessage(run), "Investigate Dealer feedback items") {
+		t.Errorf("the failure does not name it: %s", failedMessage(run))
+	}
+}
