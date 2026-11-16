@@ -7,7 +7,11 @@
  * FITT_FEEDBACK_URL, or for a static page the receiver itself.
  *
  * Config comes from this script tag's dataset:
- *   <script data-project="<uuid>" data-ingest="/api/fitt-feedback"> ...
+ *   <script data-project="<uuid>" data-ingest="/api/fitt-feedback" data-tickets="/api/fitt-feedback"> ...
+ *
+ * data-tickets adds the 📋 window: the customer logs in to fittcore, sees this job's
+ * tickets and sends the ones they pick on to DV's fittcore (the central base), as
+ * fittcore's own page does. The route passes on the customer's token; see feedback.go.
  */
 (function () {
   "use strict";
@@ -21,6 +25,9 @@
   var cfg = (script && script.dataset) || {};
   var PROJECT = cfg.project || "";
   var INGEST = cfg.ingest || "";
+  // The 📋 ticket window, through the app's own route (a Next app's /api/fitt-feedback);
+  // a static page has no server to call fittcore for it, so it goes without.
+  var TICKETS = cfg.tickets || "";
   if (!INGEST) {
     console.warn("[fitt-feedback] no data-ingest URL — widget disabled");
     return;
@@ -290,6 +297,70 @@
     ".emsg{font-size:12px;color:#c92a2a;font-weight:700;word-break:break-word}" +
     ".esrc{font-size:10px;color:#999;margin-top:3px;word-break:break-all}" +
     ".esend{background:#ff4b4b;box-shadow:0 4px 0 #c93b3b}.esend:active{box-shadow:0 0 0 #c93b3b}" +
+    // 📋 ticket window: a button left of 💬 (🐞 moves one further left) and a modal.
+    ".efab.shift{right:148px}" +
+    ".tfab{position:fixed;right:84px;bottom:20px;z-index:2147483647;width:56px;height:56px;border-radius:50%;" +
+    "background:#fff;border:2px solid #e5e5e5;box-shadow:0 4px 0 #d4d4d4,0 8px 24px rgba(0,0,0,.2);font-size:24px;cursor:pointer;transition:transform .1s}" +
+    ".tfab:active{transform:translateY(4px);box-shadow:0 0 0 #d4d4d4,0 4px 16px rgba(0,0,0,.2)}" +
+    ".tfab[hidden],.tbadge[hidden],.tscrim[hidden],.tfoot[hidden]{display:none}" +
+    ".tbadge{position:absolute;top:-6px;right:-6px;min-width:22px;height:22px;padding:0 5px;border-radius:11px;background:#ff4b4b;" +
+    "color:#fff;font-size:12px;font-weight:800;line-height:18px;border:2px solid #fff}" +
+    ".tscrim{position:fixed;inset:0;z-index:2147483647;background:rgba(20,24,16,.42);display:flex;align-items:center;justify-content:center;padding:20px}" +
+    ".tmodal{width:min(720px,100%);height:min(620px,100%);background:#fff;color:#3c3c3c;border-radius:18px;border:2px solid #e5e5e5;" +
+    "box-shadow:0 24px 64px rgba(0,0,0,.35);display:flex;flex-direction:column;overflow:hidden}" +
+    ".ttop{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:16px 18px 10px}" +
+    ".ttop h3{margin:0 0 2px;font-size:17px}" +
+    ".tsrc{margin:0;font-size:12px;color:#6f6f6f;line-height:1.5}.tsrc b{color:#3c3c3c}" +
+    ".tclose{border:none;background:#f3f3f3;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:14px;color:#6f6f6f;flex:none}" +
+    ".ttabs{display:flex;gap:6px;padding:0 18px 12px;border-bottom:2px solid #f0f0f0;overflow-x:auto;flex:none}" +
+    ".ttab{padding:7px 12px;border:2px solid #e5e5e5;border-radius:10px;background:#fff;font-size:13px;font-weight:800;color:#6f6f6f;cursor:pointer;white-space:nowrap}" +
+    ".ttab.on{border-color:" + GREEN + ";color:#2f7a00;background:rgba(88,204,2,.08)}.ttab:disabled{opacity:.5;cursor:default}" +
+    ".tn{display:inline-block;min-width:20px;padding:0 6px;border-radius:999px;background:#ededed;font-size:11px;margin-left:4px;text-align:center}" +
+    ".tn:empty{display:none}.ttab.on .tn{background:" + GREEN + ";color:#fff}" +
+    ".tbody{flex:1;min-height:0;overflow:auto;padding:12px 18px}" +
+    ".tfoot{flex:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px 16px;border-top:2px solid #f0f0f0}" +
+    ".send.tgo{width:auto;padding:11px 18px}.tinfo{font-size:13px;color:#6f6f6f}" +
+    ".tghost{padding:10px 14px;border:2px solid #e5e5e5;border-radius:12px;background:#fff;font-weight:800;color:#6f6f6f;cursor:pointer;font-size:13px}" +
+    ".tlink{border:none;background:none;padding:0;color:#0b7fb5;font-weight:700;cursor:pointer;font-size:inherit;text-decoration:underline}" +
+    ".tlisthead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:#6f6f6f;margin-bottom:8px}" +
+    // The panel's label style (small grey capitals) is for its field names, not these.
+    ".tmodal label{text-transform:none;letter-spacing:normal;font-size:inherit;font-weight:400;color:inherit;margin:0}" +
+    ".tmodal .tselall{display:flex;align-items:center;gap:8px;font-weight:700;color:#3c3c3c;cursor:pointer;padding-left:10px}" +
+    ".tlist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}" +
+    ".tk{border:2px solid #e5e5e5;border-radius:12px;padding:10px}.tk.on{border-color:" + GREEN + ";background:rgba(88,204,2,.05)}" +
+    ".tpick{display:grid;grid-template-columns:26px minmax(0,1fr);gap:4px;cursor:pointer}" +
+    ".tmodal input[type=checkbox]{width:18px;height:18px;accent-color:" + GREEN + ";margin:2px 0 0}" +
+    ".tmain{min-width:0;display:flex;flex-direction:column;gap:6px}" +
+    ".tmeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11px;color:#6f6f6f}" +
+    ".ttag{font-weight:800;padding:2px 8px;border-radius:999px;background:#f3f3f3;color:#555}" +
+    ".ttag.high{background:#ffecec;color:#c92a2a}.ttag.med{background:#e8f6fe;color:#0b7fb5}" +
+    ".tpath{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#2f7a00}" +
+    ".ttxt{font-size:13px;line-height:1.55;overflow-wrap:anywhere}.tpins{font-size:11px;color:#6f6f6f}" +
+    ".tempty{text-align:center;padding:40px 12px;color:#6f6f6f;font-size:13px;line-height:1.6}" +
+    ".tempty b{display:block;color:#3c3c3c;font-size:15px;margin-bottom:4px}.terr{color:#c92a2a}" +
+    ".tflash{margin:0 0 12px;padding:10px 12px;border-radius:10px;background:rgba(88,204,2,.12);color:#2f7a00;font-weight:700;font-size:13px}" +
+    ".tlogin{text-align:center;padding:36px 12px;display:flex;flex-direction:column;align-items:center;gap:12px;font-size:13px;line-height:1.6;color:#6f6f6f}" +
+    ".tlogin b{color:#3c3c3c;font-size:16px}.tlogin p{margin:0;max-width:44ch}" +
+    ".tconfirm h4{margin:4px 0 6px;font-size:16px}.tconfirm p{margin:0 0 12px;font-size:13px;color:#6f6f6f}" +
+    ".tpre{margin:0;padding:10px 12px;border-radius:10px;background:#f7f8f5;border:1px solid #e5e5e5;font-family:ui-monospace,Menlo,monospace;" +
+    "font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}" +
+    ".tsum{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}" +
+    ".tbatch{margin-bottom:16px}.tbatch h5{font-size:12px;font-weight:800;color:#a3a3a3;margin:0 0 4px}" +
+    ".trow{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;border:none;" +
+    "background:none;border-bottom:1px solid #f0f0f0;padding:10px 4px;cursor:pointer;color:inherit}" +
+    ".ttitle{font-size:13px;line-height:1.45;min-width:0;overflow-wrap:anywhere}.ttitle small{display:block;color:#6f6f6f;font-size:11px;margin-top:2px}" +
+    ".tpill{font-size:11px;font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap}" +
+    ".tpill.wait{background:#efefef;color:#5f5f5f}.tpill.doing{background:#fff4e5;color:#b25e00}.tpill.check{background:#e8f6fe;color:#0b7fb5}" +
+    ".tpill.done{background:rgba(88,204,2,.15);color:#2f7a00}.tpill.wont{background:#f3f3f3;color:#8a8a8a}" +
+    ".tdetail{padding:8px 4px 14px;font-size:13px;line-height:1.6;border-bottom:1px solid #f0f0f0}.tdetail p{margin:0 0 8px}" +
+    ".treply{background:#f5f8f2;border-radius:8px;padding:8px 10px}" +
+    ".ttl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:18px}" +
+    ".tver{display:grid;grid-template-columns:52px minmax(0,1fr);gap:12px}" +
+    ".tvtag{font-weight:800;font-size:15px;color:#fff;background:" + GREEN + ";border-radius:10px;height:32px;display:flex;align-items:center;" +
+    "justify-content:center;box-shadow:0 3px 0 #61b800}.tvtag.old{background:#c4cbbc;box-shadow:0 3px 0 #a7ae9f}" +
+    ".tver h4{margin:5px 0 8px;font-size:14px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.tver h4 small{font-weight:500;color:#6f6f6f;font-size:12px}" +
+    ".tver ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;font-size:13px;line-height:1.5}" +
+    "@media (max-width:520px){.tscrim{padding:8px}.tmodal{height:100%}.ttop,.tbody,.ttabs{padding-left:12px;padding-right:12px}}" +
     "</style>" +
     "<button class='fab' title='Send feedback'>💬</button>" +
     "<div class='panel' hidden>" +
@@ -317,6 +388,13 @@
     "<button class='send esend'>🛠 ส่งไปแก้</button>" +
     "<div class='status estatus'></div>" +
     "</div>" +
+    "<button class='tfab' hidden title='ticket ของฉัน' aria-label='ticket ของฉัน'>📋<span class='tbadge' hidden>0</span></button>" +
+    "<div class='tscrim' hidden><div class='tmodal' role='dialog' aria-modal='true' aria-label='ticket ของฉัน'>" +
+    "<div class='ttop'><div><h3>📋 ticket ของฉัน</h3><p class='tsrc'></p></div><button class='tclose' aria-label='ปิด'>✕</button></div>" +
+    "<div class='ttabs' role='tablist'><button class='ttab on' role='tab' data-tab='new'>รอส่ง<span class='tn tn-new'></span></button>" +
+    "<button class='ttab' role='tab' data-tab='sent'>ส่งแล้ว<span class='tn tn-sent'></span></button>" +
+    "<button class='ttab' role='tab' data-tab='history'>ประวัติการแก้ไข</button></div>" +
+    "<div class='tbody'></div><div class='tfoot' hidden></div></div></div>" +
     "<div class='zoom' hidden title='คลิกเพื่อปิด'><img alt=''></div>";
 
   var fab = root.querySelector(".fab");
@@ -326,6 +404,7 @@
   var pinsEl = root.querySelector(".pins");
   var noteEl = root.querySelector("textarea");
   var sendBtn = root.querySelector(".send");
+  if (TICKETS) sendBtn.textContent = "บันทึก ticket";
   var statusEl = root.querySelector(".status");
   var zoom = root.querySelector(".zoom");
   var zoomImg = zoom.querySelector("img");
@@ -445,13 +524,402 @@
       var method = (init && init.method) || (input && input.method) || "GET";
       return _fetch.apply(this, arguments).then(function (res) {
         // 5xx = server error (a real bug). Skip our own ingest POSTs to avoid loops.
-        if (res && res.status >= 500 && url.indexOf(INGEST) === -1) {
+        if (res && res.status >= 500 && url.indexOf(INGEST) === -1 && (!TICKETS || url.indexOf(TICKETS) === -1)) {
           captureError("fetch", "HTTP " + res.status + " — " + method + " " + url, "",
             { url: url, method: method, status: res.status });
         }
         return res;
       });
     };
+  }
+
+  // --- 📋 ticket window -------------------------------------------------------
+  // With data-tickets the customer logs in to their company's own fittcore, sees
+  // this app's tickets and sends the ones they pick out of the company to DV, whose
+  // reviewers choose what goes to CRN. Every call goes through the app's route,
+  // which passes on the customer's token; the token stays in this tab's
+  // sessionStorage. The customer's fittcore API is DV's to specify: until it
+  // answers, the window says it is not open yet.
+  var tfab = root.querySelector(".tfab");
+  var tbadge = root.querySelector(".tbadge");
+  var tscrim = root.querySelector(".tscrim");
+  var tsrc = root.querySelector(".tsrc");
+  var tbody = root.querySelector(".tbody");
+  var tfoot = root.querySelector(".tfoot");
+  var tclose = root.querySelector(".tclose");
+  var ttabs = root.querySelectorAll(".ttab");
+  var TICKET_SESSION = "fitt-tickets:" + PROJECT;
+  var TICKET_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  var TCAT = { bug: "🐞 bug", feature: "✨ feature", style: "🎨 style", error: "⚠️ error" };
+  // What a customer sees of a sent ticket, worded as DV set it (16 Nov). The codes are
+  // placeholders until DV's spec; a label fittcore sends with a ticket wins.
+  var TSTATUS = {
+    sent: ["ได้รับแล้ว", "wait"],
+    received: ["ได้รับแล้ว", "wait"],
+    in_progress: ["กำลังแก้", "doing"],
+    built: ["build #{n} รอตรวจ", "check"],
+    done: ["แก้แล้ว build #{n}", "done"],
+    wont_do: ["ไม่ดำเนินการ", "wont"],
+  };
+  var tk = { tab: "new", items: null, sel: {}, open: {}, loading: false, error: "", closed: false,
+    flash: "", confirm: null, busy: false, login: null };
+  var tsession = loadTicketSession();
+
+  function loadTicketSession() {
+    try {
+      var s = JSON.parse(sessionStorage.getItem(TICKET_SESSION) || "null");
+      if (s && typeof s.token === "string" && s.token && (!s.expiresAt || Date.parse(s.expiresAt) > Date.now())) return s;
+    } catch (e) { /* storage blocked: log in again */ }
+    return null;
+  }
+  function saveTicketSession(s) {
+    tsession = s;
+    try {
+      if (s) sessionStorage.setItem(TICKET_SESSION, JSON.stringify(s));
+      else sessionStorage.removeItem(TICKET_SESSION);
+    } catch (e) { /* storage blocked: the session lasts as long as the page */ }
+  }
+  function escq(s) { return esc(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+
+  // ticketCall calls one op of the app's route and answers its JSON, or fails with
+  // the route's message and status. A 401 means the customer's login is over.
+  function ticketCall(method, op, body) {
+    var headers = {};
+    if (tsession && op !== "login" && op !== "poll") headers.Authorization = "Bearer " + tsession.token;
+    if (body) headers["Content-Type"] = "application/json";
+    var url = TICKETS + (TICKETS.indexOf("?") >= 0 ? "&" : "?") + "op=" + op;
+    return fetch(url, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined })
+      .then(function (res) {
+        return res.text().then(function (text) {
+          var data = null;
+          try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+          if (res.ok) return data;
+          if (res.status === 401 && op !== "login" && op !== "poll") saveTicketSession(null);
+          var err = new Error((data && data.error) || "HTTP " + res.status);
+          err.status = res.status;
+          throw err;
+        });
+      });
+  }
+  // notOpen: the customer's fittcore has no ticket API yet (404/501), or the app is
+  // not pointed at a fittcore at all (503 from the route).
+  function notOpen(e) { return e && (e.status === 404 || e.status === 501 || e.status === 503); }
+
+  function startLogin() {
+    if (tk.login && tk.login.waiting) return;
+    // Opened during the click so the browser allows it; it goes to fittcore's page
+    // once the login answers.
+    var win = null;
+    try { win = window.open("", "_blank"); if (win) win.opener = null; } catch (e) { win = null; }
+    tk.login = { waiting: true, url: "", error: "" };
+    renderTickets();
+    ticketCall("POST", "login", { project: PROJECT }).then(function (r) {
+      if (!r || typeof r.id !== "string" || typeof r.token !== "string" || !/^https?:\/\//i.test(r.approvalUrl || "")) {
+        throw new Error("fittcore ตอบกลับไม่ครบ");
+      }
+      tk.login.url = r.approvalUrl;
+      if (win) { try { win.location.href = r.approvalUrl; } catch (e) { /* the link below still works */ } }
+      renderTickets();
+      var every = Math.min(5000, Math.max(1000, Number(r.suggestedPollIntervalMs) || 1500));
+      var until = Date.now() + 10 * 60 * 1000;
+      (function poll() {
+        if (Date.now() > until) return loginFailed("หมดเวลารออนุมัติ ล็อกอินใหม่อีกครั้ง");
+        ticketCall("POST", "poll", { id: r.id, token: r.token }).then(function (p) {
+          var status = p && p.status;
+          if (status === "approved" && p.accessToken) {
+            saveTicketSession({ token: p.accessToken, expiresAt: p.expiresAt || "", name: (p.user && p.user.name) || "" });
+            tk.login = null;
+            if (win) { try { win.close(); } catch (e) { /* the customer closes it */ } }
+            loadTickets();
+          } else if (status === "pending" || !status) {
+            setTimeout(poll, every);
+          } else {
+            loginFailed("การล็อกอินถูกยกเลิกหรือหมดเวลา ล็อกอินใหม่อีกครั้ง");
+          }
+        }).catch(function (e) { loginFailed("ล็อกอินไม่สำเร็จ — " + e.message); });
+      })();
+    }).catch(function (e) {
+      if (win) { try { win.close(); } catch (x) { /* nothing to close */ } }
+      if (notOpen(e)) { tk.login = null; tk.closed = true; renderTickets(); return; }
+      loginFailed("ล็อกอินไม่สำเร็จ — " + e.message);
+    });
+  }
+  function loginFailed(msg) { tk.login = { waiting: false, url: "", error: msg }; renderTickets(); }
+
+  function loadTickets() {
+    if (!tsession) return renderTickets();
+    tk.loading = true;
+    tk.error = "";
+    renderTickets();
+    ticketCall("GET", "list").then(function (items) {
+      tk.items = Array.isArray(items) ? items.filter(function (f) { return f && TICKET_ID.test(f.id || ""); }) : [];
+      tk.loading = false;
+      var keep = {};
+      tk.items.forEach(function (f) { if (f.status === "new" && tk.sel[f.id]) keep[f.id] = true; });
+      tk.sel = keep;
+      renderTickets();
+    }).catch(function (e) {
+      tk.loading = false;
+      if (notOpen(e)) tk.closed = true;
+      else if (e.status === 401) tk.login = { waiting: false, url: "", error: "หมดเวลาล็อกอิน ล็อกอินใหม่อีกครั้ง" };
+      else tk.error = "โหลดรายการไม่สำเร็จ — " + e.message;
+      renderTickets();
+    });
+  }
+
+  function ticketsIn(statuses) {
+    return (tk.items || []).filter(function (f) { return statuses ? statuses.indexOf(f.status) >= 0 : f.status !== "new"; });
+  }
+  function picked() { return ticketsIn(["new"]).filter(function (f) { return tk.sel[f.id]; }).map(function (f) { return f.id; }); }
+  function buildNo(f) { var n = f.buildNo != null ? f.buildNo : f.crnBuildNo; return n == null ? "" : String(n); }
+  function ticketText(f) {
+    var t = String(f.text || "").trim();
+    if (!t && f.error && f.error.message) t = String(f.error.message);
+    if (!t && f.pins && f.pins[0]) t = String(f.pins[0].note || f.pins[0].label || "");
+    return t || "(ไม่มีข้อความ)";
+  }
+  function pagePath(u) { try { var x = new URL(u); return x.pathname + x.search; } catch (e) { return String(u || ""); } }
+  function when(iso) {
+    var d = new Date(iso);
+    if (!iso || isNaN(d.getTime())) return "";
+    try { return d.toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return d.toLocaleString(); }
+  }
+  function statusPill(f) {
+    var s = TSTATUS[f.status] || [String(f.status || ""), "wait"];
+    var label = typeof f.statusLabel === "string" && f.statusLabel ? f.statusLabel : s[0].replace("{n}", buildNo(f) || "?");
+    return "<span class='tpill " + s[1] + "'>" + esc(label) + "</span>";
+  }
+  function ticketMeta(f) {
+    return "<span class='ttag'>" + (TCAT[f.category] || esc(f.category || "")) + "</span>" +
+      (f.priority ? "<span class='ttag " + escq(f.priority) + "'>" + esc(f.priority) + "</span>" : "") +
+      "<span class='tpath'>" + esc(pagePath(f.pageUrl)) + "</span>" +
+      (f.createdAt ? "<span>" + esc(when(f.createdAt)) + "</span>" : "");
+  }
+
+  function renderTickets() {
+    if (!TICKETS) return;
+    var fresh = tsession && tk.items ? ticketsIn(["new"]).length : 0;
+    tbadge.textContent = String(fresh);
+    tbadge.hidden = fresh === 0;
+    if (tscrim.hidden) return;
+    var on = !!tsession && !tk.closed;
+    ttabs.forEach(function (b) {
+      var current = b.getAttribute("data-tab") === tk.tab;
+      b.classList.toggle("on", current);
+      b.setAttribute("aria-selected", current ? "true" : "false");
+      b.disabled = !on;
+    });
+    root.querySelector(".tn-new").textContent = on && tk.items ? String(fresh) : "";
+    root.querySelector(".tn-sent").textContent = on && tk.items ? String(ticketsIn(null).length) : "";
+    tsrc.innerHTML = on
+      ? "ล็อกอินเป็น <b>" + esc(tsession.name || "ลูกค้า") + "</b> · <button class='tlink' data-act='reload'>โหลดใหม่</button> · <button class='tlink' data-act='logout'>ออกจากระบบ</button>"
+      : "รายการจาก fittcore ของบริษัทคุณ";
+    tfoot.hidden = true;
+    if (tk.closed) {
+      tbody.innerHTML = "<div class='tempty'><b>ยังไม่เปิดใช้</b>ตอนนี้ยังดูและส่ง ticket จากหน้านี้ไม่ได้ ทีม DV จะแจ้งสถานะ feedback ให้ทราบ</div>";
+      return;
+    }
+    if (!tsession) return renderLogin();
+    if (tk.error) {
+      tbody.innerHTML = "<div class='tempty'><b class='terr'>" + esc(tk.error) + "</b><button class='tlink' data-act='reload'>ลองโหลดใหม่</button></div>";
+      return;
+    }
+    if (!tk.items) { tbody.innerHTML = "<div class='tempty'>กำลังโหลด…</div>"; return; }
+    if (tk.tab === "new") renderNew();
+    else if (tk.tab === "sent") renderSent();
+    else renderHistory();
+  }
+
+  function renderLogin() {
+    var l = tk.login || {};
+    tbody.innerHTML = "<div class='tlogin'><b>ล็อกอิน fittcore ก่อน</b>" +
+      "<p>ใช้บัญชี fittcore ของบริษัทคุณ ระบบจะเปิดแท็บใหม่ให้ล็อกอินและกดอนุมัติ แล้วหน้านี้จะโหลดรายการให้เอง</p>" +
+      (l.error ? "<p class='terr'>" + esc(l.error) + "</p>" : "") +
+      "<button class='send tgo' data-act='login'" + (l.waiting ? " disabled" : "") + ">" +
+      (l.waiting ? "รออนุมัติในแท็บ fittcore…" : "ล็อกอิน fittcore") + "</button>" +
+      (l.waiting && l.url ? "<a class='tlink' href='" + escq(l.url) + "' target='_blank' rel='noopener'>ไม่เห็นแท็บใหม่? เปิดหน้าล็อกอิน fittcore</a>" : "") +
+      "</div>";
+  }
+
+  function renderNew() {
+    if (tk.confirm) return renderConfirm();
+    var list = ticketsIn(["new"]);
+    var h = tk.flash ? "<p class='tflash' role='status'>" + esc(tk.flash) + "</p>" : "";
+    if (!list.length) {
+      tbody.innerHTML = h + "<div class='tempty'><b>ไม่มี ticket ที่รอส่ง</b>กด 💬 เพื่อเขียน ticket ใหม่</div>";
+      return;
+    }
+    var all = list.every(function (f) { return tk.sel[f.id]; });
+    h += "<div class='tlisthead'><label class='tselall'><input type='checkbox' data-all" + (all ? " checked" : "") +
+      "> เลือกทั้งหมด</label><span>เขียนไว้แล้ว ยังไม่ได้ส่งไปฐานกลาง</span></div><ul class='tlist'>";
+    list.forEach(function (f) {
+      var on = !!tk.sel[f.id];
+      h += "<li class='tk" + (on ? " on" : "") + "'><label class='tpick'><input type='checkbox' data-pick='" + escq(f.id) + "'" + (on ? " checked" : "") + ">" +
+        "<span class='tmain'><span class='tmeta'>" + ticketMeta(f) + "</span><span class='ttxt'>" + esc(ticketText(f)) + "</span>" +
+        (f.pins && f.pins.length ? "<span class='tpins'>📍 ปักไว้ " + f.pins.length + " จุด</span>" : "") + "</span></label></li>";
+    });
+    tbody.innerHTML = h + "</ul>";
+    var n = picked().length;
+    tfoot.hidden = false;
+    tfoot.innerHTML = "<span class='tinfo'>เลือก " + n + " จาก " + list.length + " รายการ</span>" +
+      "<button class='send tgo' data-act='ask'" + (n ? "" : " disabled") + ">ส่งไปฐานกลาง" + (n ? " (" + n + ")" : "") + "</button>";
+  }
+
+  function renderConfirm() {
+    var c = tk.confirm;
+    var h = "<div class='tconfirm'><h4>ส่ง " + c.ids.length + " ticket ไปฐานกลาง?</h4>" +
+      "<p>ticket เหล่านี้จะออกจากบริษัทคุณไปถึงทีม DV ส่งแล้วแก้ไขหรือดึงกลับไม่ได้</p><ul class='tlist'>";
+    c.ids.forEach(function (id) {
+      var f = (tk.items || []).filter(function (x) { return x.id === id; })[0];
+      if (f) h += "<li class='tk'><span class='tmain'><span class='tmeta'>" + ticketMeta(f) + "</span><span class='ttxt'>" + esc(ticketText(f)) + "</span></span></li>";
+    });
+    tbody.innerHTML = h + "</ul>" + (c.error ? "<p class='terr'>" + esc(c.error) + "</p>" : "") + "</div>";
+    tfoot.hidden = false;
+    tfoot.innerHTML = "<button class='tghost' data-act='back'" + (tk.busy ? " disabled" : "") + ">กลับไปเลือก</button>" +
+      "<button class='send tgo' data-act='send'" + (tk.busy ? " disabled" : "") + ">" +
+      (tk.busy ? "กำลังส่ง…" : "ยืนยันส่ง " + c.ids.length + " รายการ") + "</button>";
+  }
+
+  function renderSent() {
+    var list = ticketsIn(null).slice().sort(function (a, b) {
+      return String(b.sentAt || b.createdAt || "").localeCompare(String(a.sentAt || a.createdAt || ""));
+    });
+    var h = tk.flash ? "<p class='tflash' role='status'>" + esc(tk.flash) + "</p>" : "";
+    if (!list.length) {
+      tbody.innerHTML = h + "<div class='tempty'><b>ยังไม่มี ticket ที่ส่งไป</b>ticket ที่ส่งไปฐานกลางแล้วจะขึ้นที่นี่ พร้อมสถานะ</div>";
+      return;
+    }
+    var group = null;
+    list.forEach(function (f) {
+      var g = f.sentAt ? "ส่งเมื่อ " + when(f.sentAt) : "ส่งแล้ว";
+      if (g !== group) {
+        if (group !== null) h += "</div>";
+        h += "<div class='tbatch'><h5>" + esc(g) + "</h5>";
+        group = g;
+      }
+      var open = !!tk.open[f.id];
+      h += "<button class='trow' data-open='" + escq(f.id) + "' aria-expanded='" + open + "'><span class='ttitle'>" + esc(ticketText(f)) +
+        "<small>" + (TCAT[f.category] || esc(f.category || "")) + " · " + esc(pagePath(f.pageUrl)) + "</small></span>" + statusPill(f) + "</button>";
+      if (open) {
+        h += "<div class='tdetail'><p>" + esc(ticketText(f)) + "</p><p class='treply'>เขียนเมื่อ " + esc(when(f.createdAt)) +
+          (f.sentAt ? " · ส่งเมื่อ " + esc(when(f.sentAt)) : "") + "</p></div>";
+      }
+    });
+    tbody.innerHTML = h + "</div>";
+  }
+
+  function renderHistory() {
+    var builds = {};
+    var order = [];
+    ticketsIn(["built", "done"]).forEach(function (f) {
+      var n = buildNo(f) || "?";
+      if (!builds[n]) { builds[n] = []; order.push(n); }
+      builds[n].push(f);
+    });
+    order.sort(function (a, b) { return (Number(b) || 0) - (Number(a) || 0); });
+    if (!order.length) {
+      tbody.innerHTML = "<div class='tempty'><b>ยังไม่มีประวัติการแก้ไข</b>ticket ที่แก้แล้วจะขึ้นที่นี่ แยกตามรอบ build</div>";
+      return;
+    }
+    var h = "<ol class='ttl'>";
+    order.forEach(function (n, i) {
+      var list = builds[n];
+      var done = list.filter(function (f) { return f.status === "done"; }).length;
+      h += "<li class='tver'><span class='tvtag" + (i ? " old" : "") + "'>#" + esc(n) + "</span><div><h4>build #" + esc(n) +
+        (done ? "<span class='tpill done'>แก้แล้ว " + done + "</span>" : "") +
+        (list.length > done ? "<span class='tpill check'>รอตรวจ " + (list.length - done) + "</span>" : "") + "</h4><ul>";
+      list.forEach(function (f) { h += "<li>" + esc(ticketText(f)) + "</li>"; });
+      h += "</ul></div></li>";
+    });
+    tbody.innerHTML = h + "</ol>";
+  }
+
+  function closeTickets() {
+    tscrim.hidden = true;
+    tk.confirm = null;
+    tfab.focus();
+  }
+
+  if (TICKETS) {
+    tfab.hidden = false;
+    efab.classList.add("shift");
+    tfab.addEventListener("click", function () {
+      panel.hidden = true;
+      epanel.hidden = true;
+      tscrim.hidden = false;
+      tk.flash = "";
+      if (tsession && !tk.closed) loadTickets();
+      else renderTickets();
+      tclose.focus();
+    });
+    tclose.addEventListener("click", closeTickets);
+    tscrim.addEventListener("click", function (e) { if (e.target === tscrim) closeTickets(); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !tscrim.hidden && zoom.hidden) closeTickets();
+    });
+    ttabs.forEach(function (b) {
+      b.addEventListener("click", function () {
+        tk.tab = b.getAttribute("data-tab");
+        tk.confirm = null;
+        if (tk.tab !== "sent") tk.flash = "";
+        renderTickets();
+      });
+    });
+    tsrc.addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      if (b.getAttribute("data-act") === "reload") loadTickets();
+      if (b.getAttribute("data-act") === "logout") { saveTicketSession(null); tk.items = null; tk.sel = {}; renderTickets(); }
+    });
+    tbody.addEventListener("change", function (e) {
+      var el = e.target;
+      if (el.hasAttribute("data-all")) ticketsIn(["new"]).forEach(function (f) { tk.sel[f.id] = el.checked; });
+      else if (el.getAttribute("data-pick")) tk.sel[el.getAttribute("data-pick")] = el.checked;
+      else return;
+      renderTickets();
+      var again = el.hasAttribute("data-all") ? tbody.querySelector("[data-all]")
+        : tbody.querySelector("[data-pick='" + el.getAttribute("data-pick") + "']");
+      if (again) again.focus();
+    });
+    tbody.addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b) return;
+      if (b.getAttribute("data-act") === "login") startLogin();
+      else if (b.getAttribute("data-act") === "reload") loadTickets();
+      else if (b.getAttribute("data-open")) {
+        var id = b.getAttribute("data-open");
+        tk.open[id] = !tk.open[id];
+        renderTickets();
+        var again = tbody.querySelector("[data-open='" + id + "']");
+        if (again) again.focus();
+      }
+    });
+    tfoot.addEventListener("click", function (e) {
+      var b = e.target.closest("button");
+      if (!b || b.disabled) return;
+      var act = b.getAttribute("data-act");
+      if (act === "ask") { tk.confirm = { ids: picked(), error: "" }; renderTickets(); }
+      else if (act === "back") { tk.confirm = null; renderTickets(); }
+      else if (act === "send" && tk.confirm) {
+        var ids = tk.confirm.ids;
+        tk.busy = true;
+        renderTickets();
+        ticketCall("POST", "send", { feedbackIds: ids }).then(function () {
+          tk.busy = false;
+          tk.confirm = null;
+          tk.sel = {};
+          tk.tab = "sent";
+          tk.flash = "ส่งไปฐานกลางแล้ว " + ids.length + " รายการ ✓";
+          loadTickets();
+        }).catch(function (err) {
+          tk.busy = false;
+          if (err.status === 401) { tk.confirm = null; tk.login = { waiting: false, url: "", error: "หมดเวลาล็อกอิน ล็อกอินใหม่แล้วส่งอีกครั้ง" }; }
+          else if (tk.confirm) tk.confirm.error = "ส่งไม่สำเร็จ — " + err.message;
+          renderTickets();
+        });
+      }
+    });
+    if (tsession) loadTickets();
   }
 
   fab.addEventListener("click", function () {
@@ -713,8 +1181,15 @@
       })
       .then(function (res) {
         if (!res.ok) throw new Error("HTTP " + res.status);
-        setStatus("ส่งแล้ว ขอบคุณ! ✓", "ok");
         pins = []; shots = []; renderPins(); noteEl.value = "";
+        if (TICKETS) {
+          // The ticket waits in the customer's fittcore until they send it from 📋.
+          setStatus("บันทึกแล้ว ✓ กด 📋 เพื่อเลือกส่งไปฐานกลาง", "ok");
+          if (tsession) loadTickets();
+          setTimeout(function () { panel.hidden = true; setStatus("", ""); }, 2600);
+          return;
+        }
+        setStatus("ส่งแล้ว ขอบคุณ! ✓", "ok");
         setTimeout(function () { panel.hidden = true; setStatus("", ""); }, 1400);
       })
       .catch(function (err) {
