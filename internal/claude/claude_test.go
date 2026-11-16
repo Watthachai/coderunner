@@ -245,3 +245,33 @@ func TestRunLeavesTheGroupAloneOtherwise(t *testing.T) {
 		t.Errorf("process %d was stopped without being asked", pid)
 	}
 }
+
+// OKR #6 (16 Nov): the agent handed 14 of 16 items to two background agents, said it
+// was waiting for them and ended its turn; the session ended about ten minutes later
+// with both still working, and CRN shipped the two items the agent had done itself.
+// Every Claude CRN starts runs with background tasks off, so a sub-agent or a command
+// it starts always returns its result before the agent can finish.
+func TestEveryClaudeRunsWithoutBackgroundTasks(t *testing.T) {
+	got := agentEnv([]string{"PATH=/usr/bin", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=0"})
+	want := []string{"PATH=/usr/bin", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("agentEnv =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+func TestRunStartsClaudeWithBackgroundTasksOff(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\necho '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"bg='\"$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS\"'\"}'\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "")
+	r := NewRunner(bin, t.TempDir(), "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	res, err := r.Run(context.Background(), domain.RunSpec{Prompt: "edit it", WorkDir: t.TempDir()}, func(domain.ClaudeEvent) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionID != "bg=1" {
+		t.Errorf("claude ran with CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=%q, want 1", strings.TrimPrefix(res.SessionID, "bg="))
+	}
+}

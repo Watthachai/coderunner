@@ -796,7 +796,9 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			gate.agentStarted = time.Now()
 		}
 
+		var backgrounded []string
 		emit := func(ev domain.ClaudeEvent) error {
+			backgrounded = append(backgrounded, backgroundWork(ev)...)
 			// Persist the session id as soon as it appears so a future build can
 			// --resume even if this run later fails.
 			if ev.SessionID != "" && ev.SessionID != job.SessionID {
@@ -877,6 +879,16 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 				}
 				return
 			}
+		}
+		// Claude runs with background tasks off (internal/claude agentEnv). Should a run
+		// still start one, the session may have ended with it unfinished: what it was
+		// doing may not be in the tree, so nothing of this run is committed.
+		if len(backgrounded) > 0 {
+			errMsg := "the agent left work running in the background (" + strings.Join(backgrounded, "; ") +
+				"): its session ends with its turn, so that work may be missing from this build; nothing was committed"
+			log.Error("build failed", "err", errMsg, "cost_usd", result.CostUSD)
+			m.finishFailed(ctx, job, errMsg, meta)
+			return
 		}
 	} else {
 		log.Info("claude step skipped (CRN_RUN_CLAUDE=false)")
@@ -1586,8 +1598,17 @@ func editPrompt(change string) string {
 		"Use the fitt-build skill and its delivery checks for this edit. Preserve migration history, accounts and customer data. " +
 		"If the project has no crn.runtime.json yet, add it as the skill's references/runs-anywhere.md says, declaring only the variables the app already reads. " +
 		"Keep the edit to what the change asks: no unrelated refactors, dependency, schema or migration changes unless the change needs them. " +
+		everyItem +
 		"Apply this change and keep everything else working:\n\n" + change
 }
+
+// everyItem is what an edit build asks of a change with several items (OKR #6, 16 Nov:
+// 16 from UAT, 14 handed to sub-agents and lost when the session ended). The session
+// ends with the agent's turn, and CRN ships what is in the tree then.
+const everyItem = "The change may hold several items: do every item in this session yourself, and get every sub-agent's result before you go on; " +
+	"your session ends when your turn does, and CRN ships what is in the tree then. " +
+	"End with a list, item by item, of what you did: changed (what), already so, or not changed, and why; " +
+	"for an item that is a question, answer it there. "
 
 func releasePrep(workDir string, priorMigrations map[string][]byte) error {
 	if err := buildstep.CheckMigrationHistory(workDir, priorMigrations); err != nil {
@@ -1649,6 +1670,7 @@ func repoImagePrompt(change string, img *buildstep.RepoImage) string {
 		"do not run docker build or docker push, and do not add a Dockerfile, crn-delivery.json, Next.js or a feedback widget. " +
 		"Do not change " + buildstep.RepoImageFile + ", " + img.Dockerfile + " or any .dockerignore: a build that does is stopped. " +
 		"Follow the repository's own instructions (CRN.md, AGENTS.md) for what you may change. " +
+		everyItem +
 		"Apply this change:\n\n" + change
 }
 
@@ -2662,6 +2684,53 @@ func translate(jobID uuid.UUID, ev domain.ClaudeEvent) domain.BuildEventMsg {
 		msg.Text = ev.Text
 	}
 	return msg
+}
+
+// backgroundWork names each tool call in ev that runs in the background: a sub-agent or
+// a command whose result the agent gets only later, if its session still runs. It reads
+// every call of an assistant line, not only the first that ev.ToolName names.
+func backgroundWork(ev domain.ClaudeEvent) []string {
+	type call struct {
+		Name  string          `json:"name"`
+		Input json.RawMessage `json:"input"`
+	}
+	calls := []call{{Name: ev.ToolName, Input: ev.ToolInput}}
+	var line struct {
+		Message *struct {
+			Content []struct {
+				Type string `json:"type"`
+				call
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if ev.Type == domain.ClaudeAssistant && json.Unmarshal(ev.Raw, &line) == nil && line.Message != nil {
+		calls = calls[:0]
+		for _, b := range line.Message.Content {
+			if b.Type == "tool_use" {
+				calls = append(calls, b.call)
+			}
+		}
+	}
+	var found []string
+	for _, c := range calls {
+		var in struct {
+			Background  bool   `json:"run_in_background"`
+			Description string `json:"description"`
+			Command     string `json:"command"`
+		}
+		if c.Name == "" || json.Unmarshal(c.Input, &in) != nil || !in.Background {
+			continue
+		}
+		what := in.Description
+		if what == "" {
+			what = in.Command
+		}
+		if len(what) > 80 {
+			what = what[:80] + "…"
+		}
+		found = append(found, fmt.Sprintf("%s %q", c.Name, what))
+	}
+	return found
 }
 
 // detailFromToolInput best-effort extracts a human-meaningful detail from a

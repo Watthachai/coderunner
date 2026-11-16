@@ -43,7 +43,25 @@ func childEnv(environ []string) []string {
 }
 
 // claudeEnv is the environment every Claude process the Runner starts gets.
-func claudeEnv() []string { return childEnv(os.Environ()) }
+func claudeEnv() []string { return agentEnv(os.Environ()) }
+
+// noBackgroundTasks takes run_in_background off the CLI's Agent and Bash tools (checked on
+// 2.1.325). A headless session ends soon after the agent's turn does, and kills what still
+// runs: OKR #6 (16 Nov) handed 14 of 16 items to two background agents, ended its turn to
+// wait for them, and CRN shipped the other two. Without background tasks every sub-agent
+// and command returns its result before the agent can go on.
+const noBackgroundTasks = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+
+// agentEnv is childEnv with background tasks off, whatever the Runner's environment says.
+func agentEnv(environ []string) []string {
+	out := []string{}
+	for _, kv := range childEnv(environ) {
+		if name, _, _ := strings.Cut(kv, "="); name != noBackgroundTasks {
+			out = append(out, kv)
+		}
+	}
+	return append(out, noBackgroundTasks+"=1")
+}
 
 func hasAnyPrefix(s string, prefixes []string) bool {
 	for _, p := range prefixes {
