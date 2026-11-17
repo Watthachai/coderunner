@@ -228,6 +228,21 @@ const feedbackRouteHead = `// fitt-feedback: CRN adds this route with the 💬 f
 `
 
 const feedbackRouteReport = `const MAX_BYTES = 25 * 1024 * 1024;
+// The company fittcore takes only two reports at a time per app machine and turns
+// the rest away with 503 and Retry-After (DV, 17 Nov). Such a report is sent again
+// after the wait it asks for, at most AGAIN times; a wait longer than MAX_WAIT_MS is
+// not sat out while the user watches, and the user hears the report was not sent.
+const AGAIN = 2;
+const MAX_WAIT_MS = 10 * 1000;
+
+// waitFor is how long a 503 asks the route to wait, from its Retry-After (seconds
+// or a date): a second when it names none.
+function waitFor(res«: Response») {
+  const v = (res.headers.get("retry-after") || "").trim();
+  if (/^\d+$/.test(v)) return Number(v) * 1000;
+  const at = v ? Date.parse(v) : NaN;
+  return Number.isNaN(at) ? 1000 : Math.max(0, at - Date.now());
+}
 
 function tooLarge() {
   return new Response("feedback report is larger than 25 MB", { status: 413 });
@@ -265,18 +280,23 @@ export async function POST(request«: Request»)«: Promise<Response>» {
 
   const target = process.env.FITT_FEEDBACK_URL || FALLBACK;
   try {
-    const res = await fetch(target, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
-      redirect: "manual",
-      signal: AbortSignal.timeout(15000),
-    });
-    if (res.ok) return new Response(null, { status: 204 });
-    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
-      return new Response("feedback receiver answered with a redirect, which is not followed", { status: 502 });
+    for (let sent = 1; ; sent++) {
+      const res = await fetch(target, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        redirect: "manual",
+        signal: AbortSignal.timeout(15000),
+      });
+      if (res.ok) return new Response(null, { status: 204 });
+      if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+        return new Response("feedback receiver answered with a redirect, which is not followed", { status: 502 });
+      }
+      const wait = res.status === 503 && sent <= AGAIN ? waitFor(res) : MAX_WAIT_MS + 1;
+      if (wait > MAX_WAIT_MS) return new Response(await res.text(), { status: res.status });
+      await res.body?.cancel();
+      await new Promise((done) => setTimeout(done, wait));
     }
-    return new Response(await res.text(), { status: res.status });
   } catch {
     return new Response("feedback receiver unreachable", { status: 502 });
   }

@@ -1,6 +1,8 @@
 package buildstep
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -20,11 +22,12 @@ import (
 // A rev1.2, 17 Nov 2026): the app's server asks the site's widget API for a token on
 // behalf of the signed-in user, the same user approves it at their fittcore, and the
 // token stays on the app's server, bound to that user's session. fakeSite answers as
-// that contract says; no site has the API yet.
+// that contract says; no site has the API yet. Its ids look like the real ones, "sfb_"
+// or "wch_" and 32 hex digits (DV, 17 Nov): the route keeps them as it gets them.
 
 const (
-	tkTicket = "sfb_01JTICKETA"
-	tkOther  = "sfb_01JTICKETB"
+	tkTicket = "sfb_3f2a9c0e1b7d4e8f9a6b5c4d3e2f1a0b"
+	tkOther  = "sfb_0b1a2f3e4d5c6b7a8f9e4d7b1e0c9a2f"
 	tkKey    = "press-0123456789abcdef"
 )
 
@@ -39,6 +42,13 @@ type fakeSite struct {
 	revoked    map[string]bool
 	notEnabled bool
 	polled     map[string]int
+	challenges map[string]string // challenge id -> fittcore user id
+}
+
+// challengeID is the id fakeSite gives the challenge it starts for the user ref.
+func challengeID(ref string) string {
+	sum := sha256.Sum256([]byte(ref))
+	return "wch_" + hex.EncodeToString(sum[:16])
 }
 
 func (f *fakeSite) got(prefix string) []siteCall {
@@ -56,7 +66,7 @@ func (f *fakeSite) got(prefix string) []siteCall {
 func (f *fakeSite) widgetCalls() []siteCall { return f.got("/api/site/widget/v1") }
 
 func newFakeSite(t *testing.T) *fakeSite {
-	f := &fakeSite{sessions: map[string]string{"s1": "u1", "s2": "u2", "s3": "u1"}, revoked: map[string]bool{}, polled: map[string]int{}}
+	f := &fakeSite{sessions: map[string]string{"s1": "u1", "s2": "u2", "s3": "u1"}, revoked: map[string]bool{}, polled: map[string]int{}, challenges: map[string]string{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
@@ -104,12 +114,13 @@ func newFakeSite(t *testing.T) *fakeSite {
 				AppUserRef string `json:"app_user_ref"`
 			}
 			_ = json.Unmarshal(raw, &b)
-			answer(201, `{"challenge_id":"wch_`+b.AppUserRef+`","poll_secret":"secret-`+b.AppUserRef+`","user_code":"K7QD-M2XP",`+
+			f.challenges[challengeID(b.AppUserRef)] = b.AppUserRef
+			answer(201, `{"challenge_id":"`+challengeID(b.AppUserRef)+`","poll_secret":"secret-`+b.AppUserRef+`","user_code":"K7QD-M2XP",`+
 				`"approval_url":"http://site.test/widget-approve?code=K7QD-M2XP","expires_at":"2099-01-01T00:00:00Z","interval_seconds":3}`)
 			return
 		case r.Method == "POST" && strings.HasPrefix(path, "/auth/challenges/wch_") && strings.HasSuffix(path, "/token"):
-			uid := strings.TrimSuffix(strings.TrimPrefix(path, "/auth/challenges/wch_"), "/token")
-			if !strings.Contains(string(raw), `"poll_secret":"secret-`+uid+`"`) {
+			uid, known := f.challenges[strings.TrimSuffix(strings.TrimPrefix(path, "/auth/challenges/"), "/token")]
+			if !known || !strings.Contains(string(raw), `"poll_secret":"secret-`+uid+`"`) {
 				answer(410, `{"error":"expired_token"}`)
 				return
 			}
@@ -284,7 +295,7 @@ func TestTicketWindowGivesTheTokenToTheServerNotTheBrowser(t *testing.T) {
 		if calls[1].target != "/api/site/widget/v1/auth/challenges" || challenge["project_id"] != "proj-xyz" || challenge["app_user_ref"] != "u1" || challenge["client_name"] == "" {
 			t.Errorf("challenge = %+v", calls[1])
 		}
-		if calls[2].target != "/api/site/widget/v1/auth/challenges/wch_u1/token" || calls[2].body != `{"poll_secret":"secret-u1"}` {
+		if calls[2].target != "/api/site/widget/v1/auth/challenges/"+challengeID("u1")+"/token" || calls[2].body != `{"poll_secret":"secret-u1"}` {
 			t.Errorf("poll = %+v", calls[2])
 		}
 		if calls[3].target != "/api/site/widget/v1/tickets?status=all&limit=50" || calls[3].auth != "Bearer fsw_u1" || calls[3].user != "u1" {
@@ -377,7 +388,7 @@ func TestTicketWindowPollsAtFittcoresPace(t *testing.T) {
 	if !strings.Contains(a[1].Body, `"pending"`) || !strings.Contains(a[2].Body, `"pending"`) || !strings.Contains(a[3].Body, `"ready":true`) {
 		t.Errorf("polls = %+v", a[1:])
 	}
-	if n := len(site.got("/api/site/widget/v1/auth/challenges/wch_slow/token")); n != 2 {
+	if n := len(site.got("/api/site/widget/v1/auth/challenges/" + challengeID("slow") + "/token")); n != 2 {
 		t.Errorf("the site was polled %d times, want 2", n)
 	}
 }

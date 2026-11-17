@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestInjectFeedbackWidget(t *testing.T) {
@@ -386,6 +388,70 @@ func TestFeedbackRouteRefusesReportsOverTwentyFiveMB(t *testing.T) {
 			}
 			if n := <-reached; n != 25*1024*1024 {
 				t.Errorf("receiver got %d bytes, want %d", n, 25*1024*1024)
+			}
+		})
+	}
+}
+
+// The company fittcore takes two reports at a time per app machine and turns the
+// rest away with 503 and Retry-After (DV, 17 Nov). The route waits as asked and
+// sends the report again, at most twice, before the user hears it was not sent.
+func TestFeedbackRouteSendsAgainWhenTheSiteIsBusy(t *testing.T) {
+	for _, layout := range []string{"layout.tsx", "layout.jsx"} {
+		t.Run(layout, func(t *testing.T) {
+			route := feedbackRouteFor(t, layout)
+			var mu sync.Mutex
+			var bodies []string
+			var at []time.Time
+			busy, wait := 0, ""
+			receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				defer mu.Unlock()
+				bodies, at = append(bodies, string(raw)), append(at, time.Now())
+				if busy > 0 {
+					busy--
+					if wait != "" {
+						w.Header().Set("Retry-After", wait)
+					}
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(`{"error":"busy"}`))
+					return
+				}
+				w.WriteHeader(http.StatusCreated)
+			}))
+			defer receiver.Close()
+			send := func(turnAway int, retryAfter string) (string, []string, []time.Time) {
+				mu.Lock()
+				busy, wait, bodies, at = turnAway, retryAfter, nil, nil
+				mu.Unlock()
+				out := postToFeedbackRoute(t, route, receiver.URL, `'{"note":"x"}'`)
+				mu.Lock()
+				defer mu.Unlock()
+				return out, bodies, at
+			}
+
+			out, got, when := send(1, "1")
+			if out != "204" || len(got) != 2 || got[0] != `{"note":"x"}` || got[1] != got[0] {
+				t.Errorf("busy once: route answered %q after %d sends %q, want 204 after the same report twice", out, len(got), got)
+			} else if gap := when[1].Sub(when[0]); gap < 950*time.Millisecond {
+				t.Errorf("sent again after %v, before the Retry-After of 1 s", gap)
+			}
+
+			if out, got, _ := send(1, time.Now().Add(time.Second).UTC().Format(http.TimeFormat)); out != "204" || len(got) != 2 {
+				t.Errorf("Retry-After as a date: route answered %q after %d sends, want 204 after 2", out, len(got))
+			}
+
+			if out, got, _ := send(1, ""); out != "204" || len(got) != 2 {
+				t.Errorf("503 without Retry-After: route answered %q after %d sends, want 204 after 2", out, len(got))
+			}
+
+			if out, got, _ := send(3, "0"); out != `503 {"error":"busy"}` || len(got) != 3 {
+				t.Errorf("busy throughout: route answered %q after %d sends, want the site's 503 after 3", out, len(got))
+			}
+
+			if out, got, _ := send(1, "120"); out != `503 {"error":"busy"}` || len(got) != 1 {
+				t.Errorf("Retry-After of 2 minutes: route answered %q after %d sends, want the site's 503 at once", out, len(got))
 			}
 		})
 	}
