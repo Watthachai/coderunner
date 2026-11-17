@@ -599,12 +599,24 @@ func AgentSessions() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return agentsIn(string(out)), nil
+}
+
+// chromeBridge is Claude's browser bridge exactly as Chrome starts it, as pgrep -fl prints it.
+// It runs no model and lives as long as Chrome does; anything more on the line is not it.
+var chromeBridge = regexp.MustCompile(`^[0-9]+ ([^ ]*/)?claude --chrome-native-host$`)
+
+// agentsIn is pgrep -fl's answer without Chrome's bridge, each line cut to 80 characters.
+func agentsIn(out string) []string {
 	var sessions []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" || chromeBridge.MatchString(line) {
+			continue
+		}
 		if len(line) > 80 {
 			line = line[:80]
 		}
 		sessions = append(sessions, line)
 	}
-	return sessions, nil
+	return sessions
 }

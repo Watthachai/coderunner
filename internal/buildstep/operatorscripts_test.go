@@ -537,6 +537,21 @@ func TestSessionsFailsWhenAnAgentIsOpen(t *testing.T) {
 	}
 }
 
+// Chrome starts Claude's browser bridge by itself; it runs no model (TestChromesBridgeToClaude-
+// IsNotAnAgent in internal/registrypush). The same command line with anything more counts.
+func TestSessionsLeavesChromesBridgeToClaude(t *testing.T) {
+	m := newMachineFake(t)
+	bridge := "/opt/homebrew/Caskroom/claude-code@latest/2.1.325/claude --chrome-native-host\n"
+	m.set("sessions", bridge)
+	if out, err := m.run("", nil, "sessions"); err != nil || !strings.Contains(out, "SESSIONS PASSED") {
+		t.Errorf("only the bridge: %v: %s", err, out)
+	}
+	m.set("sessions", bridge+"/x/claude --chrome-native-host -p go\n")
+	if out, err := m.run("", nil, "sessions"); err == nil || !strings.Contains(out, "SESSIONS FAILED") || !strings.Contains(out, "-p go") {
+		t.Errorf("a session beside the bridge: %v: %s", err, out)
+	}
+}
+
 func TestTagsListsEveryTagOrFails(t *testing.T) {
 	f := goodScope()
 	f.tags = map[string][]string{inNTC: {"v2", "v1"}}

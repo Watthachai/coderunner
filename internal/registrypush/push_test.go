@@ -381,6 +381,21 @@ func TestItRefusesWhileAnAgentIsRunning(t *testing.T) {
 	}
 }
 
+// Chrome starts Claude's browser bridge by itself and keeps it while Chrome is open: on 17
+// Nov the MacMini's held OKR #9's push for 30 minutes. The bridge runs no model; a session
+// that drives the browser through it is a claude process of its own, and that one counts.
+func TestChromesBridgeToClaudeIsNotAnAgent(t *testing.T) {
+	bridge := "35992 /opt/homebrew/Caskroom/claude-code@latest/2.1.325/claude --chrome-native-host"
+	if got := agentsIn(bridge + "\n"); len(got) != 0 {
+		t.Errorf("only the bridge: %q, want none", got)
+	}
+	got := agentsIn(bridge + "\n4242 claude --resume\n77 /x/claude --chrome-native-host -p go\n78 /x/claude --chrome-native-hostile\n")
+	want := []string{"4242 claude --resume", "77 /x/claude --chrome-native-host -p go", "78 /x/claude --chrome-native-hostile"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestItRefusesWhenItCannotTellWhetherAnAgentRuns(t *testing.T) {
 	s := newSetup(t)
 	ref := s.ref("fitt/ftcdv-uat", "crn-demo-ntc-film-job-efa0ff04", "v5")

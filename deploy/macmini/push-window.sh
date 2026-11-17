@@ -51,9 +51,11 @@ state() {
 		{ grep -vxE 'cloudphotod|/Applications/iTerm\.app/Contents/XPCServices/pidinfo\.xpc/Contents/MacOS/pidinfo' || true; } | sort -u
 }
 
-# Any agent's session left on the machine could read what the build is about to hold.
+# Any agent's session left on the machine could read what the build is about to hold. Claude's
+# browser bridge, exactly as Chrome starts it, runs no model and lives as long as Chrome does.
 agent_sessions() {
-	pgrep -fl '(^|/)(claude|codex|gemini|aider|opencode|cursor-agent|goose|amp)( |$)|claude-code' | cut -c1-80 || true
+	pgrep -fl '(^|/)(claude|codex|gemini|aider|opencode|cursor-agent|goose|amp)( |$)|claude-code' |
+		{ grep -vE '^[0-9]+ ([^ ]*/)?claude --chrome-native-host$' || true; } | cut -c1-80 || true
 }
 
 sha_of() { shasum -a 256 <"$1" | cut -d' ' -f1; }
