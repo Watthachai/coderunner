@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,18 +14,205 @@ import (
 	"testing"
 )
 
-// The widget's 📋 window (16 Nov) lets a customer see the app's tickets and send the
-// ones they pick out of their company to DV, whose reviewers choose what goes to CRN.
-// It talks to the customer company's own fittcore, never DV's (Jidapa, 16 Nov). The
-// browser talks to the app's own route only; the route keeps no key of its own and
-// passes on the token the customer's fittcore gave them at login. DV sends the spec
-// of that API later: fakeFittcore answers the placeholder paths in FITTCORE.
+// The widget's 📋 window lets a signed-in app user see the app's tickets in their
+// company's own fittcore and send the ones they pick out of the company to DV, whose
+// reviewers choose what goes to CRN. DV's contract (CUSTOMER-FITTCORE-WIDGET-API part
+// A rev1.2, 17 Nov 2026): the app's server asks the site's widget API for a token on
+// behalf of the signed-in user, the same user approves it at their fittcore, and the
+// token stays on the app's server, bound to that user's session. fakeSite answers as
+// that contract says; no site has the API yet.
 
 const (
-	tkFeedback = "7c1e0000-0000-4000-8000-000000000001"
-	tkOther    = "7c1e0000-0000-4000-8000-000000000002"
-	tkToken    = "pcp_widget_tok"
+	tkTicket = "sfb_01JTICKETA"
+	tkOther  = "sfb_01JTICKETB"
+	tkKey    = "press-0123456789abcdef"
 )
+
+// siteCall is one request the company fittcore got from the app's server.
+type siteCall struct{ method, target, auth, user, origin, cookie, key, body string }
+
+type fakeSite struct {
+	*httptest.Server
+	mu         sync.Mutex
+	calls      []siteCall
+	sessions   map[string]string // session id -> fittcore user id
+	revoked    map[string]bool
+	notEnabled bool
+	polled     map[string]int
+}
+
+func (f *fakeSite) got(prefix string) []siteCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []siteCall
+	for _, c := range f.calls {
+		if strings.HasPrefix(c.target, prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (f *fakeSite) widgetCalls() []siteCall { return f.got("/api/site/widget/v1") }
+
+func newFakeSite(t *testing.T) *fakeSite {
+	f := &fakeSite{sessions: map[string]string{"s1": "u1", "s2": "u2", "s3": "u1"}, revoked: map[string]bool{}, polled: map[string]int{}}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.calls = append(f.calls, siteCall{r.Method, r.URL.RequestURI(), r.Header.Get("Authorization"), r.Header.Get("X-Widget-User"),
+			r.Header.Get("Origin"), r.Header.Get("Cookie"), r.Header.Get("Idempotency-Key"), string(raw)})
+		answer := func(status int, body string) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}
+		sid := ""
+		if c, err := r.Cookie("fc"); err == nil {
+			sid = c.Value
+		}
+		switch r.URL.Path {
+		case "/api/auth/get-session":
+			if uid, ok := f.sessions[sid]; ok {
+				answer(200, `{"session":{"id":"`+sid+`","userId":"`+uid+`","expiresAt":"2099-01-01T00:00:00Z"},"user":{"id":"`+uid+`","name":"ผู้ใช้ `+uid+`"}}`)
+			} else {
+				answer(200, `null`)
+			}
+			return
+		case "/test/logout":
+			delete(f.sessions, r.URL.Query().Get("sid"))
+			answer(200, `{}`)
+			return
+		case "/test/revoke":
+			f.revoked[r.URL.Query().Get("user")] = true
+			answer(200, `{}`)
+			return
+		}
+		path, ok := strings.CutPrefix(r.URL.Path, "/api/site/widget/v1")
+		if !ok {
+			answer(404, `{"error":"not_found"}`)
+			return
+		}
+		if f.notEnabled {
+			answer(404, `{"error":"widget_not_enabled","message":"ยังไม่เปิดใช้"}`)
+			return
+		}
+		switch {
+		case r.Method == "POST" && path == "/auth/challenges":
+			var b struct {
+				AppUserRef string `json:"app_user_ref"`
+			}
+			_ = json.Unmarshal(raw, &b)
+			answer(201, `{"challenge_id":"wch_`+b.AppUserRef+`","poll_secret":"secret-`+b.AppUserRef+`","user_code":"K7QD-M2XP",`+
+				`"approval_url":"http://site.test/widget-approve?code=K7QD-M2XP","expires_at":"2099-01-01T00:00:00Z","interval_seconds":3}`)
+			return
+		case r.Method == "POST" && strings.HasPrefix(path, "/auth/challenges/wch_") && strings.HasSuffix(path, "/token"):
+			uid := strings.TrimSuffix(strings.TrimPrefix(path, "/auth/challenges/wch_"), "/token")
+			if !strings.Contains(string(raw), `"poll_secret":"secret-`+uid+`"`) {
+				answer(410, `{"error":"expired_token"}`)
+				return
+			}
+			f.polled[uid]++
+			if uid == "slow" && f.polled[uid] == 1 {
+				answer(428, `{"error":"authorization_pending"}`)
+				return
+			}
+			answer(200, `{"access_token":"fsw_`+uid+`","token_type":"Bearer","expires_at":"2099-01-01T00:00:00Z","app":"fittbsa","approved_by":{"display_name":"สมชาย ใจดี"}}`)
+			return
+		}
+		uid := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer fsw_")
+		switch {
+		case r.Header.Get("Authorization") == "" || uid == r.Header.Get("Authorization") || f.revoked[uid]:
+			answer(401, `{"error":"invalid_token","message":"สิทธิ์หมดอายุ"}`)
+		case r.Header.Get("X-Widget-User") != uid:
+			answer(401, `{"error":"token_user_mismatch"}`)
+		case r.Method == "DELETE" && path == "/auth/token":
+			f.revoked[uid] = true
+			w.WriteHeader(204)
+		case r.Method == "GET" && path == "/tickets":
+			answer(200, `{"source":{"app":"fittbsa","forward_mode":"triage"},"tickets":[{"id":"`+tkTicket+`","text":"ปุ่มบันทึกกดแล้วไม่ไป","status":"pending_send","status_label":"รอผู้ดูแลตรวจก่อนส่ง","build_no":null,"customer_reason":null,"image_count":1}],"next_cursor":null}`)
+		case r.Method == "POST" && path == "/tickets/submit":
+			answer(200, `{"results":[{"id":"`+tkTicket+`","result":"queued","status":"sending","status_label":"กำลังส่ง"}]}`)
+		case r.Method == "GET" && path == "/tickets/"+tkTicket+"/images":
+			answer(200, `{"images":[{"image_id":"pin-1","kind":"region_shot","mime":"image/png","bytes":4}]}`)
+		case r.Method == "GET" && path == "/tickets/"+tkTicket+"/images/pin-1":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("\x89PNG"))
+		case r.Method == "GET" && path == "/tickets/"+tkTicket+"/images/page":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<script>alert(1)</script>"))
+		default:
+			answer(404, `{"error":"not_found"}`)
+		}
+	}))
+	t.Cleanup(f.Close)
+	return f
+}
+
+// step is one thing the browser (or the test) does to the route, in one server
+// process, so what the route keeps between requests is kept.
+type step struct {
+	Method  string `json:"method,omitempty"`
+	Target  string `json:"target,omitempty"`
+	Cookie  string `json:"cookie,omitempty"`
+	Body    string `json:"body,omitempty"`
+	Advance int    `json:"advance,omitempty"` // ms the clock moves first
+	Sweep   bool   `json:"sweep,omitempty"`   // run the route's periodic sweep
+	Poke    string `json:"poke,omitempty"`    // POST this URL (the fake's controls)
+}
+
+type answer struct {
+	Status  int    `json:"status"`
+	Body    string `json:"body"`
+	Type    string `json:"type"`
+	Nosniff string `json:"nosniff"`
+}
+
+// runSteps runs the steps against an app that sends reports to feedbackURL and logs
+// its users in through the same fittcore, as DV requires.
+func runSteps(t *testing.T, route, feedbackURL string, steps ...step) []answer {
+	t.Helper()
+	platform := ""
+	if u, err := url.Parse(feedbackURL); err == nil && u.Host != "" {
+		platform = u.Scheme + "://" + u.Host
+	}
+	return runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": feedbackURL, "PLATFORM_FITTCORE_ORIGIN": platform}, steps...)
+}
+
+func runStepsEnv(t *testing.T, route string, env map[string]string, steps ...step) []answer {
+	t.Helper()
+	raw, _ := json.Marshal(steps)
+	script := `const real = Date.now; let offset = 0; Date.now = () => real() + offset;
+let tick = null; globalThis.setInterval = (fn) => { tick = fn; return { unref() {} }; };
+const mod = await import(process.argv[1]);
+const out = [];
+for (const s of JSON.parse(process.argv[2])) {
+  offset += s.advance || 0;
+  if (s.sweep) { if (tick) await tick(); out.push({ status: 0, body: "", type: "", nosniff: "" }); continue; }
+  if (s.poke) { await fetch(s.poke, { method: "POST" }); out.push({ status: 0, body: "", type: "", nosniff: "" }); continue; }
+  const headers = s.cookie ? { cookie: s.cookie } : {};
+  const req = new Request("http://app.test" + s.target, { method: s.method, headers, body: s.method === "POST" ? (s.body || "") : undefined });
+  const res = await mod[s.method](req);
+  const body = Buffer.from(await res.arrayBuffer()).toString("utf8");
+  out.push({ status: res.status, body, type: res.headers.get("content-type") || "", nosniff: res.headers.get("x-content-type-options") || "" });
+}
+console.log(JSON.stringify(out));`
+	cmd := exec.Command("node", "--input-type=module", "-e", script, route, string(raw))
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+	var answers []answer
+	if err := json.Unmarshal(out, &answers); err != nil {
+		t.Fatalf("node said %s", out)
+	}
+	return answers
+}
 
 // withTicketWindow turns the window on for one test.
 func withTicketWindow(t *testing.T) {
@@ -33,68 +221,9 @@ func withTicketWindow(t *testing.T) {
 	t.Cleanup(func() { ticketWindow = false })
 }
 
-type fittcoreCall struct{ method, target, auth, body string }
-
-type fakeFittcore struct {
-	*httptest.Server
-	mu    sync.Mutex
-	calls []fittcoreCall
-}
-
-func (f *fakeFittcore) got() []fittcoreCall {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]fittcoreCall(nil), f.calls...)
-}
-
-func newFakeFittcore(t *testing.T) *fakeFittcore {
-	f := &fakeFittcore{}
-	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		f.mu.Lock()
-		f.calls = append(f.calls, fittcoreCall{r.Method, r.URL.RequestURI(), r.Header.Get("Authorization"), string(raw)})
-		f.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		answer := func(status int, body string) { w.WriteHeader(status); _, _ = w.Write([]byte(body)) }
-		switch {
-		case r.Method == "POST" && r.URL.Path == "/api/widget-auth/challenges":
-			answer(201, `{"id":"ch_1","token":"pcp_widget_auth_x","approvalUrl":"http://fittcore.test/widget-auth/ch_1","expiresAt":"2026-11-16T10:10:00Z","suggestedPollIntervalMs":1000}`)
-		case r.Method == "GET" && r.URL.Path == "/api/widget-auth/challenges/ch_1":
-			answer(200, `{"status":"approved","accessToken":"`+tkToken+`","expiresAt":"2026-11-16T18:00:00Z","user":{"name":"ลูกค้า UAT"}}`)
-		case r.Header.Get("Authorization") != "Bearer "+tkToken:
-			answer(401, `{"error":"Unauthorized"}`)
-		case r.Method == "GET" && r.URL.Path == "/api/widget/tickets":
-			answer(200, `[{"id":"`+tkFeedback+`","status":"new","category":"bug","priority":"high","text":"ปุ่มบันทึกไม่ทำงาน","pageUrl":"http://app.test/bsa",`+
-				`"pins":[{"label":"ปุ่ม","note":"ตรงนี้","box":{"x":1,"y":2,"w":3,"h":4},"regionShot":"data:image/png;base64,iVBORw0KGgo="},{"label":"อีกจุด","note":"","box":null,"regionShot":null}],`+
-				`"crnBuildNo":null,"createdAt":"2026-11-16T03:00:00.000Z"}]`)
-		case r.Method == "POST" && r.URL.Path == "/api/widget/tickets/send":
-			answer(200, `{"sent":2}`)
-		default:
-			answer(404, `{"error":"Not found"}`)
-		}
-	}))
-	t.Cleanup(f.Close)
-	return f
-}
-
-// callFeedbackRoute calls the route's GET or POST in node, as the browser would, with
-// FITT_FEEDBACK_URL=env, and returns "<status> <body>".
-func callFeedbackRoute(t *testing.T, route, env, method, target, auth, body string) string {
-	t.Helper()
-	init, _ := json.Marshal(map[string]any{"method": method, "target": target, "auth": auth, "body": body})
-	script := `const mod = await import(process.argv[1]);
-const r = JSON.parse(process.argv[2]);
-const headers = r.auth ? { authorization: r.auth } : {};
-const req = new Request("http://app.test" + r.target, { method: r.method, headers, body: r.method === "POST" ? r.body : undefined });
-const res = await mod[r.method](req);
-console.log(res.status, await res.text());`
-	cmd := exec.Command("node", "--input-type=module", "-e", script, route, string(init))
-	cmd.Env = append(os.Environ(), "FITT_FEEDBACK_URL="+env)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("node: %v\n%s", err, out)
-	}
-	return strings.TrimSpace(string(out))
+func ticketRoute(t *testing.T) string {
+	withTicketWindow(t)
+	return feedbackRouteFor(t, "layout.tsx")
 }
 
 func eachLayout(t *testing.T, run func(t *testing.T, route string)) {
@@ -104,172 +233,296 @@ func eachLayout(t *testing.T, run func(t *testing.T, route string)) {
 	}
 }
 
-// ticketRoute is the route of a Next app with the window on.
-func ticketRoute(t *testing.T) string {
-	withTicketWindow(t)
-	return feedbackRouteFor(t, "layout.tsx")
+func siteEnv(f *fakeSite) string { return f.URL + "/api/site/feedback" }
+
+func stateAs(cookie string) step {
+	return step{Method: "GET", Target: "/api/fitt-feedback?op=state", Cookie: cookie}
 }
 
-func TestTicketWindowLogsInThroughFittcore(t *testing.T) {
-	eachLayout(t, func(t *testing.T, route string) {
-		fc := newFakeFittcore(t)
-		env := fc.URL + "/api/ingest/feedback"
-
-		out := callFeedbackRoute(t, route, env, "POST", "/api/fitt-feedback?op=login", "", `{"project":"proj-xyz"}`)
-		if !strings.HasPrefix(out, "201 ") || !strings.Contains(out, `"approvalUrl":"http://fittcore.test/widget-auth/ch_1"`) {
-			t.Errorf("login answered %q", out)
-		}
-		out = callFeedbackRoute(t, route, env, "POST", "/api/fitt-feedback?op=poll", "", `{"id":"ch_1","token":"pcp_widget_auth_x"}`)
-		if !strings.HasPrefix(out, "200 ") || !strings.Contains(out, `"accessToken":"`+tkToken+`"`) {
-			t.Errorf("poll answered %q", out)
-		}
-
-		calls := fc.got()
-		if len(calls) != 2 {
-			t.Fatalf("fittcore got %d calls, want 2: %+v", len(calls), calls)
-		}
-		var login map[string]string
-		if err := json.Unmarshal([]byte(calls[0].body), &login); err != nil || calls[0].method != "POST" || calls[0].target != "/api/widget-auth/challenges" || login["projectId"] != "proj-xyz" {
-			t.Errorf("login reached fittcore as %+v", calls[0])
-		}
-		if calls[1].method != "GET" || calls[1].target != "/api/widget-auth/challenges/ch_1?token=pcp_widget_auth_x" {
-			t.Errorf("poll reached fittcore as %+v", calls[1])
-		}
-	})
+func loginAs(cookie string) step {
+	return step{Method: "POST", Target: "/api/fitt-feedback?op=login", Cookie: cookie, Body: `{"project":"proj-xyz"}`}
 }
 
-func TestTicketWindowListsTheJobsTicketsWithTheCustomersToken(t *testing.T) {
+func pollAs(cookie string) step {
+	return step{Method: "POST", Target: "/api/fitt-feedback?op=poll", Cookie: cookie}
+}
+
+func listAs(cookie string) step {
+	return step{Method: "GET", Target: "/api/fitt-feedback?op=list", Cookie: cookie}
+}
+
+func TestTicketWindowGivesTheTokenToTheServerNotTheBrowser(t *testing.T) {
 	eachLayout(t, func(t *testing.T, route string) {
-		fc := newFakeFittcore(t)
-		out := callFeedbackRoute(t, route, fc.URL+"/api/ingest/feedback", "GET", "/api/fitt-feedback?op=list", "Bearer "+tkToken, "")
-		status, body, _ := strings.Cut(out, " ")
-		if status != "200" {
-			t.Fatalf("list answered %q", out)
+		site := newFakeSite(t)
+		a := runSteps(t, route, siteEnv(site), stateAs("fc=s1"), loginAs("fc=s1"), pollAs("fc=s1"), listAs("fc=s1"))
+		if a[0].Status != 200 || a[0].Body != `{"ready":false}` {
+			t.Errorf("state before login = %+v", a[0])
 		}
-		calls := fc.got()
-		if len(calls) != 1 || calls[0].method != "GET" || calls[0].target != "/api/widget/tickets" || calls[0].auth != "Bearer "+tkToken {
-			t.Fatalf("fittcore got %+v", calls)
+		if a[1].Status != 200 || !strings.Contains(a[1].Body, `"code":"K7QD-M2XP"`) || !strings.Contains(a[1].Body, `"url":"http://site.test/widget-approve?code=K7QD-M2XP"`) {
+			t.Errorf("login = %+v", a[1])
 		}
-		// Pictures stay on the server: a ticket can carry 50 pins of up to 1 MB each.
-		// (DV's list will leave them out anyway; the window fetches one ticket's alone.)
-		if strings.Contains(body, "regionShot") || strings.Contains(body, "base64") {
-			t.Errorf("pin pictures reached the browser: %s", body)
+		if a[2].Status != 200 || !strings.Contains(a[2].Body, `"ready":true`) || !strings.Contains(a[2].Body, "สมชาย ใจดี") {
+			t.Errorf("poll = %+v", a[2])
 		}
-		var items []struct {
-			ID, Status, Text string
-			Pins             []struct {
-				Label   string
-				HasShot bool
+		if a[3].Status != 200 || !strings.Contains(a[3].Body, `"status_label":"รอผู้ดูแลตรวจก่อนส่ง"`) {
+			t.Errorf("list = %+v", a[3])
+		}
+		for i, x := range a {
+			for _, secret := range []string{"fsw_", "secret-", "wch_"} {
+				if strings.Contains(x.Body, secret) {
+					t.Errorf("answer %d gave the browser %q: %s", i, secret, x.Body)
+				}
 			}
 		}
-		if err := json.Unmarshal([]byte(body), &items); err != nil {
-			t.Fatalf("list body is not the tickets: %v\n%s", err, body)
+
+		calls := site.widgetCalls()
+		if len(calls) != 4 {
+			t.Fatalf("the site got %d widget calls, want probe, challenge, poll, list: %+v", len(calls), calls)
 		}
-		if len(items) != 1 || items[0].ID != tkFeedback || items[0].Status != "new" || items[0].Text != "ปุ่มบันทึกไม่ทำงาน" ||
-			len(items[0].Pins) != 2 || items[0].Pins[0].Label != "ปุ่ม" || !items[0].Pins[0].HasShot || items[0].Pins[1].HasShot {
-			t.Errorf("tickets = %+v", items)
+		var challenge map[string]string
+		_ = json.Unmarshal([]byte(calls[1].body), &challenge)
+		if calls[1].target != "/api/site/widget/v1/auth/challenges" || challenge["project_id"] != "proj-xyz" || challenge["app_user_ref"] != "u1" || challenge["client_name"] == "" {
+			t.Errorf("challenge = %+v", calls[1])
+		}
+		if calls[2].target != "/api/site/widget/v1/auth/challenges/wch_u1/token" || calls[2].body != `{"poll_secret":"secret-u1"}` {
+			t.Errorf("poll = %+v", calls[2])
+		}
+		if calls[3].target != "/api/site/widget/v1/tickets?status=all&limit=50" || calls[3].auth != "Bearer fsw_u1" || calls[3].user != "u1" {
+			t.Errorf("list = %+v", calls[3])
+		}
+		for _, c := range calls {
+			if c.origin != "" || c.cookie != "" {
+				t.Errorf("a widget call carried Origin %q or a cookie %q: %+v", c.origin, c.cookie, c)
+			}
+		}
+		for _, c := range site.got("/api/auth/get-session") {
+			if c.cookie != "fc=s1" {
+				t.Errorf("the user was looked up with cookie %q", c.cookie)
+			}
 		}
 	})
 }
 
-// The customer's pick goes to their fittcore, which sends it out of the company to DV.
-func TestTicketWindowSendsTheTicketsTheCustomerPicked(t *testing.T) {
-	eachLayout(t, func(t *testing.T, route string) {
-		fc := newFakeFittcore(t)
-		ids := `["` + tkFeedback + `","` + tkOther + `"]`
-		if out := callFeedbackRoute(t, route, fc.URL+"/api/ingest/feedback", "POST", "/api/fitt-feedback?op=send", "Bearer "+tkToken, `{"feedbackIds":`+ids+`}`); out != `200 {"sent":2}` {
-			t.Errorf("send answered %q", out)
-		}
-		want := fittcoreCall{"POST", "/api/widget/tickets/send", "Bearer " + tkToken, `{"feedbackIds":` + ids + `}`}
-		if calls := fc.got(); len(calls) != 1 || calls[0] != want {
-			t.Errorf("fittcore got %+v\nwant %+v", calls, want)
-		}
-	})
-}
-
-// Anyone who can open the demo can call the route: reading or sending tickets takes
-// the token of a customer who logged in to fittcore.
-func TestTicketWindowNeedsTheCustomersOwnLogin(t *testing.T) {
+// A token is the approving user's, for that app session: another user, or the same
+// user in another session, starts over.
+func TestTicketWindowKeepsEachUsersTokenToTheirSession(t *testing.T) {
 	route := ticketRoute(t)
-	fc := newFakeFittcore(t)
-	env := fc.URL + "/api/ingest/feedback"
-	for _, c := range []struct{ method, target, body string }{
-		{"GET", "/api/fitt-feedback?op=list", ""},
-		{"POST", "/api/fitt-feedback?op=send", `{"feedbackIds":["` + tkFeedback + `"]}`},
-	} {
-		if out := callFeedbackRoute(t, route, env, c.method, c.target, "", c.body); !strings.HasPrefix(out, "401 ") {
-			t.Errorf("%s %s without a token answered %q", c.method, c.target, out)
+	site := newFakeSite(t)
+	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+		stateAs("fc=s2"), listAs("fc=s2"), stateAs("fc=s3"), listAs("fc=s3"), listAs("fc=s1"))
+	for _, i := range []int{2, 4} {
+		if a[i].Body != `{"ready":false}` {
+			t.Errorf("state %d for another session = %+v, want not ready", i, a[i])
 		}
 	}
-	if calls := fc.got(); len(calls) != 0 {
-		t.Errorf("fittcore was called without a token: %+v", calls)
+	for _, i := range []int{3, 5} {
+		if a[i].Status != 401 {
+			t.Errorf("list %d for another session = %+v, want 401", i, a[i])
+		}
+	}
+	if a[6].Status != 200 {
+		t.Errorf("the approving session's own list = %+v", a[6])
+	}
+	for _, c := range site.widgetCalls() {
+		if c.auth != "" && (c.auth != "Bearer fsw_u1" || c.user != "u1") {
+			t.Errorf("a token went out for someone else: %+v", c)
+		}
+	}
+	if n := len(site.got("/api/site/widget/v1/tickets?status=all")); n != 1 {
+		t.Errorf("the site listed tickets %d times, want once (the approving session's)", n)
 	}
 }
 
-// The route builds fittcore's paths and bodies from what the browser sends, so it
-// takes ids and nothing else: no path of the browser's choosing reaches fittcore.
-func TestTicketWindowTakesOnlyIDs(t *testing.T) {
+func TestTicketWindowNeedsTheAppLogin(t *testing.T) {
 	route := ticketRoute(t)
-	fc := newFakeFittcore(t)
-	env := fc.URL + "/api/ingest/feedback"
-	for _, c := range []struct{ method, target, body string }{
-		{"POST", "/api/fitt-feedback?op=send", `{"feedbackIds":["../x"]}`},
-		{"POST", "/api/fitt-feedback?op=send", `{"feedbackIds":[]}`},
-		{"POST", "/api/fitt-feedback?op=send", `{"feedbackIds":"` + tkFeedback + `"}`},
-		{"POST", "/api/fitt-feedback?op=send", `not json`},
-		{"POST", "/api/fitt-feedback?op=poll", `{"id":"../me","token":"t"}`},
-		{"POST", "/api/fitt-feedback?op=poll", `{"id":"ch_1","token":"a b"}`},
-		{"POST", "/api/fitt-feedback?op=login", `{"project":"a/b"}`},
-	} {
-		if out := callFeedbackRoute(t, route, env, c.method, c.target, "Bearer "+tkToken, c.body); !strings.HasPrefix(out, "400 ") {
-			t.Errorf("%s %s %s answered %q, want 400", c.method, c.target, c.body, out)
+	site := newFakeSite(t)
+	a := runSteps(t, route, siteEnv(site), stateAs(""), stateAs("fc=nobody"), loginAs("fc=nobody"), listAs(""))
+	for i, x := range a {
+		if x.Status != 401 || x.Body != `{"error":"app_login"}` {
+			t.Errorf("answer %d without an app session = %+v", i, x)
 		}
 	}
-	for _, c := range []struct{ method, target string }{{"GET", "/api/fitt-feedback?op=me"}, {"POST", "/api/fitt-feedback?op=preview"}, {"GET", "/api/fitt-feedback"}} {
-		if out := callFeedbackRoute(t, route, env, c.method, c.target, "Bearer "+tkToken, "{}"); !strings.HasPrefix(out, "404 ") {
-			t.Errorf("%s %s answered %q, want 404", c.method, c.target, out)
-		}
-	}
-	if calls := fc.got(); len(calls) != 0 {
-		t.Errorf("fittcore got requests the route should have refused: %+v", calls)
+	if calls := site.widgetCalls(); len(calls) != 0 {
+		t.Errorf("the widget API was called without an app session: %+v", calls)
 	}
 }
 
-// The token goes only to the fittcore that takes the app's reports, the customer's own:
-// FITT_FEEDBACK_URL must name its /api/ingest/feedback. CRN's own receiver is not one.
-func TestTicketWindowTalksOnlyToTheFittcoreThatTakesReports(t *testing.T) {
+// DV, 17 Nov: the fittcore the app logs its users in through (PLATFORM_FITTCORE_ORIGIN)
+// must be the one FITT_FEEDBACK_URL names; otherwise the window is not open and no
+// challenge starts.
+func TestTicketWindowIsNotOpenWhenTheAppLogsInElsewhere(t *testing.T) {
 	route := ticketRoute(t)
-	fc := newFakeFittcore(t)
-	for _, env := range []string{"", fc.URL + "/feedback_requests", fc.URL + "/api/ingest/feedback?to=elsewhere"} {
-		out := callFeedbackRoute(t, route, env, "GET", "/api/fitt-feedback?op=list", "Bearer "+tkToken, "")
-		if !strings.HasPrefix(out, "503 ") {
-			t.Errorf("FITT_FEEDBACK_URL=%q: list answered %q, want 503", env, out)
+	site := newFakeSite(t)
+	for _, platform := range []string{"", "http://other-fittcore.test:3100", site.URL + "x"} {
+		a := runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": platform},
+			stateAs("fc=s1"), loginAs("fc=s1"))
+		for i, x := range a {
+			if x.Status != 503 || x.Body != `{"error":"not_open"}` {
+				t.Errorf("PLATFORM_FITTCORE_ORIGIN=%q: answer %d = %+v, want not_open", platform, i, x)
+			}
 		}
 	}
-	if calls := fc.got(); len(calls) != 0 {
-		t.Errorf("the token went somewhere FITT_FEEDBACK_URL does not name as fittcore: %+v", calls)
+	if site.got("/"); len(site.got("/")) != 0 {
+		t.Errorf("the site was asked anything at all: %+v", site.got("/"))
 	}
 }
 
-func TestTicketWindowDoesNotFollowFittcoresRedirects(t *testing.T) {
+// The route keeps to fittcore's pace: one poll per interval, whatever the browser does.
+func TestTicketWindowPollsAtFittcoresPace(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	site.sessions["slow"] = "slow"
+	a := runSteps(t, route, siteEnv(site), loginAs("fc=slow"), pollAs("fc=slow"), pollAs("fc=slow"),
+		step{Method: "POST", Target: "/api/fitt-feedback?op=poll", Cookie: "fc=slow", Advance: 3100})
+	if !strings.Contains(a[1].Body, `"pending"`) || !strings.Contains(a[2].Body, `"pending"`) || !strings.Contains(a[3].Body, `"ready":true`) {
+		t.Errorf("polls = %+v", a[1:])
+	}
+	if n := len(site.got("/api/site/widget/v1/auth/challenges/wch_slow/token")); n != 2 {
+		t.Errorf("the site was polled %d times, want 2", n)
+	}
+}
+
+func TestTicketWindowSendsOnePressWithItsKey(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	submit := func(body string) step {
+		return step{Method: "POST", Target: "/api/fitt-feedback?op=submit", Cookie: "fc=s1", Body: body}
+	}
+	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+		submit(`{"ticket_ids":["`+tkTicket+`","`+tkOther+`"],"key":"`+tkKey+`"}`),
+		submit(`{"ticket_ids":["`+tkTicket+`","`+tkTicket+`"],"key":"`+tkKey+`"}`),
+		submit(`{"ticket_ids":[],"key":"`+tkKey+`"}`),
+		submit(`{"ticket_ids":["../me"],"key":"`+tkKey+`"}`),
+		submit(`{"ticket_ids":["`+tkTicket+`"],"key":"short"}`),
+		submit(`{"ticket_ids":["`+tkTicket+`"]}`),
+		submit(`not json`))
+	if a[2].Status != 200 || !strings.Contains(a[2].Body, `"result":"queued"`) {
+		t.Errorf("submit = %+v", a[2])
+	}
+	for i := 3; i < len(a); i++ {
+		if a[i].Status != 400 {
+			t.Errorf("submit %d = %+v, want 400", i, a[i])
+		}
+	}
+	many := make([]string, 51)
+	for i := range many {
+		many[i] = `"t` + string(rune('a'+i%26)) + string(rune('a'+i/26)) + `"`
+	}
+	if b := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+		submit(`{"ticket_ids":[`+strings.Join(many, ",")+`],"key":"`+tkKey+`"}`)); b[2].Status != 400 {
+		t.Errorf("51 tickets = %+v, want 400", b[2])
+	}
+	calls := site.got("/api/site/widget/v1/tickets/submit")
+	want := siteCall{"POST", "/api/site/widget/v1/tickets/submit", "Bearer fsw_u1", "u1", "", "", tkKey, `{"ticket_ids":["` + tkTicket + `","` + tkOther + `"]}`}
+	if len(calls) != 1 || calls[0] != want {
+		t.Errorf("the site got %+v\nwant %+v", calls, want)
+	}
+}
+
+func TestTicketWindowShowsATicketsPictures(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	img := func(q string) step { return step{Method: "GET", Target: "/api/fitt-feedback?op=" + q, Cookie: "fc=s1"} }
+	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+		img("images&id="+tkTicket), img("image&id="+tkTicket+"&image=pin-1"), img("image&id="+tkTicket+"&image=page"),
+		img("image&id=../x&image=pin-1"), img("image&id="+tkTicket))
+	if a[2].Status != 200 || !strings.Contains(a[2].Body, `"image_id":"pin-1"`) {
+		t.Errorf("images = %+v", a[2])
+	}
+	if a[3].Status != 200 || a[3].Type != "image/png" || a[3].Nosniff != "nosniff" || !strings.HasSuffix(a[3].Body, "PNG") {
+		t.Errorf("image = %+v", a[3])
+	}
+	if a[4].Status != 502 || strings.Contains(a[4].Body, "<script>") {
+		t.Errorf("a picture that is not an image reached the browser: %+v", a[4])
+	}
+	if a[5].Status != 400 || a[6].Status != 400 {
+		t.Errorf("bad ids answered %+v / %+v, want 400", a[5], a[6])
+	}
+}
+
+// A site without the widget API answers 404 widget_not_enabled; the window says it is
+// not open yet and asks again at most once per 5 minutes.
+func TestTicketWindowIsNotOpenWhereTheSiteLacksIt(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	site.notEnabled = true
+	a := runSteps(t, route, siteEnv(site), stateAs("fc=s1"), stateAs("fc=s1"), loginAs("fc=s1"),
+		step{Method: "GET", Target: "/api/fitt-feedback?op=state", Cookie: "fc=s1", Advance: 5*60*1000 + 1000})
+	for i, x := range a {
+		if x.Status != 503 || x.Body != `{"error":"not_open"}` {
+			t.Errorf("answer %d = %+v, want not_open", i, x)
+		}
+	}
+	if n := len(site.widgetCalls()); n != 2 {
+		t.Errorf("the site was asked %d times, want once, then once more after 5 minutes", n)
+	}
+
+	down := httptest.NewServer(http.NotFoundHandler())
+	down.Close()
+	for _, env := range []string{"", down.URL + "/api/site/feedback"} {
+		if a := runSteps(t, route, env, stateAs("fc=s1")); a[0].Status != 503 {
+			t.Errorf("FITT_FEEDBACK_URL=%q: state = %+v, want not_open", env, a[0])
+		}
+	}
+}
+
+func TestTicketWindowWithdrawsTheTokenWhenTheSessionEnds(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+		step{Sweep: true},
+		step{Poke: site.URL + "/test/logout?sid=s1"},
+		step{Sweep: true})
+	if !strings.Contains(a[1].Body, `"ready":true`) {
+		t.Fatalf("poll = %+v", a[1])
+	}
+	deletes := site.got("/api/site/widget/v1/auth/token")
+	if len(deletes) != 1 || deletes[0].method != "DELETE" || deletes[0].auth != "Bearer fsw_u1" || deletes[0].user != "u1" {
+		t.Errorf("after logout the site got %+v, want one DELETE /auth/token with u1's token", deletes)
+	}
+
+	site2 := newFakeSite(t)
+	runSteps(t, route, siteEnv(site2), loginAs("fc=s1"), pollAs("fc=s1"),
+		step{Method: "POST", Target: "/api/fitt-feedback?op=logout", Cookie: "fc=s1"}, listAs("fc=s1"))
+	if d := site2.got("/api/site/widget/v1/auth/token"); len(d) != 1 || d[0].method != "DELETE" {
+		t.Errorf("the window's own logout sent %+v", d)
+	}
+}
+
+func TestTicketWindowForgetsATokenFittcoreRefuses(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+		step{Poke: site.URL + "/test/revoke?user=u1"}, listAs("fc=s1"), stateAs("fc=s1"))
+	if a[3].Status != 401 || !strings.Contains(a[3].Body, "invalid_token") {
+		t.Errorf("list with a refused token = %+v", a[3])
+	}
+	if a[4].Body != `{"ready":false}` {
+		t.Errorf("state after the refusal = %+v, want a new approval", a[4])
+	}
+}
+
+func TestTicketWindowDoesNotFollowRedirects(t *testing.T) {
 	route := ticketRoute(t)
 	elsewhere := make(chan string, 4)
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		elsewhere <- r.Header.Get("Authorization")
-	}))
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { elsewhere <- r.URL.Path }))
 	defer other.Close()
-	fittcore := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	site := newFakeSite(t)
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/auth/get-session" {
+			site.Config.Handler.ServeHTTP(w, r)
+			return
+		}
 		http.Redirect(w, r, other.URL+"/steal", http.StatusTemporaryRedirect)
 	}))
-	defer fittcore.Close()
-
-	out := callFeedbackRoute(t, route, fittcore.URL+"/api/ingest/feedback", "GET", "/api/fitt-feedback?op=list", "Bearer "+tkToken, "")
-	if !strings.HasPrefix(out, "502 ") {
-		t.Errorf("redirecting fittcore: list answered %q, want 502", out)
+	defer redirecting.Close()
+	a := runSteps(t, route, redirecting.URL+"/api/site/feedback", loginAs("fc=s1"))
+	if a[0].Status != 502 {
+		t.Errorf("login against a redirecting site = %+v, want 502", a[0])
 	}
 	select {
-	case auth := <-elsewhere:
-		t.Errorf("the route followed the redirect (Authorization %q)", auth)
+	case p := <-elsewhere:
+		t.Errorf("the route followed a redirect to %s", p)
 	default:
 	}
 }
@@ -285,7 +538,7 @@ func TestOnlyANextAppGetsTheTicketWindow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(next, "app", "layout.tsx"), []byte("<html><body>{children}</body></html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := InjectFeedbackWidget(next, "p", "http://fittcore.test/api/ingest/feedback", nil); n != 1 {
+	if n, _ := InjectFeedbackWidget(next, "p", "http://fittcore.test/api/site/feedback", nil); n != 1 {
 		t.Fatalf("inject = %d", n)
 	}
 	if layout := readFile(t, filepath.Join(next, "app", "layout.tsx")); !strings.Contains(layout, `data-tickets="/api/fitt-feedback"`) {
@@ -296,7 +549,7 @@ func TestOnlyANextAppGetsTheTicketWindow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(static, "index.html"), []byte("<html><body></body></html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := InjectFeedbackWidget(static, "p", "http://fittcore.test/api/ingest/feedback", nil); n != 1 {
+	if n, _ := InjectFeedbackWidget(static, "p", "http://fittcore.test/api/site/feedback", nil); n != 1 {
 		t.Fatalf("inject = %d", n)
 	}
 	html := readFile(t, filepath.Join(static, "index.html"))
@@ -306,13 +559,13 @@ func TestOnlyANextAppGetsTheTicketWindow(t *testing.T) {
 	}
 }
 
-// Until DV sends the spec of the customer fittcore's API, builds ship without the 📋
-// window: no data-tickets in the layout and no ticket ops in the route, so a ?op= post
-// is a report like any other.
-func TestTheTicketWindowStaysOffUntilDVsSpec(t *testing.T) {
+// Until the company fittcores have DV's widget API, builds ship without the 📋 window:
+// no data-tickets in the layout and no ticket ops in the route, so a ?op= post is a
+// report like any other.
+func TestTheTicketWindowStaysOffUntilTheSitesHaveTheAPI(t *testing.T) {
 	route := feedbackRouteFor(t, "layout.tsx")
 	src := readFile(t, route)
-	for _, s := range []string{"ticketOp", "op=", "widget-auth", "Bearer"} {
+	for _, s := range []string{"ticketOp", "op=", "api/site/widget", "x-widget-user"} {
 		if strings.Contains(src, s) {
 			t.Errorf("the route has %q with the window off", s)
 		}
@@ -323,8 +576,8 @@ func TestTheTicketWindowStaysOffUntilDVsSpec(t *testing.T) {
 	}
 }
 
-// The widget side of the window (checked in a browser against a fake customer fittcore
-// on 16 Nov; these pin down what DV asked for).
+// The widget side (checked in a browser against a fake site on 17 Nov; these pin down
+// what DV's contract asks of it).
 func TestTheWidgetShowsTheTicketWindowOnlyWithDataTickets(t *testing.T) {
 	for _, want := range []string{
 		`var TICKETS = cfg.tickets || "";`,
@@ -337,16 +590,40 @@ func TestTheWidgetShowsTheTicketWindowOnlyWithDataTickets(t *testing.T) {
 	}
 }
 
-// The customer's token is good for one app; it lives in this tab and goes to the app's
-// route only.
-func TestTheWidgetKeepsTheCustomersTokenInTheTab(t *testing.T) {
-	if strings.Contains(feedbackWidgetJS, "localStorage") {
-		t.Error("the widget keeps something in localStorage, which outlives the tab")
+// The token and the poll secret live on the app's server; the page never holds them.
+func TestTheWidgetNeverHoldsTheToken(t *testing.T) {
+	for _, never := range []string{"access_token", "poll_secret", "Bearer", "sessionStorage", "localStorage", "Authorization"} {
+		if strings.Contains(feedbackWidgetJS, never) {
+			t.Errorf("the widget mentions %q", never)
+		}
 	}
+}
+
+// Status words and reasons are fittcore's: status_label as it comes, customer_reason
+// only when DV wrote one. The widget words none of its own.
+func TestTheWidgetShowsFittcoresOwnWords(t *testing.T) {
 	for _, want := range []string{
-		`sessionStorage.setItem(TICKET_SESSION, JSON.stringify(s))`,
-		`headers.Authorization = "Bearer " + tsession.token;`,
-		`var url = TICKETS + (TICKETS.indexOf("?") >= 0 ? "&" : "?") + "op=" + op;`,
+		`esc(f.status_label)`,
+		`f.status === "closed" && f.customer_reason ? "<p class='treply'><b>จาก DV</b> " + esc(f.customer_reason)`,
+	} {
+		if !strings.Contains(feedbackWidgetJS, want) {
+			t.Errorf("the widget lacks %s", want)
+		}
+	}
+	for _, never := range []string{"ได้รับแล้ว", "กำลังแก้", "รอตรวจ", "แก้แล้ว build", "ไม่ดำเนินการ", "ขึ้น UAT", "wontDoReason"} {
+		if strings.Contains(feedbackWidgetJS, never) {
+			t.Errorf("the widget words a status itself: %q", never)
+		}
+	}
+}
+
+// One press of "ยืนยันส่ง" is one Idempotency-Key; a retry after a failure resends it.
+// An app that forwards every ticket by itself has no send button.
+func TestTheWidgetSendsOnePressWithOneKey(t *testing.T) {
+	for _, want := range []string{
+		`tk.confirm = { ids: picked(), key: newKey(), error: "" };`,
+		`{ ticket_ids: c.ids, key: c.key }`,
+		`var canSend = mode() === "triage";`,
 	} {
 		if !strings.Contains(feedbackWidgetJS, want) {
 			t.Errorf("the widget lacks %s", want)
@@ -354,25 +631,9 @@ func TestTheWidgetKeepsTheCustomersTokenInTheTab(t *testing.T) {
 	}
 }
 
-// DV worded what a customer sees of a sent ticket, and a "ไม่ดำเนินการ" reason shows
-// only when DV's reviewer chooses to: the widget never shows one itself (Jidapa, 16 Nov).
-func TestTheWidgetShowsDVsStatusesAndNoReasons(t *testing.T) {
-	for _, want := range []string{"ได้รับแล้ว", "กำลังแก้", "build #{n} รอตรวจ", "แก้แล้ว build #{n}", "ไม่ดำเนินการ"} {
-		if !strings.Contains(feedbackWidgetJS, `"`+want+`"`) {
-			t.Errorf("the widget lacks the status %q", want)
-		}
-	}
-	for _, never := range []string{"wontDoReason", "f.reason", "send-to-crn", "preview-edit"} {
-		if strings.Contains(feedbackWidgetJS, never) {
-			t.Errorf("the widget mentions %q", never)
-		}
-	}
-}
-
-// Until the customer's fittcore has the API, the window says so instead of failing.
 func TestTheWidgetSaysTheWindowIsNotOpenYet(t *testing.T) {
 	for _, want := range []string{
-		`function notOpen(e) { return e && (e.status === 404 || e.status === 501 || e.status === 503); }`,
+		`if (r.status === 503 && r.data.error === "not_open") { show("closed"); return true; }`,
 		`<b>ยังไม่เปิดใช้</b>`,
 	} {
 		if !strings.Contains(feedbackWidgetJS, want) {

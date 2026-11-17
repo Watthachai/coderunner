@@ -351,7 +351,14 @@
     ".ttitle{font-size:13px;line-height:1.45;min-width:0;overflow-wrap:anywhere}.ttitle small{display:block;color:#6f6f6f;font-size:11px;margin-top:2px}" +
     ".tpill{font-size:11px;font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap}" +
     ".tpill.wait{background:#efefef;color:#5f5f5f}.tpill.doing{background:#fff4e5;color:#b25e00}.tpill.check{background:#e8f6fe;color:#0b7fb5}" +
-    ".tpill.done{background:rgba(88,204,2,.15);color:#2f7a00}.tpill.wont{background:#f3f3f3;color:#8a8a8a}" +
+    ".tpill.done{background:rgba(88,204,2,.15);color:#2f7a00}.tpill.wont{background:#f3f3f3;color:#8a8a8a}.tpill.bad{background:#ffecec;color:#c92a2a}" +
+    ".tcode{font-family:ui-monospace,Menlo,monospace;font-size:28px;font-weight:800;letter-spacing:.12em;color:#3c3c3c;" +
+    "padding:8px 16px;border:2px dashed #cfcfcf;border-radius:12px;background:#fafafa}" +
+    "a.send{display:inline-block;text-decoration:none;text-align:center}" +
+    ".tunder:empty{display:none}.tunder{padding:6px 0 0 30px}" +
+    ".timgs{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}" +
+    ".timgs img{width:72px;height:54px;object-fit:cover;border-radius:6px;border:1px solid #e5e5e5;cursor:zoom-in;background:#f3f3f3}" +
+    ".tmore{text-align:center;margin:12px 0 0}.ttl li .tpill{margin-left:4px}" +
     ".tdetail{padding:8px 4px 14px;font-size:13px;line-height:1.6;border-bottom:1px solid #f0f0f0}.tdetail p{margin:0 0 8px}" +
     ".treply{background:#f5f8f2;border-radius:8px;padding:8px 10px}" +
     ".ttl{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:18px}" +
@@ -534,12 +541,11 @@
   }
 
   // --- 📋 ticket window -------------------------------------------------------
-  // With data-tickets the customer logs in to their company's own fittcore, sees
-  // this app's tickets and sends the ones they pick out of the company to DV, whose
-  // reviewers choose what goes to CRN. Every call goes through the app's route,
-  // which passes on the customer's token; the token stays in this tab's
-  // sessionStorage. The customer's fittcore API is DV's to specify: until it
-  // answers, the window says it is not open yet.
+  // With data-tickets the signed-in app user sees the app's tickets in their
+  // company's own fittcore and sends the ones they pick out of the company to DV.
+  // Every call goes through the app's route, which holds the user's fittcore token
+  // on the server (DV's contract, part A rev1.2): this page never sees it. Status
+  // text and reasons are fittcore's own words, shown as they come.
   var tfab = root.querySelector(".tfab");
   var tbadge = root.querySelector(".tbadge");
   var tscrim = root.querySelector(".tscrim");
@@ -548,290 +554,337 @@
   var tfoot = root.querySelector(".tfoot");
   var tclose = root.querySelector(".tclose");
   var ttabs = root.querySelectorAll(".ttab");
-  var TICKET_SESSION = "fitt-tickets:" + PROJECT;
-  var TICKET_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   var TCAT = { bug: "🐞 bug", feature: "✨ feature", style: "🎨 style", error: "⚠️ error" };
-  // What a customer sees of a sent ticket, worded as DV set it (16 Nov). The codes are
-  // placeholders until DV's spec; a label fittcore sends with a ticket wins.
-  var TSTATUS = {
-    sent: ["ได้รับแล้ว", "wait"],
-    received: ["ได้รับแล้ว", "wait"],
-    in_progress: ["กำลังแก้", "doing"],
-    built: ["build #{n} รอตรวจ", "check"],
-    done: ["แก้แล้ว build #{n}", "done"],
-    wont_do: ["ไม่ดำเนินการ", "wont"],
-  };
-  var tk = { tab: "new", items: null, sel: {}, open: {}, loading: false, error: "", closed: false,
-    flash: "", confirm: null, busy: false, login: null };
-  var tsession = loadTicketSession();
+  // Only the pill's colour comes from the status code; its words are status_label.
+  var TPILL = { pending_send: "wait", withheld: "wont", sending: "doing", send_delayed: "doing", send_failed: "bad",
+    received: "wait", in_progress: "doing", in_review: "check", fixed: "done", on_uat: "done", closed: "wont" };
+  var tk = { view: "", tab: "new", items: [], source: null, cursor: null, loading: false, error: "", flash: "",
+    sel: {}, open: {}, images: {}, confirm: null, busy: false, pending: null, note: "", name: "", polling: 0 };
 
-  function loadTicketSession() {
-    try {
-      var s = JSON.parse(sessionStorage.getItem(TICKET_SESSION) || "null");
-      if (s && typeof s.token === "string" && s.token && (!s.expiresAt || Date.parse(s.expiresAt) > Date.now())) return s;
-    } catch (e) { /* storage blocked: log in again */ }
-    return null;
+  // ticketCall calls one op of the app's route; it answers { status, data } and
+  // status 0 when the network failed.
+  function ticketCall(method, op, params, body) {
+    var url = TICKETS + (TICKETS.indexOf("?") >= 0 ? "&" : "?") + "op=" + op;
+    for (var k in params) if (params[k] != null && params[k] !== "") url += "&" + k + "=" + encodeURIComponent(params[k]);
+    var init = { method: method, credentials: "same-origin" };
+    if (body) { init.headers = { "Content-Type": "application/json" }; init.body = JSON.stringify(body); }
+    return fetch(url, init).then(function (res) {
+      return res.text().then(function (text) {
+        var data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+        return { status: res.status, data: data || {} };
+      });
+    }, function () { return { status: 0, data: {} }; });
   }
-  function saveTicketSession(s) {
-    tsession = s;
-    try {
-      if (s) sessionStorage.setItem(TICKET_SESSION, JSON.stringify(s));
-      else sessionStorage.removeItem(TICKET_SESSION);
-    } catch (e) { /* storage blocked: the session lasts as long as the page */ }
+  function ticketURL(op, params) {
+    var url = TICKETS + (TICKETS.indexOf("?") >= 0 ? "&" : "?") + "op=" + op;
+    for (var k in params) url += "&" + k + "=" + encodeURIComponent(params[k]);
+    return url;
   }
   function escq(s) { return esc(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+  function said(r, fallback) { return (r.data && r.data.message) || fallback; }
 
-  // ticketCall calls one op of the app's route and answers its JSON, or fails with
-  // the route's message and status. A 401 means the customer's login is over.
-  function ticketCall(method, op, body) {
-    var headers = {};
-    if (tsession && op !== "login" && op !== "poll") headers.Authorization = "Bearer " + tsession.token;
-    if (body) headers["Content-Type"] = "application/json";
-    var url = TICKETS + (TICKETS.indexOf("?") >= 0 ? "&" : "?") + "op=" + op;
-    return fetch(url, { method: method, headers: headers, body: body ? JSON.stringify(body) : undefined })
-      .then(function (res) {
-        return res.text().then(function (text) {
-          var data = null;
-          try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
-          if (res.ok) return data;
-          if (res.status === 401 && op !== "login" && op !== "poll") saveTicketSession(null);
-          var err = new Error((data && data.error) || "HTTP " + res.status);
-          err.status = res.status;
-          throw err;
-        });
-      });
+  // follow handles the answers every op may give: the site does not offer the
+  // window, or the app user is not signed in.
+  function follow(r) {
+    if (r.status === 503 && r.data.error === "not_open") { show("closed"); return true; }
+    if (r.status === 401 && r.data.error === "app_login") { show("applogin"); return true; }
+    return false;
   }
-  // notOpen: the customer's fittcore has no ticket API yet (404/501), or the app is
-  // not pointed at a fittcore at all (503 from the route).
-  function notOpen(e) { return e && (e.status === 404 || e.status === 501 || e.status === 503); }
-
-  function startLogin() {
-    if (tk.login && tk.login.waiting) return;
-    // Opened during the click so the browser allows it; it goes to fittcore's page
-    // once the login answers.
-    var win = null;
-    try { win = window.open("", "_blank"); if (win) win.opener = null; } catch (e) { win = null; }
-    tk.login = { waiting: true, url: "", error: "" };
+  function show(view, note) {
+    tk.view = view;
+    tk.note = note || "";
+    if (view !== "pending") tk.pending = null;
     renderTickets();
-    ticketCall("POST", "login", { project: PROJECT }).then(function (r) {
-      if (!r || typeof r.id !== "string" || typeof r.token !== "string" || !/^https?:\/\//i.test(r.approvalUrl || "")) {
-        throw new Error("fittcore ตอบกลับไม่ครบ");
-      }
-      tk.login.url = r.approvalUrl;
-      if (win) { try { win.location.href = r.approvalUrl; } catch (e) { /* the link below still works */ } }
-      renderTickets();
-      var every = Math.min(5000, Math.max(1000, Number(r.suggestedPollIntervalMs) || 1500));
-      var until = Date.now() + 10 * 60 * 1000;
-      (function poll() {
-        if (Date.now() > until) return loginFailed("หมดเวลารออนุมัติ ล็อกอินใหม่อีกครั้ง");
-        ticketCall("POST", "poll", { id: r.id, token: r.token }).then(function (p) {
-          var status = p && p.status;
-          if (status === "approved" && p.accessToken) {
-            saveTicketSession({ token: p.accessToken, expiresAt: p.expiresAt || "", name: (p.user && p.user.name) || "" });
-            tk.login = null;
-            if (win) { try { win.close(); } catch (e) { /* the customer closes it */ } }
-            loadTickets();
-          } else if (status === "pending" || !status) {
-            setTimeout(poll, every);
-          } else {
-            loginFailed("การล็อกอินถูกยกเลิกหรือหมดเวลา ล็อกอินใหม่อีกครั้ง");
-          }
-        }).catch(function (e) { loginFailed("ล็อกอินไม่สำเร็จ — " + e.message); });
-      })();
-    }).catch(function (e) {
-      if (win) { try { win.close(); } catch (x) { /* nothing to close */ } }
-      if (notOpen(e)) { tk.login = null; tk.closed = true; renderTickets(); return; }
-      loginFailed("ล็อกอินไม่สำเร็จ — " + e.message);
+  }
+
+  function refreshState() {
+    ticketCall("GET", "state").then(function (r) {
+      if (follow(r)) return;
+      if (r.status !== 200) return show("login", said(r, "ติดต่อ fittcore ไม่สำเร็จ ลองใหม่อีกครั้ง"));
+      if (r.data.ready) { tk.name = r.data.name || ""; tk.view = "ready"; loadTickets(true); return; }
+      if (r.data.pending) { tk.pending = r.data.pending; show("pending"); poll(); return; }
+      show("login");
     });
   }
-  function loginFailed(msg) { tk.login = { waiting: false, url: "", error: msg }; renderTickets(); }
 
-  function loadTickets() {
-    if (!tsession) return renderTickets();
+  function startLogin() {
+    tk.busy = true;
+    renderTickets();
+    ticketCall("POST", "login", null, { project: PROJECT }).then(function (r) {
+      tk.busy = false;
+      if (follow(r)) return;
+      if (r.status === 200 && r.data.ready) { tk.name = r.data.name || ""; tk.view = "ready"; return loadTickets(true); }
+      if (r.status === 200 && r.data.pending) { tk.pending = r.data.pending; show("pending"); return poll(); }
+      show("login", said(r, "ขอรหัสจาก fittcore ไม่สำเร็จ ลองใหม่อีกครั้ง"));
+    });
+  }
+
+  // poll asks the route whether the user approved, at the pace fittcore set; the
+  // route keeps the poll secret and keeps to that pace too.
+  function poll() {
+    if (tk.polling) return;
+    var wait = (tk.pending && tk.pending.interval) || 3000;
+    tk.polling = setTimeout(function () {
+      tk.polling = 0;
+      if (tk.view !== "pending") return;
+      ticketCall("POST", "poll").then(function (r) {
+        if (follow(r)) return;
+        if (r.status === 200 && r.data.ready) { tk.name = r.data.name || ""; tk.view = "ready"; return loadTickets(true); }
+        if (r.status === 200 && r.data.pending) { tk.pending = r.data.pending; renderTickets(); return poll(); }
+        if (r.status === 200 && r.data.denied) return show("login", "ไม่ได้รับอนุมัติใน fittcore");
+        if (r.status === 200 && r.data.expired) return show("login", "รหัสหมดอายุแล้ว ขอรหัสใหม่อีกครั้ง");
+        poll();
+      });
+    }, wait);
+  }
+
+  function loadTickets(reset) {
+    if (reset) { tk.cursor = null; }
     tk.loading = true;
     tk.error = "";
     renderTickets();
-    ticketCall("GET", "list").then(function (items) {
-      tk.items = Array.isArray(items) ? items.filter(function (f) { return f && TICKET_ID.test(f.id || ""); }) : [];
+    ticketCall("GET", "list", { status: "all", cursor: reset ? "" : tk.cursor }).then(function (r) {
       tk.loading = false;
+      if (follow(r)) return;
+      if (r.status === 401 || r.status === 403) return show("login", said(r, "สิทธิ์หมดอายุแล้ว ขอรหัสใหม่อีกครั้ง"));
+      if (r.status !== 200 || !Array.isArray(r.data.tickets)) { tk.error = said(r, "โหลดรายการไม่สำเร็จ"); return renderTickets(); }
+      var fresh = r.data.tickets.filter(function (f) { return f && typeof f.id === "string"; });
+      tk.items = reset ? fresh : tk.items.concat(fresh);
+      tk.source = r.data.source || null;
+      tk.cursor = r.data.next_cursor || null;
       var keep = {};
-      tk.items.forEach(function (f) { if (f.status === "new" && tk.sel[f.id]) keep[f.id] = true; });
+      tk.items.forEach(function (f) { if (f.status === "pending_send" && tk.sel[f.id]) keep[f.id] = true; });
       tk.sel = keep;
-      renderTickets();
-    }).catch(function (e) {
-      tk.loading = false;
-      if (notOpen(e)) tk.closed = true;
-      else if (e.status === 401) tk.login = { waiting: false, url: "", error: "หมดเวลาล็อกอิน ล็อกอินใหม่อีกครั้ง" };
-      else tk.error = "โหลดรายการไม่สำเร็จ — " + e.message;
       renderTickets();
     });
   }
 
-  function ticketsIn(statuses) {
-    return (tk.items || []).filter(function (f) { return statuses ? statuses.indexOf(f.status) >= 0 : f.status !== "new"; });
-  }
-  function picked() { return ticketsIn(["new"]).filter(function (f) { return tk.sel[f.id]; }).map(function (f) { return f.id; }); }
-  function buildNo(f) { var n = f.buildNo != null ? f.buildNo : f.crnBuildNo; return n == null ? "" : String(n); }
-  function ticketText(f) {
-    var t = String(f.text || "").trim();
-    if (!t && f.error && f.error.message) t = String(f.error.message);
-    if (!t && f.pins && f.pins[0]) t = String(f.pins[0].note || f.pins[0].label || "");
-    return t || "(ไม่มีข้อความ)";
-  }
-  function pagePath(u) { try { var x = new URL(u); return x.pathname + x.search; } catch (e) { return String(u || ""); } }
+  function mode() { return (tk.source && tk.source.forward_mode) || "triage"; }
+  function waiting() { return tk.items.filter(function (f) { return f.status === "pending_send"; }); }
+  function others() { return tk.items.filter(function (f) { return f.status !== "pending_send"; }); }
+  function picked() { return waiting().filter(function (f) { return tk.sel[f.id]; }).map(function (f) { return f.id; }); }
   function when(iso) {
     var d = new Date(iso);
     if (!iso || isNaN(d.getTime())) return "";
     try { return d.toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return d.toLocaleString(); }
   }
-  function statusPill(f) {
-    var s = TSTATUS[f.status] || [String(f.status || ""), "wait"];
-    var label = typeof f.statusLabel === "string" && f.statusLabel ? f.statusLabel : s[0].replace("{n}", buildNo(f) || "?");
-    return "<span class='tpill " + s[1] + "'>" + esc(label) + "</span>";
+  function pill(f) {
+    return f.status_label ? "<span class='tpill " + (TPILL[f.status] || "wait") + "'>" + esc(f.status_label) + "</span>" : "";
   }
-  function ticketMeta(f) {
+  function meta(f) {
     return "<span class='ttag'>" + (TCAT[f.category] || esc(f.category || "")) + "</span>" +
       (f.priority ? "<span class='ttag " + escq(f.priority) + "'>" + esc(f.priority) + "</span>" : "") +
-      "<span class='tpath'>" + esc(pagePath(f.pageUrl)) + "</span>" +
-      (f.createdAt ? "<span>" + esc(when(f.createdAt)) + "</span>" : "");
+      (f.page ? "<span class='tpath'>" + esc(f.page) + "</span>" : "") +
+      (f.created_at ? "<span>" + esc(when(f.created_at)) + "</span>" : "");
+  }
+  function text(f) { return String(f.text || "").trim() || "(ไม่มีข้อความ)"; }
+  // A ticket's pictures, fetched when the user asks, through the route.
+  function imagesHTML(f) {
+    var got = tk.images[f.id];
+    if (!f.image_count) return "";
+    if (!got) return "<button class='tlink' data-images='" + escq(f.id) + "'>ดูรูป (" + f.image_count + ")</button>";
+    if (got === "loading") return "<span class='tpins'>กำลังโหลดรูป…</span>";
+    if (typeof got === "string") return "<span class='tpins terr'>" + esc(got) + "</span>";
+    return "<span class='timgs'>" + got.map(function (im) {
+      var src = ticketURL("image", { id: f.id, image: im.image_id });
+      return "<img src='" + escq(src) + "' alt='' data-zoom='" + escq(src) + "'>";
+    }).join("") + "</span>";
+  }
+  function loadImages(id) {
+    tk.images[id] = "loading";
+    renderTickets();
+    ticketCall("GET", "images", { id: id }).then(function (r) {
+      if (follow(r)) return;
+      tk.images[id] = r.status === 200 && Array.isArray(r.data.images) ? r.data.images : said(r, "โหลดรูปไม่สำเร็จ");
+      renderTickets();
+    });
   }
 
   function renderTickets() {
     if (!TICKETS) return;
-    var fresh = tsession && tk.items ? ticketsIn(["new"]).length : 0;
-    tbadge.textContent = String(fresh);
-    tbadge.hidden = fresh === 0;
+    var ready = tk.view === "ready";
+    var n = ready ? waiting().length : 0;
+    tbadge.textContent = String(n);
+    tbadge.hidden = n === 0;
     if (tscrim.hidden) return;
-    var on = !!tsession && !tk.closed;
     ttabs.forEach(function (b) {
       var current = b.getAttribute("data-tab") === tk.tab;
       b.classList.toggle("on", current);
       b.setAttribute("aria-selected", current ? "true" : "false");
-      b.disabled = !on;
+      b.disabled = !ready;
     });
-    root.querySelector(".tn-new").textContent = on && tk.items ? String(fresh) : "";
-    root.querySelector(".tn-sent").textContent = on && tk.items ? String(ticketsIn(null).length) : "";
-    tsrc.innerHTML = on
-      ? "ล็อกอินเป็น <b>" + esc(tsession.name || "ลูกค้า") + "</b> · <button class='tlink' data-act='reload'>โหลดใหม่</button> · <button class='tlink' data-act='logout'>ออกจากระบบ</button>"
+    root.querySelector(".tn-new").textContent = ready ? String(n) : "";
+    root.querySelector(".tn-sent").textContent = ready ? String(others().length) : "";
+    tsrc.innerHTML = ready
+      ? "อนุมัติโดย <b>" + esc(tk.name || "บัญชี fittcore ของคุณ") + "</b> · <button class='tlink' data-act='reload'>โหลดใหม่</button> · <button class='tlink' data-act='logout'>เลิกใช้สิทธิ์นี้</button>"
       : "รายการจาก fittcore ของบริษัทคุณ";
     tfoot.hidden = true;
-    if (tk.closed) {
+    if (tk.view === "closed") {
       tbody.innerHTML = "<div class='tempty'><b>ยังไม่เปิดใช้</b>ตอนนี้ยังดูและส่ง ticket จากหน้านี้ไม่ได้ ทีม DV จะแจ้งสถานะ feedback ให้ทราบ</div>";
       return;
     }
-    if (!tsession) return renderLogin();
+    if (tk.view === "applogin") {
+      tbody.innerHTML = "<div class='tempty'><b>ล็อกอินแอปก่อน</b>ล็อกอินแอปนี้ด้วยบัญชี fittcore ของบริษัท แล้วเปิด 📋 อีกครั้ง</div>";
+      return;
+    }
+    if (tk.view === "login") {
+      tbody.innerHTML = "<div class='tlogin'><b>ขอสิทธิ์จาก fittcore ก่อน</b>" +
+        "<p>ระบบจะขอรหัสให้บัญชีที่คุณล็อกอินแอปอยู่ คุณต้องเป็น admin ของบริษัท และอนุมัติด้วยบัญชีเดียวกันใน fittcore</p>" +
+        (tk.note ? "<p class='terr'>" + esc(tk.note) + "</p>" : "") +
+        "<button class='send tgo' data-act='login'" + (tk.busy ? " disabled" : "") + ">" + (tk.busy ? "กำลังขอรหัส…" : "ขอรหัสอนุมัติ") + "</button></div>";
+      return;
+    }
+    if (tk.view === "pending" && tk.pending) {
+      tbody.innerHTML = "<div class='tlogin'><b>อนุมัติใน fittcore</b>" +
+        "<p>เปิดหน้าอนุมัติ ล็อกอินด้วยบัญชีเดียวกับที่ใช้แอปนี้ ตรวจว่ารหัสตรงกับที่เห็นตรงนี้ แล้วกด \"อนุมัติ\"</p>" +
+        "<span class='tcode'>" + esc(tk.pending.code) + "</span>" +
+        "<a class='send tgo' href='" + escq(tk.pending.url) + "' target='_blank' rel='noopener'>เปิดหน้าอนุมัติ</a>" +
+        "<p class='tpins'>รอการอนุมัติ… รหัสหมดอายุ " + esc(when(new Date(tk.pending.expires).toISOString())) + "</p></div>";
+      return;
+    }
+    if (!ready) { tbody.innerHTML = "<div class='tempty'>กำลังโหลด…</div>"; return; }
     if (tk.error) {
       tbody.innerHTML = "<div class='tempty'><b class='terr'>" + esc(tk.error) + "</b><button class='tlink' data-act='reload'>ลองโหลดใหม่</button></div>";
       return;
     }
-    if (!tk.items) { tbody.innerHTML = "<div class='tempty'>กำลังโหลด…</div>"; return; }
-    if (tk.tab === "new") renderNew();
-    else if (tk.tab === "sent") renderSent();
-    else renderHistory();
+    if (tk.tab === "new") renderWaiting();
+    else if (tk.tab === "sent") renderOthers();
+    else renderBuilds();
   }
 
-  function renderLogin() {
-    var l = tk.login || {};
-    tbody.innerHTML = "<div class='tlogin'><b>ล็อกอิน fittcore ก่อน</b>" +
-      "<p>ใช้บัญชี fittcore ของบริษัทคุณ ระบบจะเปิดแท็บใหม่ให้ล็อกอินและกดอนุมัติ แล้วหน้านี้จะโหลดรายการให้เอง</p>" +
-      (l.error ? "<p class='terr'>" + esc(l.error) + "</p>" : "") +
-      "<button class='send tgo' data-act='login'" + (l.waiting ? " disabled" : "") + ">" +
-      (l.waiting ? "รออนุมัติในแท็บ fittcore…" : "ล็อกอิน fittcore") + "</button>" +
-      (l.waiting && l.url ? "<a class='tlink' href='" + escq(l.url) + "' target='_blank' rel='noopener'>ไม่เห็นแท็บใหม่? เปิดหน้าล็อกอิน fittcore</a>" : "") +
-      "</div>";
+  function more() {
+    return tk.cursor ? "<p class='tmore'><button class='tlink' data-act='more'" + (tk.loading ? " disabled" : "") + ">" +
+      (tk.loading ? "กำลังโหลด…" : "โหลดเพิ่ม") + "</button></p>" : "";
   }
 
-  function renderNew() {
+  function renderWaiting() {
     if (tk.confirm) return renderConfirm();
-    var list = ticketsIn(["new"]);
+    var list = waiting();
     var h = tk.flash ? "<p class='tflash' role='status'>" + esc(tk.flash) + "</p>" : "";
+    if (mode() === "auto") h += "<p class='tpins'>แอปนี้ส่ง feedback ให้ DV อัตโนมัติ ไม่ต้องกดส่ง</p>";
+    if (mode() === "off") h += "<p class='tpins'>บริษัทปิดการส่ง feedback ต่อไว้</p>";
     if (!list.length) {
-      tbody.innerHTML = h + "<div class='tempty'><b>ไม่มี ticket ที่รอส่ง</b>กด 💬 เพื่อเขียน ticket ใหม่</div>";
+      tbody.innerHTML = h + (tk.loading && !tk.items.length ? "<div class='tempty'>กำลังโหลด…</div>"
+        : "<div class='tempty'><b>ไม่มี ticket ที่รอส่ง</b>กด 💬 เพื่อเขียน ticket ใหม่</div>") + more();
       return;
     }
+    var canSend = mode() === "triage";
     var all = list.every(function (f) { return tk.sel[f.id]; });
-    h += "<div class='tlisthead'><label class='tselall'><input type='checkbox' data-all" + (all ? " checked" : "") +
-      "> เลือกทั้งหมด</label><span>เขียนไว้แล้ว ยังไม่ได้ส่งไปฐานกลาง</span></div><ul class='tlist'>";
+    if (canSend) {
+      h += "<div class='tlisthead'><label class='tselall'><input type='checkbox' data-all" + (all ? " checked" : "") +
+        "> เลือกทั้งหมด</label><span>เขียนไว้แล้ว ยังไม่ได้ส่งไปฐานกลาง</span></div>";
+    }
+    h += "<ul class='tlist'>";
     list.forEach(function (f) {
       var on = !!tk.sel[f.id];
-      h += "<li class='tk" + (on ? " on" : "") + "'><label class='tpick'><input type='checkbox' data-pick='" + escq(f.id) + "'" + (on ? " checked" : "") + ">" +
-        "<span class='tmain'><span class='tmeta'>" + ticketMeta(f) + "</span><span class='ttxt'>" + esc(ticketText(f)) + "</span>" +
-        (f.pins && f.pins.length ? "<span class='tpins'>📍 ปักไว้ " + f.pins.length + " จุด</span>" : "") + "</span></label></li>";
+      var body = "<span class='tmain'><span class='tmeta'>" + meta(f) + pill(f) + "</span><span class='ttxt'>" + esc(text(f)) + "</span></span>";
+      h += "<li class='tk" + (on ? " on" : "") + "'>" +
+        (canSend ? "<label class='tpick'><input type='checkbox' data-pick='" + escq(f.id) + "'" + (on ? " checked" : "") + ">" + body + "</label>" : body) +
+        "<div class='tunder'>" + imagesHTML(f) + "</div></li>";
     });
-    tbody.innerHTML = h + "</ul>";
+    tbody.innerHTML = h + "</ul>" + more();
+    if (!canSend) return;
     var n = picked().length;
     tfoot.hidden = false;
     tfoot.innerHTML = "<span class='tinfo'>เลือก " + n + " จาก " + list.length + " รายการ</span>" +
       "<button class='send tgo' data-act='ask'" + (n ? "" : " disabled") + ">ส่งไปฐานกลาง" + (n ? " (" + n + ")" : "") + "</button>";
   }
 
+  // newKey is the Idempotency-Key of one press of "ยืนยันส่ง": a retry after a
+  // network failure sends it again, a new press gets a new one.
+  function newKey() {
+    var a = new Uint8Array(18);
+    try { crypto.getRandomValues(a); } catch (e) { for (var i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256); }
+    return btoa(String.fromCharCode.apply(null, a)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
   function renderConfirm() {
     var c = tk.confirm;
     var h = "<div class='tconfirm'><h4>ส่ง " + c.ids.length + " ticket ไปฐานกลาง?</h4>" +
-      "<p>ticket เหล่านี้จะออกจากบริษัทคุณไปถึงทีม DV ส่งแล้วแก้ไขหรือดึงกลับไม่ได้</p><ul class='tlist'>";
+      "<p>ticket เหล่านี้จะออกจากบริษัทคุณไปถึงทีม DV ส่งแล้วดึงกลับไม่ได้</p><ul class='tlist'>";
     c.ids.forEach(function (id) {
-      var f = (tk.items || []).filter(function (x) { return x.id === id; })[0];
-      if (f) h += "<li class='tk'><span class='tmain'><span class='tmeta'>" + ticketMeta(f) + "</span><span class='ttxt'>" + esc(ticketText(f)) + "</span></span></li>";
+      var f = tk.items.filter(function (x) { return x.id === id; })[0];
+      if (f) h += "<li class='tk'><span class='tmain'><span class='tmeta'>" + meta(f) + "</span><span class='ttxt'>" + esc(text(f)) + "</span></span></li>";
     });
     tbody.innerHTML = h + "</ul>" + (c.error ? "<p class='terr'>" + esc(c.error) + "</p>" : "") + "</div>";
     tfoot.hidden = false;
     tfoot.innerHTML = "<button class='tghost' data-act='back'" + (tk.busy ? " disabled" : "") + ">กลับไปเลือก</button>" +
       "<button class='send tgo' data-act='send'" + (tk.busy ? " disabled" : "") + ">" +
-      (tk.busy ? "กำลังส่ง…" : "ยืนยันส่ง " + c.ids.length + " รายการ") + "</button>";
+      (tk.busy ? "กำลังส่ง…" : c.error ? "ลองส่งอีกครั้ง" : "ยืนยันส่ง " + c.ids.length + " รายการ") + "</button>";
   }
 
-  function renderSent() {
-    var list = ticketsIn(null).slice().sort(function (a, b) {
-      return String(b.sentAt || b.createdAt || "").localeCompare(String(a.sentAt || a.createdAt || ""));
+  function sendPicked() {
+    var c = tk.confirm;
+    tk.busy = true;
+    renderTickets();
+    ticketCall("POST", "submit", null, { ticket_ids: c.ids, key: c.key }).then(function (r) {
+      tk.busy = false;
+      if (follow(r)) return;
+      if (r.status === 401 || r.status === 403) { tk.confirm = null; return show("login", said(r, "สิทธิ์หมดอายุแล้ว ขอรหัสใหม่แล้วส่งอีกครั้ง")); }
+      if (r.status !== 200 || !Array.isArray(r.data.results)) {
+        // A network failure or a busy fittcore: the same press, so the same key.
+        c.error = said(r, r.status === 0 ? "ส่งไม่สำเร็จ เครือข่ายขัดข้อง" : "ส่งไม่สำเร็จ");
+        return renderTickets();
+      }
+      var count = {};
+      r.data.results.forEach(function (x) { count[x.result] = (count[x.result] || 0) + 1; });
+      var parts = [];
+      if (count.queued) parts.push("ส่งแล้ว " + count.queued + " รายการ");
+      if (count.already_sent) parts.push("ส่งไปก่อนหน้าแล้ว " + count.already_sent);
+      if (count.auto) parts.push("ส่งอัตโนมัติแล้ว " + count.auto);
+      if (count.not_allowed) parts.push("ส่งไม่ได้ " + count.not_allowed);
+      if (count.not_found) parts.push("ไม่พบ " + count.not_found);
+      tk.confirm = null;
+      tk.sel = {};
+      tk.tab = "sent";
+      tk.flash = parts.join(" · ") + " ✓";
+      loadTickets(true);
     });
+  }
+
+  function renderOthers() {
+    var list = others();
     var h = tk.flash ? "<p class='tflash' role='status'>" + esc(tk.flash) + "</p>" : "";
     if (!list.length) {
-      tbody.innerHTML = h + "<div class='tempty'><b>ยังไม่มี ticket ที่ส่งไป</b>ticket ที่ส่งไปฐานกลางแล้วจะขึ้นที่นี่ พร้อมสถานะ</div>";
+      tbody.innerHTML = h + "<div class='tempty'><b>ยังไม่มี ticket ที่ส่งไป</b>ticket ที่ส่งไปฐานกลางแล้วจะขึ้นที่นี่ พร้อมสถานะ</div>" + more();
       return;
     }
-    var group = null;
     list.forEach(function (f) {
-      var g = f.sentAt ? "ส่งเมื่อ " + when(f.sentAt) : "ส่งแล้ว";
-      if (g !== group) {
-        if (group !== null) h += "</div>";
-        h += "<div class='tbatch'><h5>" + esc(g) + "</h5>";
-        group = g;
-      }
       var open = !!tk.open[f.id];
-      h += "<button class='trow' data-open='" + escq(f.id) + "' aria-expanded='" + open + "'><span class='ttitle'>" + esc(ticketText(f)) +
-        "<small>" + (TCAT[f.category] || esc(f.category || "")) + " · " + esc(pagePath(f.pageUrl)) + "</small></span>" + statusPill(f) + "</button>";
+      h += "<button class='trow' data-open='" + escq(f.id) + "' aria-expanded='" + open + "'><span class='ttitle'>" + esc(text(f)) +
+        "<small>" + (TCAT[f.category] || esc(f.category || "")) + (f.page ? " · " + esc(f.page) : "") +
+        (f.sent_at ? " · ส่งเมื่อ " + esc(when(f.sent_at)) : "") + "</small></span>" + pill(f) + "</button>";
       if (open) {
-        h += "<div class='tdetail'><p>" + esc(ticketText(f)) + "</p><p class='treply'>เขียนเมื่อ " + esc(when(f.createdAt)) +
-          (f.sentAt ? " · ส่งเมื่อ " + esc(when(f.sentAt)) : "") + "</p></div>";
+        h += "<div class='tdetail'><p>" + esc(text(f)) + "</p>" +
+          (f.status === "closed" && f.customer_reason ? "<p class='treply'><b>จาก DV</b> " + esc(f.customer_reason) + "</p>" : "") +
+          "<p class='tpins'>เขียนเมื่อ " + esc(when(f.created_at)) + "</p>" + imagesHTML(f) + "</div>";
       }
     });
-    tbody.innerHTML = h + "</div>";
+    tbody.innerHTML = h + more();
   }
 
-  function renderHistory() {
+  function renderBuilds() {
     var builds = {};
     var order = [];
-    ticketsIn(["built", "done"]).forEach(function (f) {
-      var n = buildNo(f) || "?";
+    tk.items.forEach(function (f) {
+      if (f.build_no == null) return;
+      var n = String(f.build_no);
       if (!builds[n]) { builds[n] = []; order.push(n); }
       builds[n].push(f);
     });
     order.sort(function (a, b) { return (Number(b) || 0) - (Number(a) || 0); });
     if (!order.length) {
-      tbody.innerHTML = "<div class='tempty'><b>ยังไม่มีประวัติการแก้ไข</b>ticket ที่แก้แล้วจะขึ้นที่นี่ แยกตามรอบ build</div>";
+      tbody.innerHTML = "<div class='tempty'><b>ยังไม่มีประวัติการแก้ไข</b>ticket ที่แก้แล้วจะขึ้นที่นี่ แยกตามรอบ build</div>" + more();
       return;
     }
     var h = "<ol class='ttl'>";
     order.forEach(function (n, i) {
-      var list = builds[n];
-      var done = list.filter(function (f) { return f.status === "done"; }).length;
-      h += "<li class='tver'><span class='tvtag" + (i ? " old" : "") + "'>#" + esc(n) + "</span><div><h4>build #" + esc(n) +
-        (done ? "<span class='tpill done'>แก้แล้ว " + done + "</span>" : "") +
-        (list.length > done ? "<span class='tpill check'>รอตรวจ " + (list.length - done) + "</span>" : "") + "</h4><ul>";
-      list.forEach(function (f) { h += "<li>" + esc(ticketText(f)) + "</li>"; });
+      h += "<li class='tver'><span class='tvtag" + (i ? " old" : "") + "'>#" + esc(n) + "</span><div><h4>build #" + esc(n) + "</h4><ul>";
+      builds[n].forEach(function (f) { h += "<li>" + esc(text(f)) + " " + pill(f) + "</li>"; });
       h += "</ul></div></li>";
     });
-    tbody.innerHTML = h + "</ol>";
+    tbody.innerHTML = h + "</ol>" + more();
   }
 
   function closeTickets() {
@@ -848,8 +901,9 @@
       epanel.hidden = true;
       tscrim.hidden = false;
       tk.flash = "";
-      if (tsession && !tk.closed) loadTickets();
-      else renderTickets();
+      if (tk.view === "ready") loadTickets(true);
+      else if (tk.view === "pending") renderTickets();
+      else { tk.view = ""; renderTickets(); refreshState(); }
       tclose.focus();
     });
     tclose.addEventListener("click", closeTickets);
@@ -868,12 +922,18 @@
     tsrc.addEventListener("click", function (e) {
       var b = e.target.closest("button");
       if (!b) return;
-      if (b.getAttribute("data-act") === "reload") loadTickets();
-      if (b.getAttribute("data-act") === "logout") { saveTicketSession(null); tk.items = null; tk.sel = {}; renderTickets(); }
+      if (b.getAttribute("data-act") === "reload") loadTickets(true);
+      if (b.getAttribute("data-act") === "logout") {
+        ticketCall("POST", "logout").then(function (r) {
+          if (follow(r)) return;
+          tk.items = []; tk.sel = {}; tk.images = {};
+          show("login");
+        });
+      }
     });
     tbody.addEventListener("change", function (e) {
       var el = e.target;
-      if (el.hasAttribute("data-all")) ticketsIn(["new"]).forEach(function (f) { tk.sel[f.id] = el.checked; });
+      if (el.hasAttribute("data-all")) waiting().forEach(function (f) { tk.sel[f.id] = el.checked; });
       else if (el.getAttribute("data-pick")) tk.sel[el.getAttribute("data-pick")] = el.checked;
       else return;
       renderTickets();
@@ -882,10 +942,15 @@
       if (again) again.focus();
     });
     tbody.addEventListener("click", function (e) {
+      var img = e.target.closest("img[data-zoom]");
+      if (img) return openZoom(img.getAttribute("data-zoom"));
       var b = e.target.closest("button");
       if (!b) return;
-      if (b.getAttribute("data-act") === "login") startLogin();
-      else if (b.getAttribute("data-act") === "reload") loadTickets();
+      var act = b.getAttribute("data-act");
+      if (act === "login") startLogin();
+      else if (act === "reload") loadTickets(true);
+      else if (act === "more") loadTickets(false);
+      else if (b.getAttribute("data-images")) loadImages(b.getAttribute("data-images"));
       else if (b.getAttribute("data-open")) {
         var id = b.getAttribute("data-open");
         tk.open[id] = !tk.open[id];
@@ -898,28 +963,10 @@
       var b = e.target.closest("button");
       if (!b || b.disabled) return;
       var act = b.getAttribute("data-act");
-      if (act === "ask") { tk.confirm = { ids: picked(), error: "" }; renderTickets(); }
+      if (act === "ask") { tk.confirm = { ids: picked(), key: newKey(), error: "" }; renderTickets(); }
       else if (act === "back") { tk.confirm = null; renderTickets(); }
-      else if (act === "send" && tk.confirm) {
-        var ids = tk.confirm.ids;
-        tk.busy = true;
-        renderTickets();
-        ticketCall("POST", "send", { feedbackIds: ids }).then(function () {
-          tk.busy = false;
-          tk.confirm = null;
-          tk.sel = {};
-          tk.tab = "sent";
-          tk.flash = "ส่งไปฐานกลางแล้ว " + ids.length + " รายการ ✓";
-          loadTickets();
-        }).catch(function (err) {
-          tk.busy = false;
-          if (err.status === 401) { tk.confirm = null; tk.login = { waiting: false, url: "", error: "หมดเวลาล็อกอิน ล็อกอินใหม่แล้วส่งอีกครั้ง" }; }
-          else if (tk.confirm) tk.confirm.error = "ส่งไม่สำเร็จ — " + err.message;
-          renderTickets();
-        });
-      }
+      else if (act === "send" && tk.confirm) sendPicked();
     });
-    if (tsession) loadTickets();
   }
 
   fab.addEventListener("click", function () {
@@ -1183,9 +1230,10 @@
         if (!res.ok) throw new Error("HTTP " + res.status);
         pins = []; shots = []; renderPins(); noteEl.value = "";
         if (TICKETS) {
-          // The ticket waits in the customer's fittcore until they send it from 📋.
-          setStatus("บันทึกแล้ว ✓ กด 📋 เพื่อเลือกส่งไปฐานกลาง", "ok");
-          if (tsession) loadTickets();
+          // The ticket waits in the company's fittcore until it is sent from 📋,
+          // unless the app forwards every ticket by itself.
+          setStatus(mode() === "auto" ? "บันทึกแล้ว ✓ ระบบส่งต่อให้ DV เอง" : "บันทึกแล้ว ✓ กด 📋 เพื่อเลือกส่งไปฐานกลาง", "ok");
+          if (tk.view === "ready") loadTickets(true);
           setTimeout(function () { panel.hidden = true; setStatus("", ""); }, 2600);
           return;
         }

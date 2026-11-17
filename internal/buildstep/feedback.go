@@ -186,12 +186,11 @@ const feedbackRoutePath = "/api/fitt-feedback"
 // a report over 25 MB with 413 and answers 502 when the receiver redirects.
 //
 // With the ticket window on (ticketWindow), the same route serves the widget's 📋
-// (?op=...): the customer logs in to their company's own fittcore, sees the app's
-// tickets and sends the ones they pick out of the company to DV, whose reviewers
-// choose what goes to CRN. The route holds no key; it passes on the customer's
-// token, only to the fittcore FITT_FEEDBACK_URL names. It never calls DV's fittcore.
-// What it asks of the customer's fittcore is the FITTCORE table, in one place: DV
-// sends that API's spec later (16 Nov), so the paths there are placeholders.
+// (?op=...) under DV's contract with the company's own fittcore (CUSTOMER-FITTCORE-
+// WIDGET-API part A rev1.2): the signed-in app user approves a token for themselves
+// at their fittcore, sees the app's tickets and sends the ones they pick out of the
+// company to DV, whose reviewers choose what goes to CRN. The token stays on the
+// app's server, bound to that user's session; it never calls DV's fittcore.
 func feedbackRoute(appDir, layoutExt, ingestURL string) (string, string) {
 	fallback, _ := json.Marshal(ingestURL)
 	src := feedbackRouteHead + "const FALLBACK = " + string(fallback) + ";\n" + feedbackRouteReport
@@ -208,9 +207,8 @@ func feedbackRoute(appDir, layoutExt, ingestURL string) (string, string) {
 }
 
 // ticketWindow turns on the widget's 📋 window: data-tickets in a Next layout and the
-// route's ticket ops. It stays off until DV sends the spec of the API on the
-// customer's own fittcore (Jidapa, 16 Nov); the window and the ops are built against
-// placeholders (FITTCORE in feedbackRouteTickets) until then.
+// route's ticket ops. It stays off until the company fittcores have DV's widget API
+// (17 Nov: not installed at any site yet); a site without it shows "ยังไม่เปิดใช้".
 var ticketWindow = false
 
 const (
@@ -288,73 +286,356 @@ export async function POST(request«: Request»)«: Promise<Response>» {
 
 // feedbackRouteTickets is the route's 📋 part, there when ticketWindow is on.
 const feedbackRouteTickets = `
-// The widget's 📋 window comes here too (?op=...): the customer logs in to their
-// company's own fittcore, sees this app's tickets and sends the ones they pick on to
-// DV. This route holds no key. The widget sends the token the customer's fittcore
-// gave them, which goes only to the fittcore FITT_FEEDBACK_URL names (its
-// /api/ingest/feedback). It never calls DV's fittcore.
-const OP_MAX_BYTES = 64 * 1024;
-const INGEST_PATH = "/api/ingest/feedback";
-const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const NAME = /^[A-Za-z0-9_-]{1,128}$/;
-const TOKEN = /^[\x21-\x7e]{1,2048}$/;
+// The widget's 📋 window comes here too (?op=...). It follows DV's contract with the
+// company's own fittcore (CUSTOMER-FITTCORE-WIDGET-API part A rev1.2, 17 Nov 2026):
+// the signed-in app user asks their fittcore for a token, approves it there
+// themselves, then sees the app's tickets and sends the ones they pick out of the
+// company to DV. The token and the poll secret stay on this server, bound to that
+// user's app session (fittcore session id + user id), and go only to the fittcore
+// FITT_FEEDBACK_URL names. The browser sees the user code and the approval link,
+// never the token. Nothing here calls DV's fittcore, the Gateway or CRN.
+const OP_MAX_BYTES = 16 * 1024;
+const WIDGET_API = "/api/site/widget/v1";
+const CLIENT_NAME = "FITT feedback widget";
+const TIMEOUT_MS = 5000;
+const CLOSED_FOR_MS = 5 * 60 * 1000;
+const SWEEP_MS = 5 * 60 * 1000;
+const PROJECT = /^[A-Za-z0-9_-]{1,128}$/;
+const TICKET = /^[A-Za-z0-9_-]{1,64}$/;
+const KEY = /^[A-Za-z0-9_-]{16,64}$/;
+const CODE = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/;
+const SECRET = /^[\x21-\x7e]{1,512}$/;
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
-// What the ticket window asks of the customer's fittcore, relative to its /api.
-// Placeholders until DV's spec: the token is for this app alone, so no path names it.
-const FITTCORE = {
-  login: () => "/widget-auth/challenges",
-  poll: (id«: string», token«: string») => "/widget-auth/challenges/" + id + "?token=" + encodeURIComponent(token),
-  list: () => "/widget/tickets",
-  send: () => "/widget/tickets/send",
-};
+«type Challenge = { id: string; secret: string; code: string; url: string; expires: number; interval: number; next: number };
+type Held = { ref: string; cookie: string; sessionExpires: number; token: string; tokenExpires: number; name: string; challenge: Challenge | null };
+type Me = { key: string; ref: string; until: number };
+»
+// One entry per app session: a token is never shared between users or sessions.
+const held«: Map<string, Held>» = new Map();
+// Until when the company fittcore counts as not offering the window: it is asked at
+// most once per CLOSED_FOR_MS after it answers 404 widget_not_enabled or not at all.
+let closedUntil = 0;
+let sweeping = false;
 
 export const dynamic = "force-dynamic";
 
-function json(status«: number», body«: unknown») {
+function json(status«: number», body«: unknown», headers«?: Record<string, string>») {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: { "content-type": "application/json", "cache-control": "no-store", ...(headers || {}) },
   });
 }
 
-export async function GET(request«: Request»)«: Promise<Response>» {
-  if (new URL(request.url).searchParams.get("op") !== "list") return json(404, { error: "unknown op" });
-  const token = bearer(request);
-  if (!token) return json(401, { error: "log in to fittcore first" });
-  const res = await fittcore("GET", FITTCORE.list(), token);
-  if (!res.ok) return res;
+function notOpen() {
+  return json(503, { error: "not_open" });
+}
+
+function originOf(value«: string | undefined») {
   try {
-    return json(200, withoutPictures(await res.json()));
+    const u = new URL(value || "");
+    if ((u.protocol !== "http:" && u.protocol !== "https:") || u.username || u.password) return "";
+    return u.origin;
   } catch {
-    return json(502, { error: "fittcore answered with something other than JSON" });
+    return "";
   }
 }
 
-async function ticketOp(op«: string», request«: Request») {
-  if (op !== "login" && op !== "poll" && op !== "send") return json(404, { error: "unknown op" });
-  const raw = await readBody(request, OP_MAX_BYTES);
-  if (!raw) return json(413, { error: "request is larger than 64 KB" });
-  const b = fields(raw);
-  if (!b) return json(400, { error: "the body is not a JSON object" });
+// site is the company fittcore that both takes this app's reports (FITT_FEEDBACK_URL)
+// and logs its users in (PLATFORM_FITTCORE_ORIGIN), or "" when they are not the same
+// one: then the window is not open, and no challenge starts (DV, 17 Nov).
+function site() {
+  const reports = originOf(process.env.FITT_FEEDBACK_URL);
+  return reports && reports === originOf(process.env.PLATFORM_FITTCORE_ORIGIN) ? reports : "";
+}
 
+// who is the app user behind this request as the company fittcore knows them (the
+// app logs its users in through it): null when it knows no such session, undefined
+// when it could not be asked.
+async function who(cookie«: string») {
+  const origin = site();
+  if (!cookie || !origin) return null;
+  try {
+    const res = await fetch(origin + "/api/auth/get-session", {
+      headers: { cookie, accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const v = await res.json();
+    const s = v && typeof v === "object" && v.data ? v.data : v;
+    const user = s && s.user;
+    const session = s && s.session;
+    if (!user || !session || typeof user.id !== "string" || user.id.length < 1 || user.id.length > 128) return null;
+    if (session.userId !== user.id || typeof session.id !== "string" || !session.id) return null;
+    const until = typeof session.expiresAt === "string" ? Date.parse(session.expiresAt) : NaN;
+    if (until <= Date.now()) return null;
+    const found«: Me» = { key: session.id + "\n" + user.id, ref: user.id, until: Number.isNaN(until) ? 0 : until };
+    return found;
+  } catch {
+    closedUntil = Date.now() + CLOSED_FOR_MS;
+    return undefined;
+  }
+}
+
+function entry(me«: Me», cookie«: string») {
+  let h = held.get(me.key);
+  if (!h) {
+    h = { ref: me.ref, cookie, sessionExpires: me.until, token: "", tokenExpires: 0, name: "", challenge: null };
+    held.set(me.key, h);
+  }
+  h.cookie = cookie;
+  h.sessionExpires = me.until;
+  if (h.token && h.tokenExpires <= Date.now()) forget(h);
+  return h;
+}
+
+function forget(h«: Held») {
+  h.token = "";
+  h.tokenExpires = 0;
+  h.name = "";
+}
+
+// revoke withdraws the user's token at fittcore and forgets it here.
+async function revoke(h«: Held») {
+  if (h.token) {
+    const res = await call("DELETE", "/auth/token", h);
+    if (res) await res.text().catch(() => "");
+  }
+  forget(h);
+}
+
+// sweep withdraws the token of a session that ended: logged out, expired, or a token
+// past its 8 hours. The app tells this route nothing when a user logs out, so it asks.
+async function sweep() {
+  for (const [key, h] of held) {
+    const now = Date.now();
+    if (h.challenge && h.challenge.expires <= now) h.challenge = null;
+    if (h.token && h.tokenExpires <= now) forget(h);
+    if (h.token) {
+      const me = h.sessionExpires && h.sessionExpires <= now ? null : await who(h.cookie);
+      if (me === null || (me && me.key !== key)) await revoke(h);
+    }
+    if (!h.token && !h.challenge) held.delete(key);
+  }
+}
+
+function startSweep() {
+  if (sweeping) return;
+  sweeping = true;
+  const timer = setInterval(sweep, SWEEP_MS)« as unknown as { unref?: () => void }»;
+  if (timer.unref) timer.unref();
+}
+
+// call asks the company fittcore's widget API as this server: no Origin, no cookie,
+// and the token with the user it was issued to. null means the site does not offer
+// the window now.
+async function call(method«: string», path«: string», h«: Held | null», body«?: unknown», key«?: string») {
+  const origin = site();
+  if (!origin || Date.now() < closedUntil) return null;
+  const headers«: Record<string, string>» = { accept: "application/json" };
+  if (h && h.token) {
+    headers.authorization = "Bearer " + h.token;
+    headers["x-widget-user"] = h.ref;
+  }
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (key) headers["idempotency-key"] = key;
+  let res«: Response»;
+  try {
+    res = await fetch(origin + WIDGET_API + path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      redirect: "manual",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch {
+    closedUntil = Date.now() + CLOSED_FOR_MS;
+    return null;
+  }
+  if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+    return json(502, { error: "redirect", message: "fittcore answered with a redirect, which is not followed" });
+  }
+  if (res.status === 404) {
+    const text = await res.text().catch(() => "");
+    let code = "";
+    try {
+      code = String(JSON.parse(text).error || "");
+    } catch {
+      code = "";
+    }
+    if (!code || code === "widget_not_enabled") {
+      closedUntil = Date.now() + CLOSED_FOR_MS;
+      return null;
+    }
+    return new Response(text, { status: 404, headers: { "content-type": "application/json" } });
+  }
+  return res;
+}
+
+// relay hands fittcore's JSON answer to the browser. A token fittcore no longer takes
+// is forgotten, so the window asks the user to approve a new one.
+async function relay(res«: Response», h«: Held | null») {
+  const text = await res.text().catch(() => "");
+  let data«: unknown» = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { error: "bad_answer", message: "" };
+  }
+  const code = data && typeof data === "object" ? (data« as { error?: unknown }»).error : undefined;
+  if (h && (res.status === 401 || (res.status === 403 && code === "approver_not_eligible"))) forget(h);
+  const extra«: Record<string, string>» = {};
+  const retry = res.headers.get("retry-after");
+  if (retry) extra["retry-after"] = retry;
+  return json(res.status, data, extra);
+}
+
+function shown(c«: Challenge») {
+  return { code: c.code, url: c.url, expires: c.expires, interval: c.interval };
+}
+
+// me answers the session behind the request, or the Response that ends it.
+async function me(request«: Request») {
+  if (!site() || Date.now() < closedUntil) return notOpen();
+  const cookie = request.headers.get("cookie") || "";
+  const m = await who(cookie);
+  if (m === undefined) return notOpen();
+  if (!m) return json(401, { error: "app_login" });
+  return entry(m, cookie);
+}
+
+export async function GET(request«: Request»)«: Promise<Response>» {
+  const q = new URL(request.url).searchParams;
+  const op = q.get("op");
+  if (op !== "state" && op !== "list" && op !== "images" && op !== "image") return json(404, { error: "unknown_op" });
+  const h = await me(request);
+  if (h instanceof Response) return h;
+
+  if (op === "state") {
+    if (h.token) return json(200, { ready: true, name: h.name });
+    const c = h.challenge;
+    if (c && c.expires > Date.now()) return json(200, { ready: false, pending: shown(c) });
+    // Without a token, ask whether the site offers the window at all.
+    const probe = await call("GET", "/tickets?status=open&limit=1", null);
+    if (!probe) return notOpen();
+    await probe.text().catch(() => "");
+    return json(200, { ready: false });
+  }
+  if (!h.token) return json(401, { error: "invalid_token" });
+
+  if (op === "list") {
+    const status = q.get("status") === "open" ? "open" : "all";
+    const cursor = q.get("cursor") || "";
+    if (cursor.length > 512) return json(400, { error: "invalid_request" });
+    const res = await call("GET", "/tickets?status=" + status + "&limit=50" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : ""), h);
+    return res ? relay(res, h) : notOpen();
+  }
+  const id = q.get("id") || "";
+  if (!TICKET.test(id)) return json(400, { error: "invalid_request" });
+  if (op === "images") {
+    const res = await call("GET", "/tickets/" + id + "/images", h);
+    return res ? relay(res, h) : notOpen();
+  }
+  const image = q.get("image") || "";
+  if (!TICKET.test(image)) return json(400, { error: "invalid_request" });
+  const res = await call("GET", "/tickets/" + id + "/images/" + image, h);
+  if (!res) return notOpen();
+  if (!res.ok) return relay(res, h);
+  const type = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  if (!IMAGE_TYPES.includes(type)) {
+    await res.body?.cancel();
+    return json(502, { error: "bad_image" });
+  }
+  return new Response(res.body, {
+    status: 200,
+    headers: { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  });
+}
+
+async function ticketOp(op«: string», request«: Request») {
+  if (op !== "login" && op !== "poll" && op !== "submit" && op !== "logout") return json(404, { error: "unknown_op" });
+  const raw = await readBody(request, OP_MAX_BYTES);
+  if (!raw) return json(413, { error: "payload_too_large" });
+  const b = raw.byteLength ? fields(raw) : {};
+  if (!b) return json(400, { error: "invalid_request" });
+  const h = await me(request);
+  if (h instanceof Response) return h;
+
+  if (op === "logout") {
+    await revoke(h);
+    h.challenge = null;
+    return json(200, { ready: false });
+  }
   if (op === "login") {
-    if (typeof b.project !== "string" || !NAME.test(b.project)) return json(400, { error: "project is the widget's project id" });
-    return fittcore("POST", FITTCORE.login(), "", { projectId: b.project, clientName: "CRN feedback widget" });
+    if (h.token) return json(200, { ready: true, name: h.name });
+    if (typeof b.project !== "string" || !PROJECT.test(b.project)) return json(400, { error: "invalid_request" });
+    const pending = h.challenge;
+    if (pending && pending.expires > Date.now()) return json(200, { ready: false, pending: shown(pending) });
+    const res = await call("POST", "/auth/challenges", null, { project_id: b.project, app_user_ref: h.ref, client_name: CLIENT_NAME });
+    if (!res) return notOpen();
+    if (res.status !== 201 && res.status !== 200) return relay(res, null);
+    const v = await res.json().catch(() => null);
+    if (!v || typeof v.challenge_id !== "string" || !TICKET.test(v.challenge_id) || typeof v.poll_secret !== "string" ||
+      !SECRET.test(v.poll_secret) || typeof v.user_code !== "string" || !CODE.test(v.user_code) ||
+      typeof v.approval_url !== "string" || !/^https?:\/\//.test(v.approval_url)) {
+      return json(502, { error: "bad_answer", message: "" });
+    }
+    const expires = Date.parse(v.expires_at);
+    h.challenge = {
+      id: v.challenge_id,
+      secret: v.poll_secret,
+      code: v.user_code,
+      url: v.approval_url,
+      expires: Number.isNaN(expires) ? Date.now() + 10 * 60 * 1000 : expires,
+      interval: Math.max(3, Number(v.interval_seconds) || 3) * 1000,
+      next: 0,
+    };
+    startSweep();
+    return json(200, { ready: false, pending: shown(h.challenge) });
   }
   if (op === "poll") {
-    if (typeof b.id !== "string" || !NAME.test(b.id) || typeof b.token !== "string" || !TOKEN.test(b.token)) {
-      return json(400, { error: "id and token are the ones login answered" });
+    if (h.token) return json(200, { ready: true, name: h.name });
+    const c = h.challenge;
+    if (!c || c.expires <= Date.now()) {
+      h.challenge = null;
+      return json(200, { ready: false, expired: true });
     }
-    return fittcore("GET", FITTCORE.poll(b.id, b.token), "");
+    if (Date.now() < c.next) return json(200, { ready: false, pending: shown(c) });
+    c.next = Date.now() + c.interval;
+    const res = await call("POST", "/auth/challenges/" + c.id + "/token", null, { poll_secret: c.secret });
+    if (!res) return notOpen();
+    const v = await res.json().catch(() => null);
+    if (res.status === 200 && v && typeof v.access_token === "string" && SECRET.test(v.access_token)) {
+      const expires = Date.parse(v.expires_at);
+      h.token = v.access_token;
+      h.tokenExpires = Number.isNaN(expires) ? Date.now() + 8 * 3600 * 1000 : expires;
+      h.name = v.approved_by && typeof v.approved_by.display_name === "string" ? v.approved_by.display_name : "";
+      h.challenge = null;
+      startSweep();
+      return json(200, { ready: true, name: h.name });
+    }
+    const code = v && v.error;
+    if (res.status === 428 || code === "authorization_pending") return json(200, { ready: false, pending: shown(c) });
+    if (res.status === 429 || code === "slow_down") {
+      c.interval += 3000;
+      c.next = Date.now() + c.interval;
+      return json(200, { ready: false, pending: shown(c) });
+    }
+    h.challenge = null;
+    if (res.status === 403) return json(200, { ready: false, denied: true });
+    return json(200, { ready: false, expired: true });
   }
 
-  const token = bearer(request);
-  if (!token) return json(401, { error: "log in to fittcore first" });
-  const ids = b.feedbackIds;
-  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 200 || !ids.every((id) => typeof id === "string" && ID.test(id))) {
-    return json(400, { error: "feedbackIds are the ids of the tickets to send" });
+  // submit
+  if (!h.token) return json(401, { error: "invalid_token" });
+  const ids = b.ticket_ids;
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 50 || new Set(ids).size !== ids.length ||
+    !ids.every((id) => typeof id === "string" && TICKET.test(id)) || typeof b.key !== "string" || !KEY.test(b.key)) {
+    return json(400, { error: "invalid_request" });
   }
-  return fittcore("POST", FITTCORE.send(), token, { feedbackIds: ids });
+  const res = await call("POST", "/tickets/submit", h, { ticket_ids: ids }, b.key);
+  return res ? relay(res, h) : notOpen();
 }
 
 function fields(raw«: Uint8Array») {
@@ -364,69 +645,6 @@ function fields(raw«: Uint8Array») {
   } catch {
     return null;
   }
-}
-
-function bearer(request«: Request») {
-  const h = request.headers.get("authorization") || "";
-  const token = h.startsWith("Bearer ") ? h.slice(7) : "";
-  return TOKEN.test(token) ? token : "";
-}
-
-// fittcoreAPI is the /api of the fittcore that takes this app's reports, or "" when
-// FITT_FEEDBACK_URL names some other receiver: the customer's token goes nowhere else.
-function fittcoreAPI() {
-  try {
-    const u = new URL(process.env.FITT_FEEDBACK_URL || FALLBACK);
-    if (u.search || u.hash || !u.pathname.endsWith(INGEST_PATH)) return "";
-    return u.origin + u.pathname.slice(0, -"/ingest/feedback".length);
-  } catch {
-    return "";
-  }
-}
-
-async function fittcore(method«: string», path«: string», token«: string», body«?: unknown») {
-  const api = fittcoreAPI();
-  if (!api) return json(503, { error: "the ticket window needs FITT_FEEDBACK_URL to name fittcore's " + INGEST_PATH });
-  const headers«: Record<string, string>» = { accept: "application/json" };
-  if (token) headers.authorization = "Bearer " + token;
-  if (body !== undefined) headers["content-type"] = "application/json";
-  try {
-    const res = await fetch(api + path, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      redirect: "manual",
-      signal: AbortSignal.timeout(15000),
-    });
-    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
-      return json(502, { error: "fittcore answered with a redirect, which is not followed" });
-    }
-    const text = await res.text();
-    return new Response(res.status === 204 || res.status === 205 ? null : text, {
-      status: res.status,
-      headers: { "content-type": res.headers.get("content-type") || "application/json", "cache-control": "no-store" },
-    });
-  } catch {
-    return json(502, { error: "fittcore unreachable" });
-  }
-}
-
-// Pin pictures stay on the server: a ticket may carry 50 pins of up to 1 MB each.
-function withoutPictures(items«: unknown») {
-  if (!Array.isArray(items)) return items;
-  return items.map((f) => {
-    const pins«: unknown» = f && typeof f === "object" ? f.pins : null;
-    if (!Array.isArray(pins)) return f;
-    return { ...f, pins: pins.map(pinWithoutPicture) };
-  });
-}
-
-function pinWithoutPicture(p«: unknown») {
-  if (!p || typeof p !== "object") return p;
-  const pin«: Record<string, unknown>» = { ...p };
-  const hasShot = !!pin.regionShot;
-  delete pin.regionShot;
-  return { ...pin, hasShot };
 }
 `
 
