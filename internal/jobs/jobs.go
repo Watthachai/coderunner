@@ -132,6 +132,9 @@ type manager struct {
 	// forbiddenValuesDir holds each project's list of forbidden value hashes
 	// (SetForbiddenValuesDir).
 	forbiddenValuesDir string
+	// reviewMinItems is the item count from which a second agent reviews a build's items;
+	// zero: never (SetReviewMinItems, items.go).
+	reviewMinItems int
 	// pushCredentialDir, pushCredentialWait and pushCredentialPoll belong to the push
 	// window (pushwindow.go).
 	pushCredentialDir string
@@ -750,151 +753,51 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 	}
 
+	// A request of several items: CRN counts them, and holds the agent to each one (items.go).
+	var items []buildstep.Item
+	if spec.Mode == "edit" {
+		if items = buildstep.SplitChange(spec.Change); len(items) > 1 {
+			claudePrompt += itemsPrompt(items, job.ID)
+		} else {
+			items = nil
+		}
+	}
+
 	// --- run Claude Code (optional) ---
 	var result domain.RunResult
 	if m.runClaude {
-		// Inject every enabled skill into {workDir}/.claude/skills/{name}/SKILL.md
-		// so the spawned `claude` discovers the fitt-build harness. The injected
-		// .claude dir is removed before the git phase so it is never committed.
-		if err := m.injectSkills(ctx, workDir); err != nil {
-			log.Error("inject skills failed", "err", err)
-			m.finishFailed(ctx, job, "inject skills failed: "+err.Error(), meta)
-			return
-		}
-
 		claudeCfg := m.claudeConfigFor(ctx, job.ID, log)
 		meta.model, meta.effort = claudeCfg.Model, claudeCfg.Effort
 		log.Info("claude config", "model", claudeCfg.Model, "effort", claudeCfg.Effort, "source", claudeCfg.Source)
 
-		runSpec := domain.RunSpec{
-			JobID:           job.ID,
-			ProjectID:       job.ProjectID,
-			WorkDir:         workDir,
-			Prompt:          claudePrompt,
-			ResumeSessionID: resumeSession,
-			Model:           claudeCfg.Model,
-			Effort:          claudeCfg.Effort,
-		}
-		if gate.listed() {
-			// What the agent reads and prints is read too; a real value in the request
-			// stops here, before it reaches the model.
-			gate.scan.Scan("the agent's input", []byte(claudePrompt))
-			if err := gate.check(); err != nil {
-				m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), meta)
-				return
-			}
-			runSpec.StdoutTrace = gate.scan.Source("the agent's output")
-			runSpec.StderrTrace = gate.scan.Source("the agent's errors")
-		}
 		if gate != nil {
-			// The agent's process group dies with it, and the machine is taken as it is.
-			runSpec.StopGroupOnExit = true
+			// The machine is taken as it is before the agent first runs.
 			if gate.containers, err = buildstep.ContainerIDs(runCtx, log); err != nil {
 				m.finishFailed(ctx, job, "candidate acceptance: "+err.Error(), meta)
 				return
 			}
 			gate.agentStarted = time.Now()
 		}
-
-		var backgrounded []backgroundCall
-		refused := map[string]bool{}
-		emit := func(ev domain.ClaudeEvent) error {
-			backgrounded = append(backgrounded, backgroundWork(ev)...)
-			for _, id := range refusedCalls(ev) {
-				refused[id] = true
-			}
-			// Persist the session id as soon as it appears so a future build can
-			// --resume even if this run later fails.
-			if ev.SessionID != "" && ev.SessionID != job.SessionID {
-				job.SessionID = ev.SessionID
-				if err := m.store.SetJobSession(ctx, job.ID, ev.SessionID); err != nil {
-					log.Warn("persist session id failed", "err", err)
-				}
-			}
-			msg := translate(job.ID, ev)
-			// Skip empty assistant chatter (e.g. an assistant turn that only carried
-			// a tool_use, already surfaced above as a tool call) so the live console
-			// isn't full of blank "text" rows.
-			if msg.Kind == domain.WSAssistantText && strings.TrimSpace(msg.Text) == "" {
-				return nil
-			}
-			m.publish(job.ID, msg)
-			return nil
-		}
-
-		var runErr error
-		result, runErr = m.runner.Run(runCtx, runSpec, emit)
-		if resumeSession != "" {
-			traces, err := m.store.ListBuildTraces(ctx, job.ProjectID)
-			if err != nil {
-				log.Warn("earlier runs' cost unknown; this run's cost includes them", "err", err)
-			}
-			result.CostUSD = runCost(result.CostUSD, resumeSession, job.ID, traces)
-		}
-		meta.cost = result.CostUSD
-
-		// Remove the injected .claude dir (success OR fail) BEFORE the git phase so
-		// the harness skills are never committed/pushed.
-		if rmErr := os.RemoveAll(filepath.Join(workDir, ".claude")); rmErr != nil {
-			log.Warn("remove injected .claude failed", "err", rmErr)
-		}
-
-		// Persist the terminal session id from the result line if not already stored.
-		if result.SessionID != "" && result.SessionID != job.SessionID {
-			job.SessionID = result.SessionID
-			if err := m.store.SetJobSession(ctx, job.ID, result.SessionID); err != nil {
-				log.Warn("persist terminal session id failed", "err", err)
-			}
-		}
-
-		// --- terminal: cancelled / failed ---
-		if runErr != nil || !result.Success {
-			// runCtx cancelled while the parent is still alive == an operator hit
-			// Cancel. Finalize as cancelled (using the parent ctx, which is NOT
-			// cancelled) instead of failed.
-			if runCtx.Err() != nil && ctx.Err() == nil {
-				log.Info("build cancelled by operator", "cost_usd", result.CostUSD)
-				m.finishCancelled(ctx, job, meta)
+		var itemBase string
+		if items != nil {
+			if itemBase, err = buildstep.HeadCommit(runCtx, workDir, m.logger); err != nil {
+				m.finishFailed(ctx, job, "read the branch's head: "+err.Error(), meta)
 				return
 			}
-			// Parent ctx cancelled == server shutdown mid-build: leave the job
-			// 'building' for startup reconcile rather than recording a false failure.
-			if ctx.Err() != nil {
-				log.Info("build interrupted by shutdown; leaving for reconcile")
-				return
-			}
-			errMsg := "claude run reported failure"
-			if runErr != nil {
-				errMsg = runErr.Error()
-			}
-			log.Error("build failed", "err", errMsg, "cost_usd", result.CostUSD)
-			m.finishFailed(ctx, job, errMsg, meta)
+			m.publishText(job.ID, fmt.Sprintf("CRN แยกคำขอนี้ได้ %d ข้อ", len(items)))
+		}
+
+		agent := &agentTurns{m: m, ctx: ctx, runCtx: runCtx, job: job, gate: gate, workDir: workDir, cfg: claudeCfg, log: log, meta: &meta, costBase: resumeSession}
+		var ok bool
+		if result, ok = agent.run(claudePrompt, resumeSession); !ok {
 			return
 		}
-
-		// Nothing the agent started goes on running past here.
-		if gate != nil {
-			if err := m.stopAgent(runCtx, job, gate, log); err != nil {
-				log.Error("the agent could not be stopped", "err", err)
-				if runCtx.Err() != nil && ctx.Err() == nil {
-					m.finishCancelled(ctx, job, meta)
-				} else {
-					m.finishFailed(ctx, job, err.Error(), meta)
-				}
+		if items != nil {
+			if result, ok = agent.holdToItems(items, itemBase, spec.Change, result); !ok {
 				return
 			}
 		}
-		// Claude runs with background tasks off (internal/claude agentEnv), and refuses a
-		// call that asks for one (OKR #7: the agent then ran it in the foreground). Should
-		// a run still start one, the session may have ended with it unfinished: what it was
-		// doing may not be in the tree, so nothing of this run is committed.
-		if left := stillInBackground(backgrounded, refused); len(left) > 0 {
-			errMsg := "the agent left work running in the background (" + strings.Join(left, "; ") +
-				"): its session ends with its turn, so that work may be missing from this build; nothing was committed"
-			log.Error("build failed", "err", errMsg, "cost_usd", result.CostUSD)
-			m.finishFailed(ctx, job, errMsg, meta)
-			return
-		}
+		result.CostUSD = meta.cost
 	} else {
 		log.Info("claude step skipped (CRN_RUN_CLAUDE=false)")
 		m.publishPhase(job.ID, "claude_skipped")

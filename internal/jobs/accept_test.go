@@ -238,6 +238,9 @@ func (f fakeAgent) Run(_ context.Context, spec domain.RunSpec, emit func(domain.
 	if f.do != nil {
 		f.do(agentRun{spec: spec, list: f.lst, log: f.lg(), emit: emit})
 	}
+	if len(spec.Tools) > 0 {
+		return domain.RunResult{Success: true, SessionID: "review-1"}, nil // the reviewer's own session
+	}
 	return domain.RunResult{Success: true, SessionID: "s1"}, nil
 }
 func (f fakeAgent) Improve(context.Context, string, string, string) (string, error) { return "", nil }
@@ -282,10 +285,12 @@ type pipelineOpts struct {
 	delivery string
 	env      map[string]string
 	change   string
-	agent    func(agentRun)         // when set, the build runs this as its agent
-	receipt  func(r map[string]any) // changes the passing receipt
-	list     func(t *testing.T, path string)
-	noList   bool
+	agent    func(agentRun) // when set, the build runs this as its agent
+	// reviewMin is the item count from which a second agent reviews the items; zero: never.
+	reviewMin int
+	receipt   func(r map[string]any) // changes the passing receipt
+	list      func(t *testing.T, path string)
+	noList    bool
 	// before runs before the build, on the workspace an earlier build would have left.
 	before func(t *testing.T, workDir, remote string)
 	// credential replaces the operator: it runs once CRN says it is ready for a token,
@@ -513,6 +518,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	}
 	mgr = NewManager(st, runner, recordingNotifier{record}, logger, filepath.Join(root, "projects"), remote, "", false, o.agent != nil, "", srv.URL, "", map[uuid.UUID]bool{org: true}, nil, true, "172.168.1.234:5050/fitt/ftcdv-uat", nil, "", "", slots, buildsettings.Defaults{}).(*manager)
 	mgr.SetForbiddenValuesDir(forbidden)
+	mgr.SetReviewMinItems(o.reviewMin)
 	credentials := filepath.Join(root, "push-credentials")
 	mgr.SetPushCredentialDir(credentials)
 	mgr.pushCredentialPoll = 5 * time.Millisecond

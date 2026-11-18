@@ -182,6 +182,9 @@ func runArgs(spec domain.RunSpec, fallbackModel string) []string {
 	if spec.Effort != "" {
 		args = append(args, "--effort", spec.Effort)
 	}
+	if len(spec.Tools) > 0 {
+		args = append(args, "--tools", strings.Join(spec.Tools, ","))
+	}
 	return args
 }
 

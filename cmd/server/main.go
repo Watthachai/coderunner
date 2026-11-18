@@ -146,6 +146,9 @@ func run() error {
 	if gated, ok := jobManager.(interface{ SetForbiddenValuesDir(string) }); ok {
 		gated.SetForbiddenValuesDir(cfg.ForbiddenValuesDir)
 	}
+	if reviewed, ok := jobManager.(interface{ SetReviewMinItems(int) }); ok {
+		reviewed.SetReviewMinItems(cfg.ReviewMinItems)
+	}
 	if gated, ok := jobManager.(interface{ SetPushCredentialDir(string) }); ok {
 		gated.SetPushCredentialDir(cfg.PushCredentialDir)
 	}

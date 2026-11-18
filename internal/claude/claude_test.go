@@ -44,6 +44,16 @@ func TestRunArgsKeepResume(t *testing.T) {
 	}
 }
 
+// The reviewer of a build's items reads and does not write: it gets only the tools it
+// names, and a fresh session.
+func TestRunArgsLimitTheToolsWhenTheSpecNamesThem(t *testing.T) {
+	got := runArgs(domain.RunSpec{Prompt: "build it", Model: "claude-opus-5", Tools: []string{"Read", "Grep", "Glob"}}, "")
+	want := append(slices.Clone(baseArgs), "--model", "claude-opus-5", "--tools", "Read,Grep,Glob")
+	if !slices.Equal(got, want) {
+		t.Errorf("runArgs =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
 func TestImproveArgsPassModelAndEffort(t *testing.T) {
 	got := improveArgs("improve this", "claude-opus-5-5", "xhigh")
 	want := []string{"-p", "improve this", "--dangerously-skip-permissions", "--model", "claude-opus-5-5", "--effort", "xhigh"}

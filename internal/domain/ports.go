@@ -221,6 +221,9 @@ type RunSpec struct {
 	// (internal/buildsettings), passed as --model / --effort.
 	Model  string
 	Effort string
+	// Tools, when set, are the only tools the agent gets (--tools): the reviewer of a
+	// build's items reads and does not write.
+	Tools []string
 	// StdoutTrace and StderrTrace, when set, also receive every byte the CLI prints,
 	// unparsed: the agent's whole output, for the check of what a build may not print.
 	StdoutTrace io.Writer

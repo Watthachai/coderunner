@@ -196,6 +196,11 @@ type Config struct {
 	// during the docker phase. Default 5, minimum 1.
 	MaxConcurrentBuilds int
 
+	// ReviewMinItems is the item count from which a second, read-only agent checks each
+	// item of an edit build against the code (internal/jobs/items.go). 0 turns the review
+	// off. Set as CRN_REVIEW_MIN_ITEMS; default 10.
+	ReviewMinItems int
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -317,6 +322,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: CRN_MAX_CONCURRENT_BUILDS must be >= 1, got %d", maxBuilds)
 	}
 	cfg.MaxConcurrentBuilds = maxBuilds
+
+	reviewMin, err := getEnvInt("CRN_REVIEW_MIN_ITEMS", 10)
+	if err != nil {
+		return nil, err
+	}
+	if reviewMin < 0 {
+		return nil, fmt.Errorf("config: CRN_REVIEW_MIN_ITEMS must be >= 0 (0 turns the review off), got %d", reviewMin)
+	}
+	cfg.ReviewMinItems = reviewMin
 
 	orgRegistries, err := parseOrgRegistries(os.Getenv("CRN_ORG_IMAGE_REGISTRIES"))
 	if err != nil {

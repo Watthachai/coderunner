@@ -309,3 +309,27 @@ func TestInternalOpenIPsComeFromEnv(t *testing.T) {
 		}
 	}
 }
+
+// A request of ten items or more goes to a second agent that checks each one; the
+// operator can move the threshold, or turn the review off with 0.
+func TestReviewMinItemsDefaultsToTen(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_REVIEW_MIN_ITEMS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReviewMinItems != 10 {
+		t.Errorf("ReviewMinItems = %d, want 10", cfg.ReviewMinItems)
+	}
+	t.Setenv("CRN_REVIEW_MIN_ITEMS", "0")
+	if cfg, err = Load(); err != nil || cfg.ReviewMinItems != 0 {
+		t.Errorf("CRN_REVIEW_MIN_ITEMS=0: %d, %v; want 0 (off)", cfg.ReviewMinItems, err)
+	}
+	for _, bad := range []string{"-1", "ten"} {
+		t.Setenv("CRN_REVIEW_MIN_ITEMS", bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_REVIEW_MIN_ITEMS") {
+			t.Errorf("CRN_REVIEW_MIN_ITEMS=%s: err = %v", bad, err)
+		}
+	}
+}
