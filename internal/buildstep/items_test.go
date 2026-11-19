@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -353,5 +354,19 @@ func TestTreeFingerprintChangesWithAnyFile(t *testing.T) {
 			t.Errorf("%s changed and the fingerprint did not", name)
 		}
 		before = now
+	}
+}
+
+// The item=N numbers of a FITTCORE-CHANGE-REQUEST, as the envelope writes them; none for a
+// change without one.
+func TestEnvelopeItemNumbersAreTheEnvelopesOwn(t *testing.T) {
+	change := "FITTCORE-CHANGE-REQUEST v1 boundary=b1\n--b1 item=1 source=operator\nRename the label\n" +
+		"--b1 item=3 source=operator\n1. Count customers once\n2. Filter deals\n--b1 item=12\nx\n--b1 end=3\n" +
+		"--b2 item=9 not this envelope\n"
+	if got := EnvelopeItemNumbers(change); !reflect.DeepEqual(got, []int{1, 3, 12}) {
+		t.Fatalf("EnvelopeItemNumbers = %v, want [1 3 12]", got)
+	}
+	if got := EnvelopeItemNumbers("1. Rename the label\n2. Count customers once\n"); got != nil {
+		t.Fatalf("a change without an envelope has no item numbers, got %v", got)
 	}
 }

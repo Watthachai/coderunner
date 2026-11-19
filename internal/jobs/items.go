@@ -106,6 +106,8 @@ type agentTurns struct {
 	costBase     string
 	builderCost  float64
 	reviewerCost float64
+	// pictures is the prompt's section on the request's pictures; the reviewer is shown them too.
+	pictures string
 }
 
 // run is one turn of the builder: the build's own session, resumed from resume.
@@ -393,7 +395,7 @@ func (a *agentTurns) reviewItems(items []buildstep.Item, base, change string) (m
 	}
 	m.publishText(job.ID, fmt.Sprintf("ส่ง %d ข้อให้ผู้ตรวจอีกตัวตรวจกับโค้ด (อ่านอย่างเดียว)", len(items)))
 	started := time.Now()
-	text, ok := a.review(reviewPrompt(items, change, diff, files))
+	text, ok := a.review(reviewPrompt(items, change, diff, files) + a.pictures)
 	if !ok {
 		return nil, false
 	}

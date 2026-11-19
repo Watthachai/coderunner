@@ -62,6 +62,26 @@ type Job struct {
 type EnqueueOptions struct {
 	JobID     uuid.UUID
 	Rehearsal bool
+	// Attachments are the pictures an edit request carries. The manager writes them to
+	// the job's own folder before the job is queued; the payload names them, never holds them.
+	Attachments []Attachment
+}
+
+// Attachment is one picture sent with an edit request (docs/edit-attachments.md). Data
+// is the picture itself and is never stored with the job: only the rest goes into the
+// payload and the database.
+type Attachment struct {
+	// Item is the item=N of the request's FITTCORE-CHANGE-REQUEST it belongs to; 0 when
+	// it belongs to the whole request.
+	Item int `json:"item,omitempty"`
+	// Name is the sender's name for it. It is kept and echoed, never used as a path.
+	Name   string `json:"name"`
+	Mime   string `json:"mime"`
+	SHA256 string `json:"sha256"`
+	Size   int    `json:"size"`
+	// File is the name CRN gives the picture in the job's folder, e.g. "01.png".
+	File string `json:"file"`
+	Data []byte `json:"-"`
 }
 
 // EditRequest is an external "please change X" request (CRN-architecture.md §6).

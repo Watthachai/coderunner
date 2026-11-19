@@ -113,6 +113,13 @@ func run() error {
 	jobManager := jobs.NewManager(st, runner, notifier, logger, cfg.ProjectsDir, cfg.GitRemote, cfg.GithubOwner, cfg.RepoPrivate, cfg.RunClaude, cfg.FeedbackIngestURL, cfg.FTCDVCallbackURL, cfg.FTCDVCallbackToken, cfg.FTCDVCallbackOrgs, cfg.FTCDVCallbackCA, cfg.BuildImage, cfg.ImageRegistry, cfg.OrgImageRegistries, cfg.MirrorRegistry, cfg.ArtifactDir, cfg.MaxConcurrentBuilds, claudeDefaults)
 	logger.Info("build concurrency", "max_concurrent_builds", cfg.MaxConcurrentBuilds)
 
+	// The pictures edit requests carry live here, a folder a job, until the build ends.
+	// Set before ReconcileOrphans, which deletes those no waiting job needs.
+	if pictures, ok := jobManager.(interface{ SetAttachmentsDir(string) }); ok {
+		pictures.SetAttachmentsDir(cfg.AttachmentsDir)
+		logger.Info("request pictures", "dir", cfg.AttachmentsDir)
+	}
+
 	// Reconcile ghost builds: any job still 'building' at boot was orphaned by a
 	// prior process (restart/crash mid-build). Fail them now so the dashboard
 	// doesn't show a build stuck "building" forever, and subscribers get a

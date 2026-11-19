@@ -211,6 +211,7 @@ Content-Type: application/json
   `"[bug/high] ปุ่มบันทึก (button.save) กดแล้วไม่ทำงาน — แก้ให้ทำงาน"`. หลาย feedback → รวมเป็น 1 `change` (edit build เดียว) หรือ POST หลายครั้ง
 - **ไม่ต้องแนบ artifacts** (brd/prd/prompts/zip) — CRN clone repo ที่แปลงไว้แล้วของ project นั้น (ต้องเคย build สำเร็จมาก่อน) แล้ว resume Claude session เดิม apply แค่ `change`
 - CRN สร้าง payload `{mode:"edit", change, name}` ให้เองภายใน — **FTC DV ไม่ต้องส่ง `mode`**
+- **แนบรูปได้** (ตั้งแต่ 19 พ.ย. 2026): field `attachments` ไม่เกิน 10 รูป PNG/JPEG/WebP พร้อม `sha256` และ `202` ตอบจำนวนกับ sha256 ของรูปที่รับ ดูรายละเอียดใน [edit-attachments.md](edit-attachments.md)
 
 **Response `202`:**
 ```json

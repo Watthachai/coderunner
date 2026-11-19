@@ -105,6 +105,25 @@ func SplitChange(change string) []Item {
 	return out
 }
 
+// EnvelopeItemNumbers are the item=N numbers of the change's FITTCORE-CHANGE-REQUEST, in
+// the order it writes them; nil when the change has no envelope. A picture sent with an
+// edit names one of them (internal/attach).
+func EnvelopeItemNumbers(change string) []int {
+	m := envelopeRe.FindStringSubmatch(change)
+	if m == nil {
+		return nil
+	}
+	itemLine := regexp.MustCompile(`^--` + regexp.QuoteMeta(m[1]) + ` item=(\d{1,6})(?:\s|$)`)
+	var out []int
+	for _, line := range strings.Split(change, "\n") {
+		if n := itemLine.FindStringSubmatch(strings.TrimRight(line, "\r")); n != nil {
+			v, _ := strconv.Atoi(n[1])
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // envelopeItems are the bodies of the envelope's items, or the change itself when it has
 // no envelope.
 func envelopeItems(change string) []string {

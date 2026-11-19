@@ -35,7 +35,7 @@ func TestEditPayloadCarriesFeedbackWidget(t *testing.T) {
 		widget *bool
 		want   string // the feedback_widget value in the payload, "" = absent
 	}{{nil, ""}, {&off, "false"}} {
-		raw, err := editPayload("x", "Hello Fitt", tc.widget)
+		raw, err := editPayload("x", "Hello Fitt", tc.widget, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

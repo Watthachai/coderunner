@@ -50,8 +50,10 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"github.com/Watthachai/fitt-coderunner/internal/attach"
 	"github.com/Watthachai/fitt-coderunner/internal/buildinfo"
 	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
+	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 	"github.com/Watthachai/fitt-coderunner/internal/claude"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 	"github.com/Watthachai/fitt-coderunner/internal/feedback"
@@ -1136,17 +1138,31 @@ type editProjectBody struct {
 	JobID string `json:"job_id,omitempty"`
 	// Rehearsal marks this one job as a rehearsal: it never reports to FTC DV.
 	Rehearsal bool `json:"rehearsal,omitempty"`
+	// Attachments are pictures for the agent to look at (docs/edit-attachments.md).
+	Attachments []attach.Input `json:"attachments,omitempty"`
 }
 
 // editPayload is the edit build payload the jobs layer decodes: mode=edit routes
 // runJob down the clone/pull + edit path; name reproduces the same branch slug
-// as the build.
-func editPayload(change, name string, feedbackWidget *bool) ([]byte, error) {
+// as the build. Pictures are named in it, never held: domain.Attachment keeps
+// its Data out of JSON.
+func editPayload(change, name string, feedbackWidget *bool, pictures []domain.Attachment) ([]byte, error) {
 	p := map[string]any{"mode": "edit", "change": change, "name": name}
 	if feedbackWidget != nil {
 		p["feedback_widget"] = *feedbackWidget
 	}
+	if len(pictures) > 0 {
+		p["attachments"] = pictures
+	}
 	return json.Marshal(p)
+}
+
+// pictureReceipt is what the 202 says of each picture CRN took.
+type pictureReceipt struct {
+	Item   int    `json:"item,omitempty"`
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
+	Size   int    `json:"size"`
 }
 
 // handleEditProject creates an EDIT build for an existing project: Claude edits
@@ -1161,12 +1177,23 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body editProjectBody
+	r.Body = http.MaxBytesReader(w, r.Body, attach.MaxBody)
 	if err := decodeJSON(r, &body); err != nil {
-		s.writeError(w, r, http.StatusBadRequest, "invalid request body")
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			s.writeError(w, r, http.StatusBadRequest, "request body is larger than 32 MiB")
+			return
+		}
+		s.writeError(w, r, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 	if strings.TrimSpace(body.Change) == "" {
 		s.writeError(w, r, http.StatusBadRequest, "change is required")
+		return
+	}
+	pictures, err := attach.Decode(body.Attachments, buildstep.EnvelopeItemNumbers(body.Change))
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1191,8 +1218,9 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 		opts.JobID = id
 	}
 	opts.Rehearsal = body.Rehearsal
+	opts.Attachments = pictures
 
-	payload, err := editPayload(body.Change, project.Name, body.FeedbackWidget)
+	payload, err := editPayload(body.Change, project.Name, body.FeedbackWidget, pictures)
 	if err != nil {
 		s.logger.Error("marshal edit payload failed", "err", err, "project_id", projectID)
 		s.writeError(w, r, http.StatusInternalServerError, "could not encode payload")
@@ -1200,7 +1228,7 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var job *domain.Job
-	if opts == (domain.EnqueueOptions{}) {
+	if opts.JobID == uuid.Nil && !opts.Rehearsal && len(opts.Attachments) == 0 {
 		job, err = s.jm.Enqueue(r.Context(), project.ID, project.OrgID, payload)
 	} else {
 		job, err = s.jm.EnqueueWith(r.Context(), project.ID, project.OrgID, payload, opts)
@@ -1211,12 +1239,18 @@ func (s *server) handleEditProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	receipts := make([]pictureReceipt, len(pictures))
+	for i, p := range pictures {
+		receipts[i] = pictureReceipt{Item: p.Item, Name: p.Name, SHA256: p.SHA256, Size: p.Size}
+	}
 	s.writeJSON(w, r, http.StatusAccepted, map[string]any{
-		"job_id":     job.ID,
-		"build_no":   job.BuildNo,
-		"git_branch": "crn/" + branchSlug(project.Name) + "-" + project.ID.String()[:8],
-		"status":     job.Status,
-		"rehearsal":  job.Rehearsal,
+		"job_id":               job.ID,
+		"build_no":             job.BuildNo,
+		"git_branch":           "crn/" + branchSlug(project.Name) + "-" + project.ID.String()[:8],
+		"status":               job.Status,
+		"rehearsal":            job.Rehearsal,
+		"attachments_received": len(pictures),
+		"attachments":          receipts,
 	})
 }
 

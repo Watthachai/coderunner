@@ -259,6 +259,7 @@ type pipelineRun struct {
 	credentialDir string   // the project's directory for the push credential
 	listSeen      string   // what the gate got on stdin
 	agentRan      bool
+	pictureDir    string // the folder the request's pictures were kept in
 }
 
 // head is the commit the remote's branch is on now.
@@ -334,6 +335,10 @@ type pipelineOpts struct {
 	seed map[string]string
 	// widget asks for the feedback widget.
 	widget bool
+	// pictures are sent with the request: saved as EnqueueWith would, and named in the payload.
+	pictures []domain.Attachment
+	// picturesSaved runs once the pictures are in their folder, before the build.
+	picturesSaved func(t *testing.T, dir string)
 }
 
 func runPipeline(t *testing.T, accept, deliveryJSON string, env map[string]string) pipelineRun {
@@ -643,8 +648,21 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 		}
 	}()
 
-	payload, _ := json.Marshal(map[string]any{"mode": "edit", "change": o.change, "name": "app", "feedback_widget": o.widget})
-	job := &domain.Job{ID: uuid.New(), ProjectID: project, OrgID: org, BuildNo: 3, Payload: payload, Status: domain.JobQueued}
+	fields := map[string]any{"mode": "edit", "change": o.change, "name": "app", "feedback_widget": o.widget}
+	jobID := uuid.New()
+	if o.pictures != nil {
+		mgr.SetAttachmentsDir(filepath.Join(root, "attachments"))
+		if err := mgr.attach.Save(jobID, o.pictures); err != nil {
+			t.Fatal(err)
+		}
+		run.pictureDir = mgr.attach.Dir(jobID)
+		if o.picturesSaved != nil {
+			o.picturesSaved(t, run.pictureDir)
+		}
+		fields["attachments"] = o.pictures
+	}
+	payload, _ := json.Marshal(fields)
+	job := &domain.Job{ID: jobID, ProjectID: project, OrgID: org, BuildNo: 3, Payload: payload, Status: domain.JobQueued}
 	if o.queuedAgo > 0 {
 		job.QueuedAt = time.Now().Add(-o.queuedAgo)
 	}

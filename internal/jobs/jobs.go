@@ -55,6 +55,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Watthachai/fitt-coderunner/internal/attach"
 	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
 	"github.com/Watthachai/fitt-coderunner/internal/buildstep"
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
@@ -135,6 +136,9 @@ type manager struct {
 	// reviewMinItems is the item count from which a second agent reviews a build's items;
 	// zero: never (SetReviewMinItems, items.go).
 	reviewMinItems int
+	// attach keeps the pictures edit requests carry, a folder a job; nil keeps none
+	// (SetAttachmentsDir, attachments.go).
+	attach *attach.Store
 	// pushCredentialDir, pushCredentialWait and pushCredentialPoll belong to the push
 	// window (pushwindow.go).
 	pushCredentialDir string
@@ -280,15 +284,26 @@ func (m *manager) Enqueue(ctx context.Context, projectID, orgID uuid.UUID, paylo
 // allocated in advance (opts.JobID) and the rehearsal switch, which keeps every
 // FTC DV callback of this job unsent (reportToFTC).
 func (m *manager) EnqueueWith(ctx context.Context, projectID, orgID uuid.UUID, payload []byte, opts domain.EnqueueOptions) (*domain.Job, error) {
+	id := opts.JobID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	// The pictures are in place before the job exists, so no worker can start it without them.
+	if err := m.keepPictures(id, opts.Attachments); err != nil {
+		return nil, err
+	}
+	recorded := false
+	defer func() {
+		if !recorded {
+			m.dropPictures(id, m.logger)
+		}
+	}()
+
 	buildNo, err := m.store.BumpBuildNo(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("jobs: bump build no: %w", err)
 	}
 
-	id := opts.JobID
-	if id == uuid.Nil {
-		id = uuid.New()
-	}
 	job := &domain.Job{
 		ID:        id,
 		ProjectID: projectID,
@@ -302,6 +317,7 @@ func (m *manager) EnqueueWith(ctx context.Context, projectID, orgID uuid.UUID, p
 	if err := m.store.CreateJob(ctx, job); err != nil {
 		return nil, fmt.Errorf("jobs: create job: %w", err)
 	}
+	recorded = true
 
 	m.logger.Info("job enqueued",
 		"job_id", job.ID, "project_id", projectID, "org_id", orgID, "build_no", buildNo, "rehearsal", job.Rehearsal)
@@ -357,6 +373,7 @@ func (m *manager) Cancel(ctx context.Context, jobID uuid.UUID) error {
 		return fmt.Errorf("jobs: cancel: update status: %w", err)
 	}
 	m.logger.Info("cancelled queued job", "job_id", jobID)
+	m.dropPictures(jobID, m.logger)
 	m.notify(ctx, jobID, domain.EventBuildCancelled, cancelledPayload("cancelled by operator"))
 	m.closeSubscribers(jobID)
 	return nil
@@ -551,6 +568,8 @@ func (m *manager) freeSlot() { <-m.slots }
 // build slot, and releases both once this returns.
 func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	log := m.logger.With("job_id", job.ID, "project_id", job.ProjectID, "org_id", job.OrgID, "build_no", job.BuildNo)
+	// The request's pictures go when the build ends, however it ends.
+	defer m.dropPictures(job.ID, log)
 
 	// Per-job cancellable context so an operator can interrupt THIS build:
 	// Cancel(job.ID) calls the registered func, which cancels runCtx → the runner
@@ -608,6 +627,14 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// pushed, which reads as "the code never shipped" when it is sitting on the
 	// remote.
 	meta := traceMeta{mode: buildMode(spec)}
+
+	if len(spec.Attachments) > 0 {
+		if err := m.checkPictures(job.ID, spec.Attachments); err != nil {
+			m.finishFailed(ctx, job, "the pictures sent with this request: "+err.Error()+"; the agent was not run", meta)
+			return
+		}
+		m.publishText(job.ID, picturesReceived(spec.Attachments))
+	}
 
 	// --- resolve the git model for this build ---------------------------------
 	// SHARED (githubOwner == ""): push a "crn/<slug>-<id8>" branch to gitRemote —
@@ -753,6 +780,13 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 	}
 
+	// The pictures the request carries: where they are, for the agent to open (attachments.go).
+	var pictures string
+	if len(spec.Attachments) > 0 {
+		pictures = picturesPrompt(m.attach, job.ID, spec.Attachments)
+		claudePrompt += pictures
+	}
+
 	// A request of several items: CRN counts them, and holds the agent to each one (items.go).
 	var items []buildstep.Item
 	if spec.Mode == "edit" {
@@ -787,7 +821,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 			m.publishText(job.ID, fmt.Sprintf("CRN แยกคำขอนี้ได้ %d ข้อ", len(items)))
 		}
 
-		agent := &agentTurns{m: m, ctx: ctx, runCtx: runCtx, job: job, gate: gate, workDir: workDir, cfg: claudeCfg, log: log, meta: &meta, costBase: resumeSession}
+		agent := &agentTurns{m: m, ctx: ctx, runCtx: runCtx, job: job, gate: gate, workDir: workDir, cfg: claudeCfg, log: log, meta: &meta, costBase: resumeSession, pictures: pictures}
 		var ok bool
 		if result, ok = agent.run(claudePrompt, resumeSession); !ok {
 			return
@@ -801,6 +835,20 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	} else {
 		log.Info("claude step skipped (CRN_RUN_CLAUDE=false)")
 		m.publishPhase(job.ID, "claude_skipped")
+	}
+
+	// No picture of the request may leave in the commit or the image, under any name.
+	if len(spec.Attachments) > 0 {
+		copies, err := attach.FindCopies(workDir, spec.Attachments)
+		if err != nil {
+			m.finishFailed(ctx, job, err.Error(), meta)
+			return
+		}
+		if len(copies) > 0 {
+			m.finishFailed(ctx, job, "the project holds a copy of a picture sent with the request ("+strings.Join(copies, ", ")+
+				"); the pictures stay out of the repository and the image, so nothing was committed", meta)
+			return
+		}
 	}
 
 	// The in-demo 💬 feedback widget is opt-in per build (customer deliveries ship
@@ -1645,6 +1693,8 @@ func (m *manager) writeArtifactBundle(ctx context.Context, workDir, appTag strin
 // truth); the FTC DV callback is fired best-effort so consumers see the build
 // closed out. Runs once at startup, before the HTTP server accepts work.
 func (m *manager) ReconcileOrphans(ctx context.Context) {
+	// Then only a job still waiting to run keeps the pictures it came with.
+	defer m.sweepPictures(ctx)
 	const msg = "build orphaned: server restarted mid-build"
 	orphans, err := m.store.FailOrphanedBuilds(ctx, msg)
 	if err != nil {
@@ -2332,6 +2382,8 @@ type payloadSpec struct {
 	// FeedbackWidget is the request's "feedback_widget": nil when it did not say.
 	// See feedbackWidgetPlan for what each value does.
 	FeedbackWidget *bool
+	// Attachments are the pictures an edit request carried, without their bytes.
+	Attachments []domain.Attachment
 }
 
 // ingestPayload mirrors the FBD -> CRN ingest body (api.ingestBody). Only the
@@ -2358,6 +2410,9 @@ type ingestPayload struct {
 	IssueNumber int `json:"issue_number"`
 	// FeedbackWidget opts the build into the 💬 feedback widget (absent = not asked).
 	FeedbackWidget *bool `json:"feedback_widget"`
+	// Attachments name the pictures an edit request carried; the pictures themselves are
+	// in the job's folder (attachments.go).
+	Attachments []domain.Attachment `json:"attachments"`
 }
 
 // zipDialAllowed reports whether downloadZip may connect to a resolved dial
@@ -2459,6 +2514,7 @@ func parsePayload(payload json.RawMessage, logger *slog.Logger) payloadSpec {
 		spec.Change = p.Change
 		spec.Prompt = p.Change
 		spec.IssueNumber = p.IssueNumber
+		spec.Attachments = p.Attachments
 		return spec
 	}
 

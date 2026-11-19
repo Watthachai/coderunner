@@ -333,3 +333,45 @@ func TestReviewMinItemsDefaultsToTen(t *testing.T) {
 		}
 	}
 }
+
+// The pictures edit requests carry are kept beside the project workspaces, never inside one.
+func TestAttachmentsDirSitsBesideTheProjects(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_PROJECTS_DIR", "/Users/crn/fitt-coderunner/.crn-workspaces")
+	t.Setenv("CRN_ATTACHMENTS_DIR", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AttachmentsDir != "/Users/crn/fitt-coderunner/.crn-attachments" {
+		t.Errorf("AttachmentsDir = %q, want beside the workspaces", cfg.AttachmentsDir)
+	}
+	t.Setenv("CRN_ATTACHMENTS_DIR", "/var/crn/pictures")
+	if cfg, err = Load(); err != nil || cfg.AttachmentsDir != "/var/crn/pictures" {
+		t.Errorf("CRN_ATTACHMENTS_DIR set: %q, %v", cfg.AttachmentsDir, err)
+	}
+	for _, inside := range []string{"/Users/crn/fitt-coderunner/.crn-workspaces", "/Users/crn/fitt-coderunner/.crn-workspaces/x", "relative/dir"} {
+		t.Setenv("CRN_ATTACHMENTS_DIR", inside)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CRN_ATTACHMENTS_DIR") {
+			t.Errorf("CRN_ATTACHMENTS_DIR=%s: err = %v", inside, err)
+		}
+	}
+}
+
+func TestAttachmentsDirBesideRelativeProjectsIsAbsolute(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_PROJECTS_DIR", "./.crn-workspaces")
+	t.Setenv("CRN_ATTACHMENTS_DIR", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd, _ := os.Getwd()
+	if cfg.AttachmentsDir != filepath.Join(wd, ".crn-attachments") {
+		t.Errorf("AttachmentsDir = %q, want %s", cfg.AttachmentsDir, filepath.Join(wd, ".crn-attachments"))
+	}
+	t.Setenv("CRN_ATTACHMENTS_DIR", filepath.Join(wd, ".crn-workspaces", "pictures"))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "outside CRN_PROJECTS_DIR") {
+		t.Errorf("a folder inside relative workspaces: err = %v", err)
+	}
+}

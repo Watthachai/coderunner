@@ -201,6 +201,12 @@ type Config struct {
 	// off. Set as CRN_REVIEW_MIN_ITEMS; default 10.
 	ReviewMinItems int
 
+	// AttachmentsDir keeps the pictures edit requests carry, a folder a job, from before
+	// the job is queued until its build ends (internal/attach). It must be absolute and
+	// outside ProjectsDir, so no picture sits in a project's tree. Set as
+	// CRN_ATTACHMENTS_DIR; default .crn-attachments beside ProjectsDir.
+	AttachmentsDir string
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -331,6 +337,24 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: CRN_REVIEW_MIN_ITEMS must be >= 0 (0 turns the review off), got %d", reviewMin)
 	}
 	cfg.ReviewMinItems = reviewMin
+
+	cfg.AttachmentsDir = os.Getenv("CRN_ATTACHMENTS_DIR")
+	if cfg.AttachmentsDir == "" {
+		cfg.AttachmentsDir = filepath.Join(filepath.Dir(filepath.Clean(cfg.ProjectsDir)), ".crn-attachments")
+		if abs, err := filepath.Abs(cfg.AttachmentsDir); err == nil {
+			cfg.AttachmentsDir = abs
+		}
+	}
+	if !filepath.IsAbs(cfg.AttachmentsDir) {
+		return nil, fmt.Errorf("config: CRN_ATTACHMENTS_DIR must be an absolute path, got %q", cfg.AttachmentsDir)
+	}
+	projects, err := filepath.Abs(cfg.ProjectsDir)
+	if err != nil {
+		return nil, fmt.Errorf("config: CRN_PROJECTS_DIR: %w", err)
+	}
+	if rel, err := filepath.Rel(projects, filepath.Clean(cfg.AttachmentsDir)); err == nil && (rel == "." || !strings.HasPrefix(rel, "..")) {
+		return nil, fmt.Errorf("config: CRN_ATTACHMENTS_DIR (%s) must be outside CRN_PROJECTS_DIR (%s)", cfg.AttachmentsDir, cfg.ProjectsDir)
+	}
 
 	orgRegistries, err := parseOrgRegistries(os.Getenv("CRN_ORG_IMAGE_REGISTRIES"))
 	if err != nil {
