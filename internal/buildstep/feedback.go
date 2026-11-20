@@ -207,9 +207,11 @@ func feedbackRoute(appDir, layoutExt, ingestURL string) (string, string) {
 }
 
 // ticketWindow turns on the widget's 📋 window: data-tickets in a Next layout and the
-// route's ticket ops. It stays off until the company fittcores have DV's widget API
-// (17 Nov: not installed at any site yet); a site without it shows "ยังไม่เปิดใช้".
-var ticketWindow = false
+// route's ticket ops. On for every build since 20 Nov 2026, because every site gets it:
+// a site whose company fittcore does not have DV's widget API yet shows "ยังไม่เปิดใช้"
+// and is asked again at most once per 5 minutes; an app whose FITT_FEEDBACK_URL and
+// PLATFORM_FITTCORE_ORIGIN are not the same origin calls no one.
+var ticketWindow = true
 
 const (
 	ticketOpsHook = "  // ticket ops\n"

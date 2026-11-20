@@ -228,8 +228,9 @@ console.log(JSON.stringify(out));`
 // withTicketWindow turns the window on for one test.
 func withTicketWindow(t *testing.T) {
 	t.Helper()
+	was := ticketWindow
 	ticketWindow = true
-	t.Cleanup(func() { ticketWindow = false })
+	t.Cleanup(func() { ticketWindow = was })
 }
 
 func ticketRoute(t *testing.T) string {
@@ -570,10 +571,28 @@ func TestOnlyANextAppGetsTheTicketWindow(t *testing.T) {
 	}
 }
 
-// Until the company fittcores have DV's widget API, builds ship without the 📋 window:
-// no data-tickets in the layout and no ticket ops in the route, so a ?op= post is a
-// report like any other.
-func TestTheTicketWindowStaysOffUntilTheSitesHaveTheAPI(t *testing.T) {
+// Every build ships the 📋 window (since 20 Nov 2026: every site gets it); a site without
+// DV's widget API shows "ยังไม่เปิดใช้".
+func TestEveryBuildShipsTheTicketWindow(t *testing.T) {
+	route := feedbackRouteFor(t, "layout.tsx")
+	src := readFile(t, route)
+	for _, s := range []string{"ticketOp", "op=", "api/site/widget", "x-widget-user"} {
+		if !strings.Contains(src, s) {
+			t.Errorf("the route lacks %q", s)
+		}
+	}
+	layout := readFile(t, filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(route))), "layout.tsx"))
+	if !strings.Contains(layout, `data-tickets="/api/fitt-feedback"`) {
+		t.Errorf("the layout does not turn the window on:\n%s", layout)
+	}
+}
+
+// With the switch off, a build ships without the window: no data-tickets in the layout
+// and no ticket ops in the route, so a ?op= post is a report like any other.
+func TestTheTicketWindowCanStillBeTurnedOff(t *testing.T) {
+	was := ticketWindow
+	ticketWindow = false
+	t.Cleanup(func() { ticketWindow = was })
 	route := feedbackRouteFor(t, "layout.tsx")
 	src := readFile(t, route)
 	for _, s := range []string{"ticketOp", "op=", "api/site/widget", "x-widget-user"} {
