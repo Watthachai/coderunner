@@ -867,7 +867,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	// generation, before the git phase, so the result is what is committed and
 	// shipped. Injection is best-effort; a widget that cannot be removed fails the
 	// build, because shipping it would break the default.
-	switch inject, removeOld := feedbackWidgetPlan(spec); {
+	switch inject, removeOld := feedbackWidgetPlan(spec, buildstep.HasFeedbackWidget(workDir)); {
 	case repoImage.Image != nil:
 		// CRN puts the widget into a Next.js app or plain HTML; an app with its own
 		// Dockerfile is its owner's to change (FITT Billing: no widget, web/ untouched).
@@ -877,7 +877,9 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 	case inject:
 		if n, injErr := buildstep.InjectFeedbackWidget(workDir, job.ProjectID.String(), m.feedbackIngestURL, m.logger); injErr != nil {
-			log.Warn("inject feedback widget failed", "err", injErr)
+			// The earlier widget may be out already: shipping now could drop it unasked.
+			m.finishFailed(ctx, job, "feedback widget: "+injErr.Error(), meta)
+			return
 		} else if n > 0 {
 			log.Info("injected feedback widget", "html_files", n)
 		}
@@ -888,7 +890,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 		log.Info("feedback widget off")
 	default:
-		log.Info("feedback widget left as the project has it", "present", buildstep.HasFeedbackWidget(workDir))
+		log.Info("no feedback widget: not asked for, and the project has none")
 	}
 
 	// Scaffold a zero-setup runner (docker-compose + QUICKSTART) for DB-backed
@@ -2485,17 +2487,18 @@ func downloadZip(rawurl string) ([]byte, error) {
 	return raw, nil
 }
 
-// feedbackWidgetPlan decides the 💬 widget for a build. A request that says
-// "feedback_widget" gets exactly that: true injects it, false removes any the
-// project already carries. A new build that does not say ships without it. An
-// edit that does not say keeps the project as it is, so a demo's feedback loop
-// survives its own fix builds.
-func feedbackWidgetPlan(spec payloadSpec) (inject, removeOld bool) {
+// feedbackWidgetPlan decides the 💬 widget for a build; present says the project
+// already carries one. A request that says "feedback_widget" gets exactly that: true
+// injects it, false removes any the project already carries. A new build that does not
+// say ships without it. An edit that does not say keeps the project as it is, so a
+// demo's feedback loop survives its own fix builds: a widget it has is injected again,
+// which puts this CRN's version in place of the earlier one (20 Nov 2026).
+func feedbackWidgetPlan(spec payloadSpec, present bool) (inject, removeOld bool) {
 	if spec.FeedbackWidget != nil {
 		return *spec.FeedbackWidget, !*spec.FeedbackWidget
 	}
 	if spec.Mode == "edit" {
-		return false, false
+		return present, false
 	}
 	return false, true
 }

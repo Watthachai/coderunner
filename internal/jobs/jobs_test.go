@@ -585,16 +585,20 @@ func TestFeedbackWidgetPlan(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
 		spec              payloadSpec
+		present           bool // the project already carries a widget
 		inject, removeOld bool
 	}{
-		{"build, not asked: off", payloadSpec{}, false, true},
-		{"build, on", payloadSpec{FeedbackWidget: &yes}, true, false},
-		{"build, off", payloadSpec{FeedbackWidget: &no}, false, true},
-		{"edit, not asked: keep as is", payloadSpec{Mode: "edit"}, false, false},
-		{"edit, on", payloadSpec{Mode: "edit", FeedbackWidget: &yes}, true, false},
-		{"edit, off: remove", payloadSpec{Mode: "edit", FeedbackWidget: &no}, false, true},
+		{"build, not asked: off", payloadSpec{}, false, false, true},
+		{"build, on", payloadSpec{FeedbackWidget: &yes}, false, true, false},
+		{"build, off", payloadSpec{FeedbackWidget: &no}, false, false, true},
+		{"edit, not asked, none: none", payloadSpec{Mode: "edit"}, false, false, false},
+		// An edit that does not say keeps the widget, at this CRN's version (20 Nov 2026).
+		{"edit, not asked, has one: this CRN's", payloadSpec{Mode: "edit"}, true, true, false},
+		{"edit, on", payloadSpec{Mode: "edit", FeedbackWidget: &yes}, false, true, false},
+		{"edit, on, has one: this CRN's", payloadSpec{Mode: "edit", FeedbackWidget: &yes}, true, true, false},
+		{"edit, off: remove", payloadSpec{Mode: "edit", FeedbackWidget: &no}, true, false, true},
 	} {
-		inject, removeOld := feedbackWidgetPlan(tc.spec)
+		inject, removeOld := feedbackWidgetPlan(tc.spec, tc.present)
 		if inject != tc.inject || removeOld != tc.removeOld {
 			t.Errorf("%s: inject=%v remove=%v, want inject=%v remove=%v", tc.name, inject, removeOld, tc.inject, tc.removeOld)
 		}

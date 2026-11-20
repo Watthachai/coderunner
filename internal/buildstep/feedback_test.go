@@ -42,13 +42,12 @@ func TestInjectFeedbackWidget(t *testing.T) {
 		}
 	}
 
-	// Idempotent: a second pass must not double-inject.
-	n2, err := InjectFeedbackWidget(dir, "proj-123", "http://localhost:3010/feedback_requests", nil)
-	if err != nil {
+	// A second pass puts this CRN's widget in again: one tag, the same page.
+	if _, err := InjectFeedbackWidget(dir, "proj-123", "http://localhost:3010/feedback_requests", nil); err != nil {
 		t.Fatal(err)
 	}
-	if n2 != 0 {
-		t.Errorf("second pass patched %d, want 0 (idempotent)", n2)
+	if again := readFile(t, filepath.Join(dir, "index.html")); again != s || strings.Count(again, "<script data-fitt-feedback") != 1 {
+		t.Errorf("second pass changed the page or doubled the widget:\n%s", again)
 	}
 }
 
@@ -108,13 +107,73 @@ func TestInjectFeedbackWidgetNextLayout(t *testing.T) {
 		t.Errorf("route must read FITT_FEEDBACK_URL with the build's URL as fallback:\n%s", route)
 	}
 
-	// Idempotent: a second pass must not double-inject.
-	n2, err := InjectFeedbackWidget(dir, "proj-xyz", "http://localhost:3010/feedback_requests", nil)
-	if err != nil {
+	// A second pass puts this CRN's widget in again: one tag, the same layout and route.
+	if _, err := InjectFeedbackWidget(dir, "proj-xyz", "http://localhost:3010/feedback_requests", nil); err != nil {
 		t.Fatal(err)
 	}
-	if n2 != 0 {
-		t.Errorf("second pass patched %d, want 0 (idempotent)", n2)
+	if again := readFile(t, layoutPath); again != s || strings.Count(again, "fitt-feedback.js") != 1 {
+		t.Errorf("second pass changed the layout or doubled the widget:\n%s", again)
+	}
+	if again := readFile(t, filepath.Join(dir, "app", "api", "fitt-feedback", "route.ts")); again != route {
+		t.Error("second pass changed the route")
+	}
+}
+
+// An app keeps the widget an earlier build put in until a build replaces it. Before 20
+// Nov 2026 none did: OKR (build 13) and NTC (build 8) still carried the 27 Oct widget,
+// without the 📋 window, the full-size pin picture or the route's 503 retry.
+func TestInjectReplacesAnEarlierBuildsWidget(t *testing.T) {
+	const ingest = "http://localhost:3010/feedback_requests"
+	t.Run("next layout", func(t *testing.T) {
+		dir := t.TempDir()
+		layoutPath := filepath.Join(dir, "src", "app", "layout.tsx")
+		writeTestFile(t, layoutPath, "export default function RootLayout({ children }) {\n"+
+			"  return (\n    <html>\n      <body>\n        {children}\n"+
+			`        <script src="/fitt-feedback.js" data-fitt-feedback="true" data-project="proj-xyz" data-ingest="/api/fitt-feedback" />`+
+			"\n      </body>\n    </html>\n  );\n}\n")
+		writeTestFile(t, filepath.Join(dir, "public", "fitt-feedback.js"), "/* the 27 Oct widget */")
+		writeTestFile(t, filepath.Join(dir, "src", "app", "api", "fitt-feedback", "route.ts"), "// the 27 Oct fitt-feedback route\n")
+
+		if _, err := InjectFeedbackWidget(dir, "proj-xyz", ingest, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := readFile(t, filepath.Join(dir, "public", "fitt-feedback.js")); got != feedbackWidgetJS {
+			t.Errorf("public/fitt-feedback.js is still the earlier widget: %.60q", got)
+		}
+		route := readFile(t, filepath.Join(dir, "src", "app", "api", "fitt-feedback", "route.ts"))
+		if strings.Contains(route, "27 Oct") || !strings.Contains(route, "api/site/widget") || !strings.Contains(route, "Retry-After") {
+			t.Errorf("the route is not this CRN's:\n%.300s", route)
+		}
+		layout := readFile(t, layoutPath)
+		if strings.Count(layout, `src="/fitt-feedback.js"`) != 1 || !strings.Contains(layout, `data-tickets="/api/fitt-feedback"`) {
+			t.Errorf("the layout does not load this CRN's widget once:\n%s", layout)
+		}
+	})
+	t.Run("html", func(t *testing.T) {
+		dir := t.TempDir()
+		page := filepath.Join(dir, "index.html")
+		writeTestFile(t, page, "<!doctype html><html><body><h1>Cafe</h1>"+
+			`<script data-fitt-feedback data-project="proj-123">/* the 27 Oct widget */</script>`+"\n</body></html>")
+		if _, err := InjectFeedbackWidget(dir, "proj-123", ingest, nil); err != nil {
+			t.Fatal(err)
+		}
+		got := readFile(t, page)
+		if strings.Contains(got, "27 Oct") || strings.Count(got, "<script data-fitt-feedback") != 1 || !strings.Contains(got, "fitt-feedback-host") {
+			t.Errorf("the page does not carry this CRN's widget once:\n%.400s", got)
+		}
+	})
+}
+
+// A layout that mentions the widget without loading it cannot take this CRN's: the build
+// is told, rather than shipping an app that lost the widget it had.
+func TestInjectSaysWhenItCannotPutTheWidgetBack(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "app", "layout.tsx"),
+		"// CRN adds fitt-feedback here\nexport default function L({ children }) { return (<html><body>{children}</body></html>); }\n")
+	writeTestFile(t, filepath.Join(dir, "public", "fitt-feedback.js"), "/* the 27 Oct widget */")
+	_, err := InjectFeedbackWidget(dir, "p", "http://localhost:3010/feedback_requests", nil)
+	if err == nil || !strings.Contains(err.Error(), "could not be put in") {
+		t.Fatalf("err = %v, want the widget could not be put in", err)
 	}
 }
 
@@ -530,5 +589,15 @@ func TestFeedbackWidgetOpensAPinPictureFullSize(t *testing.T) {
 		if !strings.Contains(feedbackWidgetJS, want) {
 			t.Errorf("the widget lacks %s", want)
 		}
+	}
+}
+
+func writeTestFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

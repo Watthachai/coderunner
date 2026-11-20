@@ -3,6 +3,7 @@ package buildstep
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,6 +29,12 @@ var feedbackWidgetJS string
 // those it falls back to dropping the widget in public/, adding a <script src>
 // to the layout and a route the widget posts to (see feedbackRoute), so CRN's
 // real (Next.js) output gets the widget too.
+//
+// A widget an earlier build put in is taken out first (RemoveFeedbackWidget) and this
+// CRN's put in its place, so a change to the widget or its route reaches an app at its
+// next build. Until 20 Nov 2026 an app kept its first widget for good: OKR (build 13)
+// and NTC (build 8) still had the 27 Oct one. If the earlier widget is out but this
+// CRN's cannot go in, it says so rather than leave the app without one.
 func InjectFeedbackWidget(dir, projectID, ingestURL string, logger *slog.Logger) (int, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -35,18 +42,29 @@ func InjectFeedbackWidget(dir, projectID, ingestURL string, logger *slog.Logger)
 	if ingestURL == "" {
 		return 0, nil // no ingest configured — nothing to inject
 	}
+	earlier := HasFeedbackWidget(dir)
+	if earlier {
+		if _, err := RemoveFeedbackWidget(dir, logger); err != nil {
+			return 0, fmt.Errorf("buildstep: take out the earlier feedback widget: %w", err)
+		}
+	}
 
 	// 1. Static/HTML apps: inline the widget before </body> in every HTML file.
 	patched, err := injectIntoHTML(dir, feedbackScriptTag(projectID, ingestURL), logger)
 	if err != nil {
 		return patched, err
 	}
-	if patched > 0 {
-		return patched, nil
+	if patched == 0 {
+		// 2. Next.js App Router (no index.html): public/ + a <script src> in layout.
+		patched = injectIntoNextLayout(dir, projectID, ingestURL, logger)
 	}
-
-	// 2. Next.js App Router (no index.html): public/ + a <script src> in layout.
-	return injectIntoNextLayout(dir, projectID, ingestURL, logger), nil
+	if patched == 0 && earlier {
+		return 0, errors.New("buildstep: the app had a feedback widget, but this CRN's could not be put in its place")
+	}
+	if earlier && patched > 0 {
+		logger.Info("replaced the earlier feedback widget with this CRN's")
+	}
+	return patched, nil
 }
 
 // injectIntoHTML inlines tag before </body> in every .html file under dir,
