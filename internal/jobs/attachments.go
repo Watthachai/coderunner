@@ -21,6 +21,20 @@ import (
 // SetAttachmentsDir is where CRN keeps the pictures edit requests carry.
 func (m *manager) SetAttachmentsDir(dir string) { m.attach = attach.NewStore(dir) }
 
+// SetKeepSessionAfterPictures names the projects whose builds resume their session even
+// after a build with pictures (CRN_KEEP_SESSION_AFTER_PICTURES): DV's own, not a
+// customer's. Every other project's next build starts a new session.
+func (m *manager) SetKeepSessionAfterPictures(projects []uuid.UUID) {
+	m.keepSession = make(map[uuid.UUID]bool, len(projects))
+	for _, p := range projects {
+		m.keepSession[p] = true
+	}
+}
+
+// newSessionAfterPictures is the trace line of a build that does not resume its project's
+// session because a build with pictures has run since.
+const newSessionAfterPictures = "เริ่ม session ใหม่ของ agent: มี build ที่แนบรูปหลัง session ล่าสุดของโปรเจกต์นี้ build นี้จึงไม่ใช้ประวัติ session เดิม"
+
 // keepPictures writes a job's pictures; a request without pictures is nothing to do.
 func (m *manager) keepPictures(job uuid.UUID, pics []domain.Attachment) error {
 	if len(pics) == 0 {

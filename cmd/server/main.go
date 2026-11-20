@@ -119,6 +119,12 @@ func run() error {
 		pictures.SetAttachmentsDir(cfg.AttachmentsDir)
 		logger.Info("request pictures", "dir", cfg.AttachmentsDir)
 	}
+	// After a build with pictures a project's next build starts a new session, except
+	// for these (DV's own projects).
+	if keep, ok := jobManager.(interface{ SetKeepSessionAfterPictures([]uuid.UUID) }); ok {
+		keep.SetKeepSessionAfterPictures(cfg.KeepSessionAfterPictures)
+		logger.Info("projects that keep their session after pictures", "projects", cfg.KeepSessionAfterPictures)
+	}
 
 	// Reconcile ghost builds: any job still 'building' at boot was orphaned by a
 	// prior process (restart/crash mid-build). Fail them now so the dashboard

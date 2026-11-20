@@ -164,6 +164,11 @@ type pipelineStore struct {
 	messages []string
 	tag      string
 	trace    *domain.BuildTrace
+	// lastSession and picturesSince are what LastSession answers; lastSessionJob is the
+	// job it was asked to leave out.
+	lastSession    string
+	picturesSince  bool
+	lastSessionJob uuid.UUID
 }
 
 func (s *pipelineStore) UpdateJobStatus(_ context.Context, _ uuid.UUID, st domain.JobStatus, msg string) error {
@@ -192,7 +197,12 @@ func (s *pipelineStore) SetJobDockerTag(_ context.Context, _ uuid.UUID, tag stri
 	s.tag = tag
 	return nil
 }
-func (s *pipelineStore) LastSessionID(context.Context, uuid.UUID) (string, error) { return "", nil }
+func (s *pipelineStore) LastSession(_ context.Context, _, job uuid.UUID) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastSessionJob = job
+	return s.lastSession, s.picturesSince, nil
+}
 func (s *pipelineStore) SaveJobTrace(_ context.Context, tr *domain.BuildTrace) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -339,6 +349,12 @@ type pipelineOpts struct {
 	pictures []domain.Attachment
 	// picturesSaved runs once the pictures are in their folder, before the build.
 	picturesSaved func(t *testing.T, dir string)
+	// lastSession is the project's session an edit build would resume; picturesSince says
+	// a build with pictures has run since it; keepSession lists the project among those
+	// that resume it anyway.
+	lastSession   string
+	picturesSince bool
+	keepSession   bool
 }
 
 func runPipeline(t *testing.T, accept, deliveryJSON string, env map[string]string) pipelineRun {
@@ -505,7 +521,7 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	}
 
 	org := uuid.New()
-	st := &pipelineStore{}
+	st := &pipelineStore{lastSession: o.lastSession, picturesSince: o.picturesSince}
 	var logs strings.Builder
 	sink := &syncWriter{w: &logs}
 	logger := slog.New(slog.NewTextHandler(sink, nil))
@@ -599,6 +615,9 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	}
 	if o.projectRegistry != "" {
 		mgr.SetProjectRegistries(map[uuid.UUID]string{project: o.projectRegistry})
+	}
+	if o.keepSession {
+		mgr.SetKeepSessionAfterPictures([]uuid.UUID{project})
 	}
 	if o.manager != nil {
 		o.manager(mgr)

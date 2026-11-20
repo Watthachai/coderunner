@@ -78,10 +78,11 @@ type Store interface {
 	// (nil, nil) when it has none. Status read model only — it ignores whether
 	// the project is already building.
 	NextQueuedJobForProject(ctx context.Context, projectID uuid.UUID) (*Job, error)
-	// LastSessionID returns the session_id of the project's most recent job that
-	// has a non-empty session_id ("" when none). Used by an edit build to --resume
-	// the project's prior Claude session.
-	LastSessionID(ctx context.Context, projectID uuid.UUID) (string, error)
+	// LastSession returns the session_id of the project's most recent job other than
+	// jobID that has one ("" when none), which an edit build --resumes, and whether a
+	// build that carried pictures has started since that job was queued (that job
+	// included), so the pictures are in that session's history.
+	LastSession(ctx context.Context, projectID, jobID uuid.UUID) (sessionID string, picturesSince bool, err error)
 	// QueueDepth counts jobs in JobQueued for a project.
 	QueueDepth(ctx context.Context, projectID uuid.UUID) (int, error)
 

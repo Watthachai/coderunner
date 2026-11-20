@@ -264,3 +264,57 @@ func TestBootDeletesThePicturesOfEveryJobNotWaiting(t *testing.T) {
 		}
 	}
 }
+
+// DV asked on 20 Nov 2026 that a customer's pictures not ride along into later builds:
+// the pictures are in the history of the session the build resumed, so once a build with
+// pictures has run, the project's next build starts a new session.
+func TestTheBuildAfterOneWithPicturesStartsANewSession(t *testing.T) {
+	resumed := "unset"
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery, change: onePictureChange,
+		lastSession: "s-before", picturesSince: true,
+		agent: func(a agentRun) { resumed = a.spec.ResumeSessionID; change(t, a.spec.WorkDir) }})
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
+	}
+	if resumed != "" {
+		t.Errorf("the build resumed %q, a session that holds pictures", resumed)
+	}
+	if !strings.Contains(traceText(run), "เริ่ม session ใหม่") {
+		t.Errorf("the trace does not say the build started a new session:\n%s", traceText(run))
+	}
+	if run.store.lastSessionJob == uuid.Nil {
+		t.Error("the build did not leave itself out when it looked for the last session")
+	}
+}
+
+// A build with pictures keeps what the project's builds so far have done: it resumes the
+// last session when no pictures have run since.
+func TestABuildWithPicturesResumesTheSessionBeforeIt(t *testing.T) {
+	var resumed string
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery, change: onePictureChange, pictures: pictures(t),
+		lastSession: "s-before",
+		agent:       func(a agentRun) { resumed = a.spec.ResumeSessionID; change(t, a.spec.WorkDir) }})
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
+	}
+	if resumed != "s-before" {
+		t.Errorf("the build resumed %q, want the session before it", resumed)
+	}
+	if strings.Contains(traceText(run), "เริ่ม session ใหม่") {
+		t.Errorf("the trace says a new session for a build that resumed one:\n%s", traceText(run))
+	}
+}
+
+// DV's own projects (OKR) keep their session after pictures: CRN_KEEP_SESSION_AFTER_PICTURES.
+func TestAProjectKeptOnItsSessionResumesAfterPictures(t *testing.T) {
+	var resumed string
+	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery, change: onePictureChange,
+		lastSession: "s-before", picturesSince: true, keepSession: true,
+		agent: func(a agentRun) { resumed = a.spec.ResumeSessionID; change(t, a.spec.WorkDir) }})
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
+	}
+	if resumed != "s-before" {
+		t.Errorf("a project kept on its session resumed %q", resumed)
+	}
+}

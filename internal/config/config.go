@@ -207,6 +207,13 @@ type Config struct {
 	// CRN_ATTACHMENTS_DIR; default .crn-attachments beside ProjectsDir.
 	AttachmentsDir string
 
+	// KeepSessionAfterPictures are the projects whose edit builds resume their Claude
+	// session even after a build with pictures: DV's own (OKR), never a customer's. Every
+	// other project's next build starts a new session, so a customer's pictures do not
+	// ride along in it (DV, 20 Nov 2026). Set as CRN_KEEP_SESSION_AFTER_PICTURES, a
+	// comma-separated list of project uuids; default none.
+	KeepSessionAfterPictures []uuid.UUID
+
 	// LogLevel controls slog verbosity: "debug" | "info" | "warn" | "error".
 	LogLevel string
 
@@ -354,6 +361,17 @@ func Load() (*Config, error) {
 	}
 	if rel, err := filepath.Rel(projects, filepath.Clean(cfg.AttachmentsDir)); err == nil && (rel == "." || !strings.HasPrefix(rel, "..")) {
 		return nil, fmt.Errorf("config: CRN_ATTACHMENTS_DIR (%s) must be outside CRN_PROJECTS_DIR (%s)", cfg.AttachmentsDir, cfg.ProjectsDir)
+	}
+
+	for _, entry := range strings.Split(os.Getenv("CRN_KEEP_SESSION_AFTER_PICTURES"), ",") {
+		if entry = strings.TrimSpace(entry); entry == "" {
+			continue
+		}
+		id, err := uuid.Parse(entry)
+		if err != nil {
+			return nil, fmt.Errorf("config: CRN_KEEP_SESSION_AFTER_PICTURES entry %q is not a project uuid", entry)
+		}
+		cfg.KeepSessionAfterPictures = append(cfg.KeepSessionAfterPictures, id)
 	}
 
 	orgRegistries, err := parseOrgRegistries(os.Getenv("CRN_ORG_IMAGE_REGISTRIES"))

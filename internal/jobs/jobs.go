@@ -139,6 +139,9 @@ type manager struct {
 	// attach keeps the pictures edit requests carry, a folder a job; nil keeps none
 	// (SetAttachmentsDir, attachments.go).
 	attach *attach.Store
+	// keepSession are the projects whose builds resume their session even after a build
+	// with pictures (SetKeepSessionAfterPictures, attachments.go).
+	keepSession map[uuid.UUID]bool
 	// pushCredentialDir, pushCredentialWait and pushCredentialPoll belong to the push
 	// window (pushwindow.go).
 	pushCredentialDir string
@@ -735,10 +738,17 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 
 		claudePrompt = editPrompt(spec.Change)
 
-		// Resume the project's last Claude session so the edit has full context.
-		sid, err := m.store.LastSessionID(ctx, job.ProjectID)
+		// Resume the project's last Claude session so the edit has full context, unless a
+		// build with pictures has run since: the pictures are in that session's history,
+		// and DV asked on 20 Nov 2026 that they not ride along into later builds.
+		sid, pictures, err := m.store.LastSession(ctx, job.ProjectID, job.ID)
 		if err != nil {
 			log.Warn("look up last session id failed", "err", err)
+		}
+		if sid != "" && pictures && !m.keepSession[job.ProjectID] {
+			log.Info("new session: a build with pictures ran since the last one", "last_session", sid)
+			m.publishText(job.ID, newSessionAfterPictures)
+			sid = ""
 		}
 		resumeSession = sid
 	} else {

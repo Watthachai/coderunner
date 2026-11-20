@@ -468,24 +468,38 @@ func (s *pgStore) NextQueuedJobForProject(ctx context.Context, projectID uuid.UU
 	return j, nil
 }
 
-// LastSessionID returns the Claude session id of the project's most recent job
-// that carries a non-empty session_id, or "" when none exists. Used by an edit
-// build to --resume the project's prior Claude session.
-func (s *pgStore) LastSessionID(ctx context.Context, projectID uuid.UUID) (string, error) {
+// LastSession returns the Claude session an edit build of the project would resume: the
+// session_id of the project's most recent job other than jobID that carries one ("" when
+// none). picturesSince reports whether a build that carried pictures has started since
+// that job was queued, that job included: those pictures are then in the session's
+// history (docs/edit-attachments.md).
+func (s *pgStore) LastSession(ctx context.Context, projectID, jobID uuid.UUID) (string, bool, error) {
 	const q = `
-		SELECT session_id
-		FROM project_jobs
-		WHERE project_id = $1 AND session_id IS NOT NULL AND session_id <> ''
-		ORDER BY queued_at DESC
-		LIMIT 1`
+		WITH last AS (
+			SELECT session_id, queued_at
+			FROM project_jobs
+			WHERE project_id = $1 AND id <> $2 AND session_id IS NOT NULL AND session_id <> ''
+			ORDER BY queued_at DESC
+			LIMIT 1
+		)
+		SELECT last.session_id, EXISTS (
+			SELECT 1 FROM project_jobs p
+			WHERE p.project_id = $1 AND p.id <> $2
+			  AND p.started_at IS NOT NULL AND p.queued_at >= last.queued_at
+			  AND CASE WHEN jsonb_typeof(p.payload->'attachments') = 'array'
+			           THEN jsonb_array_length(p.payload->'attachments') > 0
+			           ELSE false END
+		)
+		FROM last`
 	var sid string
-	if err := s.pool.QueryRow(ctx, q, projectID).Scan(&sid); err != nil {
+	var pictures bool
+	if err := s.pool.QueryRow(ctx, q, projectID, jobID).Scan(&sid, &pictures); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", nil
+			return "", false, nil
 		}
-		return "", fmt.Errorf("store: last session id: %w", err)
+		return "", false, fmt.Errorf("store: last session: %w", err)
 	}
-	return sid, nil
+	return sid, pictures, nil
 }
 
 // QueueDepth counts jobs in JobQueued for a project.

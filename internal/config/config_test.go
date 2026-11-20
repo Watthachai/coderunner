@@ -375,3 +375,26 @@ func TestAttachmentsDirBesideRelativeProjectsIsAbsolute(t *testing.T) {
 		t.Errorf("a folder inside relative workspaces: err = %v", err)
 	}
 }
+
+// The projects that keep their session after a build with pictures are DV's own; none
+// is the default, so a customer's project is never on the list by omission.
+func TestKeepSessionAfterPicturesNamesProjects(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_KEEP_SESSION_AFTER_PICTURES", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.KeepSessionAfterPictures) != 0 {
+		t.Errorf("unset: %v, want no project", cfg.KeepSessionAfterPictures)
+	}
+	okr := uuid.MustParse("4ddc9371-7938-4cab-ad33-23cc1d8eee75")
+	t.Setenv("CRN_KEEP_SESSION_AFTER_PICTURES", " "+okr.String()+" ,")
+	if cfg, err = Load(); err != nil || len(cfg.KeepSessionAfterPictures) != 1 || cfg.KeepSessionAfterPictures[0] != okr {
+		t.Errorf("one project: %v, %v", cfg.KeepSessionAfterPictures, err)
+	}
+	t.Setenv("CRN_KEEP_SESSION_AFTER_PICTURES", "OKR")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), `CRN_KEEP_SESSION_AFTER_PICTURES entry "OKR" is not a project uuid`) {
+		t.Errorf("a name for a uuid: err = %v", err)
+	}
+}
