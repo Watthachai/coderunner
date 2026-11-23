@@ -789,6 +789,19 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 	}
 
+	// The agent runs the app's own tests, so it works beside the widget this build ships:
+	// an edit that will carry the widget gets this CRN's before the agent starts, and again
+	// after (below), so what ships is CRN's whatever the agent did to it. OKR build 17
+	// (23 Nov 2026) passed its tests beside an earlier widget, then failed the release
+	// check on the one CRN put in after: the app's own test of env names.
+	if inject, _ := feedbackWidgetPlan(spec, buildstep.HasFeedbackWidget(workDir)); inject && spec.Mode == "edit" && repoImage.Image == nil {
+		if n, err := buildstep.InjectFeedbackWidget(workDir, job.ProjectID.String(), m.feedbackIngestURL, m.logger); err != nil {
+			log.Warn("feedback widget: not in place before the agent; CRN puts it in after", "err", err)
+		} else if n > 0 {
+			claudePrompt += widgetPrompt()
+		}
+	}
+
 	// --- run Claude Code (optional) ---
 	var result domain.RunResult
 	if m.runClaude {
@@ -1550,6 +1563,13 @@ func editPrompt(change string) string {
 		"Keep the edit to what the change asks: no unrelated refactors, dependency, schema or migration changes unless the change needs them. " +
 		everyItem +
 		"Apply this change and keep everything else working:\n\n" + change
+}
+
+// widgetPrompt tells the agent the widget in the app is CRN's, and what its route reads.
+func widgetPrompt() string {
+	return "\n\nCRN's feedback widget is in the app: public/fitt-feedback.js, the api/fitt-feedback route and its script tag in the root layout. " +
+		"CRN puts its own copy back after you finish, so leave them as they are. " +
+		"Its route reads " + strings.Join(buildstep.WidgetEnvNames(), ", ") + ": where the app's own tests check which environment variables its code reads, allow these. "
 }
 
 // everyItem is what an edit build asks of a change with several items (OKR #6, 16 Nov:

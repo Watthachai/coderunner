@@ -98,6 +98,16 @@ func FinalizeRuntime(dir string) error {
 	return os.WriteFile(path, append(out, '\n'), 0o644)
 }
 
+// WidgetEnvNames are the variables the widget's route reads, for the agent: an app whose
+// own tests check which variables its code reads must allow these.
+func WidgetEnvNames() []string {
+	names := []string{}
+	for _, e := range widgetEnv {
+		names = append(names, e.Name)
+	}
+	return append(names, fittcoreOriginEnv.Name)
+}
+
 // withWidgetEnv is the app's env with the widget's variables when the widget is in
 // the app (widget true) and without them when it is not.
 func withWidgetEnv(appEnv []RuntimeEnv, widget bool) []RuntimeEnv {
