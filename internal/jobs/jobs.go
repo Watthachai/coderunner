@@ -1567,6 +1567,7 @@ func editPrompt(change string) string {
 		"Use the fitt-build skill and its delivery checks for this edit. Preserve migration history, accounts and customer data. " +
 		"If the project has no crn.runtime.json yet, add it as the skill's references/runs-anywhere.md says, declaring only the variables the app already reads. " +
 		"Keep the edit to what the change asks: no unrelated refactors, dependency, schema or migration changes unless the change needs them. " +
+		politeQuestions +
 		everyItem +
 		"Apply this change and keep everything else working:\n\n" + change
 }
@@ -1583,6 +1584,11 @@ func widgetPrompt() string {
 		"CRN puts its own copy back after you finish, so leave them as they are. " +
 		"Its route reads " + strings.Join(buildstep.WidgetEnvNames(), ", ") + ": where the app's own tests check which environment variables its code reads, allow these. "
 }
+
+// politeQuestions: customers ask for changes as questions ("ย้ายปุ่มบันทึกไปไว้ใต้ตารางได้ไหม"),
+// and builds answered "ทำได้ครับ" without changing anything (23 Nov 2026).
+const politeQuestions = "Customers often ask for a change as a polite question, such as \"ย้ายปุ่มบันทึกไปไว้ใต้ตารางได้ไหม\" or \"can the total be bigger?\": " +
+	"that asks for the change, so make it. Answer without changing anything only a question that asks for information, such as how something works or why it is so. "
 
 // everyItem is what an edit build asks of a change with several items (OKR #6, 16 Nov:
 // 16 from UAT, 14 handed to sub-agents and lost when the session ended). The session

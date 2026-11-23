@@ -284,6 +284,20 @@
     ".send:disabled{opacity:.6;cursor:default}" +
     ".status{font-size:12px;text-align:center;margin-top:8px;color:#777;min-height:16px}" +
     ".status.ok{color:" + GREEN + "}.status.err{color:#ff4b4b}" +
+    // 💬 assistant chat and 🎤 (23 Nov 2026).
+    ".chat[hidden],.fhead[hidden],.ftail[hidden],.mic[hidden]{display:none}" +
+    ".log{display:flex;flex-direction:column;gap:6px;max-height:240px;overflow:auto;margin-bottom:8px;padding-right:8px}" +
+    ".msg{padding:7px 10px;border-radius:12px;font-size:13px;line-height:1.5;max-width:88%;white-space:pre-wrap;overflow-wrap:anywhere}" +
+    ".msg.me{background:#e8f4ff;align-self:flex-end}.msg.bot{background:#f2f2f2;align-self:flex-start}" +
+    ".msg.note{background:none;color:#999;font-size:12px;align-self:center;text-align:center}" +
+    ".ask{display:flex;gap:6px;align-items:center;margin-bottom:6px}" +
+    ".askin{flex:1;min-width:0;border:2px solid #e5e5e5;border-radius:10px;padding:8px;font-size:13px;font-family:inherit;color:#3c3c3c}" +
+    ".askgo,.mic{flex:none;width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;font-size:15px;display:grid;place-items:center}" +
+    ".askgo{background:" + GREEN + ";color:#fff}.askgo:disabled{opacity:.5;cursor:default}" +
+    ".mic{background:#f2f2f2}.mic.on{background:#ff4b4b;color:#fff;animation:fittpulse 1s infinite}" +
+    "@keyframes fittpulse{50%{box-shadow:0 0 0 6px rgba(255,75,75,.2)}}" +
+    ".self{display:block;margin:0 0 10px auto;border:none;background:none;padding:0;color:#0b7fb5;font-weight:700;cursor:pointer;font-size:12px;text-decoration:underline}" +
+    ".notewrap{position:relative}.notewrap textarea{padding-right:42px}.notewrap .mic{position:absolute;right:6px;bottom:10px}" +
     // 🐞 error surface — a second FAB that only appears when errors are detected.
     ".efab{position:fixed;right:84px;bottom:20px;z-index:2147483647;width:56px;height:56px;border-radius:50%;" +
     "background:#ff4b4b;color:#fff;border:none;box-shadow:0 4px 0 #c93b3b,0 8px 24px rgba(0,0,0,.25);" +
@@ -371,21 +385,27 @@
     "</style>" +
     "<button class='fab' title='Send feedback'>💬</button>" +
     "<div class='panel' hidden>" +
-    "<h3>💬 บอกสิ่งที่อยากแก้</h3>" +
-    "<label>ประเภท</label><div class='row cat'>" +
+    "<h3>💬 บอกสิ่งที่อยากให้แก้</h3>" +
+    "<div class='chat' hidden><div class='log' aria-live='polite'></div>" +
+    "<div class='ask'><input class='askin' maxlength='2000' placeholder='พิมพ์หรือกด 🎤 พูดก็ได้'>" +
+    "<button class='mic askmic' hidden title='พูดแทนพิมพ์' aria-label='พูดแทนพิมพ์'>🎤</button>" +
+    "<button class='askgo' title='ส่งข้อความ' aria-label='ส่งข้อความ'>➤</button></div>" +
+    "<button class='self'>เขียนคำขอเอง</button></div>" +
+    "<div class='fhead'><label>ประเภท</label><div class='row cat'>" +
     "<button class='chip' data-cat='bug'>🐞 bug</button>" +
     "<button class='chip on' data-cat='feature'>✨ feature</button>" +
     "<button class='chip' data-cat='style'>🎨 style</button></div>" +
     "<label>ความสำคัญ</label><div class='row prio'>" +
     "<button class='chip prio' data-prio='low'>low</button>" +
     "<button class='chip prio on' data-prio='med'>med</button>" +
-    "<button class='chip prio' data-prio='high'>high</button></div>" +
+    "<button class='chip prio' data-prio='high'>high</button></div></div>" +
     "<button class='pinbtn'>📍 ปักจุดบนหน้า</button>" +
     "<button class='cropbtn'>◻ ลากครอปพื้นที่</button>" +
     "<ul class='pins'></ul>" +
-    "<label>รายละเอียด</label>" +
-    "<textarea placeholder='อยากให้เปลี่ยนเป็นแบบไหน?'></textarea>" +
-    "<button class='send'>ส่ง feedback</button>" +
+    "<div class='ftail'><label class='notelbl'>สิ่งที่อยากให้แก้</label>" +
+    "<div class='notewrap'><textarea placeholder='เช่น ย้ายปุ่มบันทึกไปไว้ใต้ตาราง'></textarea>" +
+    "<button class='mic notemic' hidden title='พูดแทนพิมพ์' aria-label='พูดแทนพิมพ์'>🎤</button></div>" +
+    "<button class='send'>ส่ง feedback</button></div>" +
     "<div class='status'></div>" +
     "</div>" +
     "<button class='efab' hidden title='ตรวจพบ error — ส่งไปแก้'>🐞<span class='ebadge'>0</span></button>" +
@@ -1005,6 +1025,145 @@
     });
   });
 
+  // --- 🎤 speech to text --------------------------------------------------------
+  // The browser's own speech recognition, in Thai; where it has none, no 🎤 shows.
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  function wireMic(btn, field) {
+    if (!SR) return;
+    btn.hidden = false;
+    var rec = null;
+    btn.addEventListener("click", function () {
+      if (rec) { rec.stop(); return; }
+      rec = new SR();
+      rec.lang = "th-TH";
+      rec.interimResults = true;
+      rec.continuous = false;
+      var before = field.value ? field.value.replace(/\s*$/, " ") : "";
+      rec.onresult = function (e) {
+        var heard = "";
+        for (var i = 0; i < e.results.length; i++) heard += e.results[i][0].transcript;
+        field.value = before + heard;
+      };
+      rec.onerror = function (e) {
+        setStatus(e && e.error === "not-allowed" ? "เบราว์เซอร์ยังไม่อนุญาตให้ใช้ไมค์" : "ฟังเสียงไม่สำเร็จ ลองอีกครั้งนะ", "err");
+      };
+      rec.onend = function () { rec = null; btn.classList.remove("on"); field.focus(); };
+      btn.classList.add("on");
+      setStatus("", "");
+      try { rec.start(); } catch (err) { rec = null; btn.classList.remove("on"); }
+    });
+  }
+
+  // --- 💬 assistant -------------------------------------------------------------
+  // Where the app's route has an AI behind it (FITT_FEEDBACK_AI_URL), the customer
+  // talks with it: it asks back what it needs and drafts the change as a request,
+  // which fills the form below for the customer to check and send as usual. The AI's
+  // words are shown as text. Without it, or after "เขียนคำขอเอง", the form is as before.
+  var chatEl = root.querySelector(".chat");
+  var logEl = root.querySelector(".log");
+  var askIn = root.querySelector(".askin");
+  var askGo = root.querySelector(".askgo");
+  var fhead = root.querySelector(".fhead");
+  var ftail = root.querySelector(".ftail");
+  var noteLbl = root.querySelector(".notelbl");
+  var ai = { on: false, messages: [], busy: false };
+  var GREETING = "อยากให้แก้อะไรในหน้านี้ เล่าได้เลยครับ จะพิมพ์หรือกด 🎤 พูดก็ได้ ถ้าเป็นจุดบนหน้า กด 📍 ปักไว้ได้";
+
+  function assistCall(body) {
+    return fetch(TICKETS + (TICKETS.indexOf("?") >= 0 ? "&op=assist" : "?op=assist"), {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }).then(function (res) {
+      return res.json().then(function (data) { return { status: res.status, data: data || {} }; },
+        function () { return { status: res.status, data: {} }; });
+    }, function () { return { status: 0, data: {} }; });
+  }
+  function say(kind, text) {
+    var bubble = document.createElement("div");
+    bubble.className = "msg " + kind;
+    bubble.textContent = text;
+    logEl.appendChild(bubble);
+    logEl.scrollTop = logEl.scrollHeight;
+    return bubble;
+  }
+  function chatMode(on) {
+    chatEl.hidden = !on;
+    fhead.hidden = on;
+    ftail.hidden = on;
+    noteLbl.textContent = "สิ่งที่อยากให้แก้";
+  }
+  function startChat() {
+    ai.messages = [];
+    logEl.textContent = "";
+    say("bot", GREETING);
+    chatMode(true);
+  }
+  function pick(group, attr, value) {
+    root.querySelectorAll("." + group + " .chip").forEach(function (x) {
+      x.classList.toggle("on", x.getAttribute(attr) === value);
+    });
+  }
+  function useDraft(d) {
+    category = d.category; priority = d.priority;
+    pick("cat", "data-cat", d.category);
+    pick("prio", "data-prio", d.priority);
+    noteEl.value = d.text;
+    noteLbl.textContent = "คำขอแก้ที่จะส่ง (แก้ได้)";
+    fhead.hidden = false;
+    ftail.hidden = false;
+    // The draft and the send button sit below the chat: bring them into view.
+    ftail.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  function ask() {
+    var text = (askIn.value || "").trim();
+    if (!text || ai.busy) return;
+    ai.messages.push({ role: "user", text: text.slice(0, 2000) });
+    say("me", text);
+    askIn.value = "";
+    ai.busy = true;
+    askGo.disabled = true;
+    var wait = say("note", "กำลังคิด…");
+    assistCall({
+      messages: ai.messages.slice(-20),
+      context: {
+        page: location.pathname,
+        pins: pins.map(function (p) { return [p.label, p.note].filter(Boolean).join(" — "); }),
+      },
+    }).then(function (r) {
+      wait.remove();
+      if (r.status === 200 && typeof r.data.reply === "string") {
+        ai.messages.push({ role: "assistant", text: r.data.reply });
+        say("bot", r.data.reply);
+        if (r.data.draft) useDraft(r.data.draft);
+        return;
+      }
+      ai.messages.pop(); // not answered: it can be asked again
+      say("note", "ผู้ช่วยตอบไม่ได้ตอนนี้ ลองส่งอีกครั้ง หรือกด \"เขียนคำขอเอง\"");
+    }).finally(function () {
+      ai.busy = false;
+      askGo.disabled = false;
+      askIn.focus();
+    });
+  }
+  askGo.addEventListener("click", ask);
+  askIn.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); ask(); }
+  });
+  root.querySelector(".self").addEventListener("click", function () {
+    chatEl.hidden = true;
+    fhead.hidden = false;
+    ftail.hidden = false;
+    noteEl.focus();
+  });
+  wireMic(root.querySelector(".askmic"), askIn);
+  wireMic(root.querySelector(".notemic"), noteEl);
+  // Only a Next app's own route can have the assistant; it says whether it does.
+  if (TICKETS) {
+    assistCall({ messages: [] }).then(function (r) {
+      if (r.status === 200 && r.data.on === true) { ai.on = true; startChat(); }
+    });
+  }
+
   pinbtn.addEventListener("click", function () {
     if (pointing) stopPointing();
     else startPointing();
@@ -1241,6 +1400,7 @@
       .then(function (res) {
         if (!res.ok) throw new Error("HTTP " + res.status);
         pins = []; shots = []; renderPins(); noteEl.value = "";
+        if (ai.on) startChat();
         if (TICKETS) {
           // The ticket waits in the company's fittcore until it is sent from 📋,
           // unless the app forwards every ticket by itself.

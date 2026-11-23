@@ -46,10 +46,13 @@ type RuntimeEnv struct {
 
 // widgetEnv is what the injected widget's route reads. CRN writes these entries
 // itself, in place of any the app wrote. Until 23 Nov 2026 only FITT_FEEDBACK_URL
-// was here, and the release check refused OKR build 16 for FITT_TICKET_WINDOW.
+// was here, and the release check refused OKR build 16 for FITT_TICKET_WINDOW. The
+// assistant's two came the same day.
 var widgetEnv = []RuntimeEnv{
 	{Name: "FITT_FEEDBACK_URL", Required: "no", Note: "where the feedback widget sends reports"},
 	{Name: "FITT_TICKET_WINDOW", Required: "no", Note: "1 shows the feedback widget's ticket window; it also needs FITT_FEEDBACK_URL and PLATFORM_FITTCORE_ORIGIN on the same origin"},
+	{Name: "FITT_FEEDBACK_AI_URL", Required: "no", Note: "the AI service the feedback widget's assistant talks to; unset, the widget has no assistant"},
+	{Name: "FITT_FEEDBACK_AI_KEY", Required: "no", Secret: true, Note: "sent to FITT_FEEDBACK_AI_URL as a bearer token, when that service asks for one"},
 }
 
 // fittcoreOriginEnv is read by the route too, but an app that signs in at fittcore

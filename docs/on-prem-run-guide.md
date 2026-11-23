@@ -30,6 +30,8 @@
 | `BOOTSTRAP_ADMIN_PASSWORD` | ✅ ตอนติดตั้งครั้งแรก | อย่างน้อย 16 ตัวอักษร ห้ามใช้ซ้ำข้ามลูกค้า |
 | `FITT_FEEDBACK_URL` | – | ปลายทาง feedback widget (เฉพาะ build ที่ฝัง widget) |
 | `FITT_TICKET_WINDOW` | – | `1` = เปิดปุ่ม 📋 (ticket ของฉัน) ค่าอื่นหรือไม่ตั้ง = ไม่มีปุ่ม 📋 ส่วน 💬 ใช้ได้ตามปกติทุกกรณี · ตั้งเฉพาะไซต์ลูกค้าที่ fittcore ของบริษัทเปิด widget API แล้ว และ `PLATFORM_FITTCORE_ORIGIN` ต้องเป็น origin เดียวกับ `FITT_FEEDBACK_URL` · ถ้าตั้งแล้วแต่ fittcore ไม่มี `/api/site/widget/v1` ปุ่ม 📋 ก็ไม่ขึ้น (build ที่ทำหลัง 23 พ.ย. 2026) · CRN ใส่ตัวแปรนี้ใน `crn.runtime.json` ให้เอง (required: no) |
+| `FITT_FEEDBACK_AI_URL` | – | ตัวเชื่อม AI ของผู้ช่วยในหน้าต่าง 💬 (ดู docs/feedback-assistant.md) ไม่ตั้ง = ไม่มีผู้ช่วย ใช้ฟอร์มเดิม · build ที่ทำหลัง 23 พ.ย. 2026 |
+| `FITT_FEEDBACK_AI_KEY` | – | key ของตัวเชื่อม AI (secret) ส่งเป็น `Authorization: Bearer` เฉพาะเมื่อตั้งไว้ |
 | `DEV_EMAIL` / `DEV_PASSWORD` | – | **เลิกใช้แล้ว** image ปัจจุบันไม่อ่าน |
 
 **admin คนแรก (bootstrap):**

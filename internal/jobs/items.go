@@ -42,7 +42,8 @@ func itemsPrompt(items []buildstep.Item, jobID uuid.UUID) string {
 		`{"job": "` + jobID.String() + `", "items": [{"id": "1", "status": "done", "summary": "…", "files": ["…"], "tests": [{"file": "…", "name": "…"}], "note": "…"}]}` +
 		", with exactly one entry for each id above. status is one of: " +
 		"done (changed in this build: files are the files you changed for it; tests are tests in the project, by file and by name exactly as written there, that show it works; if no test can, say why in note), " +
-		"answered (a question: the answer, in note), exists (already so: where, in note), wont (you will not do it: why, in note), " +
+		"answered (a question that asks for information: the answer, in note; a question that asks for a change, such as \"...ได้ไหม\", is a change to make, not to answer), " +
+		"exists (already so: where, in note), wont (you will not do it: why, in note), " +
 		"not_done (you could not finish it: why, in note). Write summary and note in Thai, for the customer. " +
 		"CRN checks this file against the tree before it commits: an item left out, a file this build did not change or a test that is not there " +
 		"sends the build back to you once, and then fails it.")
@@ -79,7 +80,8 @@ func reviewPrompt(items []buildstep.Item, change, diffPath string, files []strin
 	b.WriteString("The builder reported on each item in " + buildstep.ItemsFile + " at the project root. " +
 		"The whole diff of this build against the commit it started from is in " + diffPath + ". " +
 		"For each item, check the builder's claim against the code itself, not against the builder's words: " +
-		"done: the change is in the code, does what the item asks, and the named tests test it; answered: the answer is true of the code; " +
+		"done: the change is in the code, does what the item asks, and the named tests test it; " +
+		"answered: the item asks for information, not for a change (\"...ได้ไหม\" asking for a change is not answered by saying it can be done), and the answer is true of the code; " +
 		"exists: it is really there; wont or not_done: the reason holds. " +
 		`End your reply with one JSON object and nothing after it: {"items": [{"id": "1", "verdict": "confirmed", "reason": "…"}]}, ` +
 		"one entry per item, verdict confirmed or not_confirmed, the reason short and in Thai.\n\nFiles this build changed:\n")

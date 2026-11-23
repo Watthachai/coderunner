@@ -211,7 +211,7 @@ const feedbackRoutePath = "/api/fitt-feedback"
 // app's server, bound to that user's session; it never calls DV's fittcore.
 func feedbackRoute(appDir, layoutExt, ingestURL string) (string, string) {
 	fallback, _ := json.Marshal(ingestURL)
-	src := feedbackRouteHead + "const FALLBACK = " + string(fallback) + ";\n" + feedbackRouteReport
+	src := feedbackRouteHead + "const FALLBACK = " + string(fallback) + ";\n" + feedbackRouteReport + feedbackRouteAssist
 	if ticketWindow {
 		src = strings.Replace(src, ticketOpsHook, ticketOpsCall, 1) + feedbackRouteTickets
 	} else {
@@ -295,6 +295,7 @@ async function readBody(request«: Request», max«: number») {
 }
 
 export async function POST(request«: Request»)«: Promise<Response>» {
+  if (new URL(request.url).searchParams.get("op") === "assist") return assist(request);
   // ticket ops
   const body = await readBody(request, MAX_BYTES);
   if (!body) return tooLarge();
@@ -323,6 +324,128 @@ export async function POST(request«: Request»)«: Promise<Response>» {
   }
 }
 
+`
+
+// feedbackRouteAssist is the route's 💬 assistant (23 Nov 2026), in every route.
+const feedbackRouteAssist = `
+// The 💬 assistant (the assist op): customers asked for changes as questions ("ย้ายปุ่ม
+// บันทึกไปไว้ใต้ตารางได้ไหม") and builds answered instead of changing. Here the customer
+// talks with the AI FITT_FEEDBACK_AI_URL names, which asks back what it needs and drafts
+// the change as a request, for the customer to check and send as an ordinary report.
+// This server calls the AI, with FITT_FEEDBACK_AI_KEY when set: the browser sees
+// neither. The instructions are CRN's; the AI service passes them and the schema on to
+// its model. Without FITT_FEEDBACK_AI_URL the widget shows no assistant.
+const ASSIST_MAX_BYTES = 64 * 1024;
+const ASSIST_TIMEOUT_MS = 30000;
+const ASSIST_MESSAGES = 20;
+const ASSIST_TEXT = 2000;
+const ASSIST_REPLY = 4000;
+const ASSIST_DRAFT = 4000;
+const ASSIST_KINDS = ["bug", "feature", "style"];
+const ASSIST_PRIORITIES = ["low", "med", "high"];
+const ASSIST_INSTRUCTIONS = [
+  "You help a customer of this web app tell its team what they want changed. Write every reply in Thai, short and polite (ครับ), at most three sentences.",
+  "Customers often ask for a change as a question, such as \"ย้ายปุ่มบันทึกไปไว้ใต้ตารางได้ไหม\": that is a request for the change, not a question to answer.",
+  "Ask one question at a time, and only what you need: which page or element (suggest pinning it on the page with 📍), and what it should become.",
+  "You never promise that a change will be made, and never say it can be done: you write the request, and the team decides.",
+  "When you know what to change, set draft. draft.text is the change written as a request in Thai, one change per line, each starting with what to do (ย้าย, เปลี่ยน, เพิ่ม, ลบ, แก้), never a question; keep the earlier changes of this conversation in it.",
+  "draft.category is bug when something is broken, style when only the look changes, feature otherwise. draft.priority is high when the customer says it is urgent or blocks their work, low when they say it can wait, med otherwise.",
+  "When the customer only asks how to use the app, answer briefly and set draft to null. Otherwise set draft to null until you know what to change.",
+  "context.page is the page the customer is on; context.pins are the elements they pinned on it.",
+].join("\n");
+const ASSIST_SCHEMA = {
+  type: "object",
+  properties: {
+    reply: { type: "string" },
+    draft: {
+      type: "object",
+      nullable: true,
+      properties: {
+        text: { type: "string" },
+        category: { type: "string", enum: ASSIST_KINDS },
+        priority: { type: "string", enum: ASSIST_PRIORITIES },
+      },
+      required: ["text", "category", "priority"],
+    },
+  },
+  required: ["reply"],
+};
+
+«type AssistMessage = { role: string; text: string };
+»
+function assistAnswer(status«: number», body«: unknown») {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  });
+}
+
+// assistText is v when it is text no longer than max, or null.
+function assistText(v«: unknown», max«: number»)«: string | null» {
+  return typeof v === "string" && v.length <= max ? v : null;
+}
+
+async function assist(request«: Request»)«: Promise<Response>» {
+  const url = process.env.FITT_FEEDBACK_AI_URL;
+  const raw = await readBody(request, ASSIST_MAX_BYTES);
+  if (!raw) return assistAnswer(413, { error: "payload_too_large" });
+  let b«: { messages?: unknown; context?: unknown } | null» = null;
+  try {
+    b = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    b = null;
+  }
+  if (!b || typeof b !== "object" || !Array.isArray(b.messages) || b.messages.length > ASSIST_MESSAGES) {
+    return assistAnswer(400, { error: "invalid_request" });
+  }
+  const messages«: AssistMessage[]» = [];
+  for (const m of b.messages« as { role?: unknown; text?: unknown }[]») {
+    const text = m ? assistText(m.text, ASSIST_TEXT) : null;
+    if (!m || (m.role !== "user" && m.role !== "assistant") || text === null) return assistAnswer(400, { error: "invalid_request" });
+    messages.push({ role: m.role, text });
+  }
+  // The widget asks with no messages, on every page, to learn whether to show the
+  // assistant: answered plainly either way, so an app without one logs no error for it.
+  if (!messages.length) return assistAnswer(200, { on: Boolean(url) });
+  if (!url) return assistAnswer(503, { error: "not_open" });
+  const c = (b.context && typeof b.context === "object" ? b.context : {})« as { page?: unknown; pins?: unknown }»;
+  const context = {
+    page: typeof c.page === "string" ? c.page.slice(0, 500) : "",
+    pins: Array.isArray(c.pins)
+      ? c.pins.filter((p«: unknown») => typeof p === "string").slice(0, 10).map((p«: string») => p.slice(0, 300))
+      : [],
+  };
+  const headers«: Record<string, string>» = { "content-type": "application/json", accept: "application/json" };
+  if (process.env.FITT_FEEDBACK_AI_KEY) headers.authorization = "Bearer " + process.env.FITT_FEEDBACK_AI_KEY;
+  let res«: Response»;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ instructions: ASSIST_INSTRUCTIONS, messages, context, schema: ASSIST_SCHEMA }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(ASSIST_TIMEOUT_MS),
+    });
+  } catch {
+    return assistAnswer(502, { error: "ai_unreachable" });
+  }
+  if (!res.ok || res.type === "opaqueredirect") {
+    await res.body?.cancel();
+    return assistAnswer(502, { error: "ai_unreachable" });
+  }
+  const bad = assistAnswer(502, { error: "bad_answer" });
+  const v = (await res.json().catch(() => null))« as { reply?: unknown; draft?: unknown } | null»;
+  const reply = v && typeof v === "object" ? assistText(v.reply, ASSIST_REPLY) : null;
+  if (!v || !reply || !reply.trim()) return bad;
+  let draft = null;
+  if (v.draft != null) {
+    const d = v.draft« as { text?: unknown; category?: unknown; priority?: unknown }»;
+    const text = typeof d === "object" ? assistText(d.text, ASSIST_DRAFT) : null;
+    if (!text || !text.trim() || !ASSIST_KINDS.includes(d.category« as string») || !ASSIST_PRIORITIES.includes(d.priority« as string»)) return bad;
+    draft = { text: text.trim(), category: d.category, priority: d.priority };
+  }
+  return assistAnswer(200, { reply: reply.trim(), draft });
+}
 `
 
 // feedbackRouteTickets is the route's 📋 part, there when ticketWindow is on.
