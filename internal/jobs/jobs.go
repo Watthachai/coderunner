@@ -50,6 +50,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -152,16 +153,10 @@ type manager struct {
 	// pushWindowProjects are the GitLab projects whose every build pushes through the
 	// window (SetPushWindowProjects).
 	pushWindowProjects map[string]bool
-	// gateLane is held by the one gated build running (dispatch); runJobFn replaces
-	// runJob in a test of the dispatcher.
-	gateLane chan struct{}
+	// runJobFn replaces runJob in a test of the dispatcher.
 	runJobFn func(ctx context.Context, job *domain.Job)
 	// projectRegistries overrides orgRegistries for one project (SetProjectRegistries).
-	projectRegistries map[uuid.UUID]string
-	// helperWait and helperRetry bound how an unlisted build waits for the helper while
-	// another build's agent runs (autopush.go).
-	helperWait         time.Duration
-	helperRetry        time.Duration
+	projectRegistries  map[uuid.UUID]string
 	pushCredentialWait time.Duration
 	pushCredentialPoll time.Duration
 	pushWindowLimit    time.Duration
@@ -181,6 +176,13 @@ type manager struct {
 	// claudeDefaults is the environment's model/effort, used until an operator
 	// saves a choice on the dashboard (internal/buildsettings).
 	claudeDefaults buildsettings.Defaults
+
+	// builds counts the builds dispatch has started. A build that sees it move, or sees
+	// another slot taken, has shared the machine (gate.go: sharedMachine).
+	builds atomic.Uint64
+	// registryTurn is held by one gated build from its first read of the GitLab project's
+	// tags to its last, so no other build's push lands between them (autopush.go).
+	registryTurn chan struct{}
 
 	// slots bounds how many builds run at once, server-wide. Every build ends in
 	// a CPU-heavy docker build (cross-compiled to linux/amd64 under emulation on
@@ -264,7 +266,7 @@ func NewManager(
 		artifactDir:        artifactDir,
 		claudeDefaults:     claudeDefaults,
 		slots:              make(chan struct{}, maxConcurrent),
-		gateLane:           make(chan struct{}, 1),
+		registryTurn:       make(chan struct{}, 1),
 		stopStrays:         buildstep.StopStrayProcesses,
 		captureMachine:     buildstep.CaptureMachineState,
 		readRegistryTags:   buildstep.ReadRegistryTags,
@@ -489,28 +491,8 @@ func (m *manager) dispatch(ctx context.Context) {
 			return // queue drained (or every queued project is already building)
 		}
 
-		// A gated build takes every slot before its push (holdBuilds): two of them would
-		// each wait for the other's. One runs at a time; the next stays queued, holding
-		// nothing, and is started when that one ends.
-		gated := m.gatedJob(job)
-		if gated {
-			select {
-			case m.gateLane <- struct{}{}:
-			default:
-				m.freeSlot()
-				m.logger.Debug("a gated build is running, leaving the next one queued", "job_id", job.ID)
-				return
-			}
-		}
-		leaveLane := func() {
-			if gated {
-				<-m.gateLane
-			}
-		}
-
 		release, err := m.store.AcquireProjectLock(ctx, job.ProjectID)
 		if err != nil {
-			leaveLane()
 			m.freeSlot()
 			if errors.Is(err, domain.ErrProjectLocked) {
 				misses++
@@ -525,13 +507,13 @@ func (m *manager) dispatch(ctx context.Context) {
 			return
 		}
 		misses = 0
+		m.builds.Add(1)
 
 		// Run it on its own goroutine so this loop can immediately dispatch the
 		// next project's job into another slot.
 		go func(j *domain.Job) {
 			defer func() {
 				release()
-				leaveLane()
 				m.freeSlot()
 				// A slot just freed — the rest of the queue may now be runnable.
 				m.dispatch(ctx)

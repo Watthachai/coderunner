@@ -35,7 +35,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	ref := os.Args[2]
-	res, err := registrypush.Push(ctx, cfg, ref, os.Stdin, registrypush.Deps{AgentSessions: registrypush.AgentSessions, Caller: os.Getenv("SUDO_USER")})
+	res, err := registrypush.Push(ctx, cfg, ref, os.Stdin, registrypush.Deps{Caller: os.Getenv("SUDO_USER")})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "crn-push:", err)
 		os.Exit(1)

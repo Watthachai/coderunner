@@ -248,7 +248,7 @@ func (a *agentTurns) ended(runErr error, success bool) bool {
 		m.finishFailed(ctx, job, errMsg, *a.meta)
 		return false
 	}
-	// Nothing the agent started goes on running past here.
+	// Nothing the agent started goes on running past here, when no other build ran beside it.
 	if a.gate != nil {
 		if err := m.stopAgent(a.runCtx, job, a.gate, log); err != nil {
 			log.Error("the agent could not be stopped", "err", err)

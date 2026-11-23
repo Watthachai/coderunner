@@ -39,8 +39,10 @@ type jobGate struct {
 	containers   map[string]bool
 	// machine is the machine as it was before the agent ran.
 	machine buildstep.MachineState
-	// held counts the build slots taken from other builds (pushwindow.go).
-	held int
+	// sharedAtStart and buildsAtStart are whether another build was running, and how many
+	// builds dispatch had started, when this one's gate opened (sharedMachine).
+	sharedAtStart bool
+	buildsAtStart uint64
 	// dockerDir is the docker config of everything but the push: it holds no login.
 	dockerDir string
 	// overBudget is set when the build ran past its time budget, which ends it as failed
@@ -68,7 +70,7 @@ func (m *manager) openGate(job *domain.Job) (*jobGate, error) {
 	if err := m.refuseEarlyCredential(job); err != nil {
 		return nil, err
 	}
-	gate := &jobGate{list: list}
+	gate := &jobGate{list: list, sharedAtStart: len(m.slots) > 1, buildsAtStart: m.builds.Load()}
 	if list != nil {
 		gate.scan = list.NewScanner()
 	}
@@ -81,18 +83,15 @@ func (m *manager) openGate(job *domain.Job) (*jobGate, error) {
 	return gate, nil
 }
 
-// gatedJob says, before the build starts, whether it will have a gate (openGate): a list of
-// forbidden values for its project, or a customer project for its image.
-func (m *manager) gatedJob(job *domain.Job) bool {
-	if m.windowProject(job) {
-		return true
-	}
-	if m.forbiddenValuesDir == "" {
-		return false
-	}
-	_, err := os.Lstat(filepath.Join(m.forbiddenValuesDir, job.ProjectID.String()+".txt"))
-	return err == nil
+// sharedMachine says whether another build ran at any time since this build's gate opened:
+// one was running then, one is running now, or one started in between. Its processes,
+// containers and changes to the machine cannot be told apart from this build's agent's.
+func (m *manager) sharedMachine(gate *jobGate) bool {
+	return gate.sharedAtStart || len(m.slots) > 1 || m.builds.Load() != gate.buildsAtStart
 }
+
+// sharedMachineNote is what a build says when it leaves the machine alone for that reason.
+const sharedMachineNote = "Other builds ran beside this one, so this build stops no process, removes no container and does not compare the machine: they may be the other builds'."
 
 // windowProject says whether job's image goes to a customer project, whose every build
 // pushes through the window.
@@ -115,7 +114,6 @@ func (m *manager) closeGate(jobID uuid.UUID) {
 		if gate.dockerDir != "" {
 			_ = os.RemoveAll(gate.dockerDir)
 		}
-		m.releaseBuilds(gate)
 	}
 	delete(m.gates, jobID)
 }

@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -230,7 +229,6 @@ func (img *image) tar(t *testing.T) io.Reader {
 type setup struct {
 	reg     *fakeRegistry
 	cfg     Config
-	agents  []string
 	logPath string
 }
 
@@ -256,7 +254,7 @@ func newSetup(t *testing.T) *setup {
 
 func (s *setup) pushResult(t *testing.T, ref string, layout io.Reader) (Result, error) {
 	t.Helper()
-	return Push(context.Background(), s.cfg, ref, layout, Deps{AgentSessions: func() ([]string, error) { return s.agents, nil }, Caller: "macagents"})
+	return Push(context.Background(), s.cfg, ref, layout, Deps{Caller: "macagents"})
 }
 
 func (s *setup) push(t *testing.T, ref string, layout io.Reader) (string, error) {
@@ -364,47 +362,6 @@ func TestItServesOnlyItsOwnProjectsImagesAndTags(t *testing.T) {
 				t.Errorf("it asked the registry: %v", s.reg.requests)
 			}
 		})
-	}
-}
-
-// CRN pushes only when its build has stopped every agent and holds every build slot.
-func TestItRefusesWhileAnAgentIsRunning(t *testing.T) {
-	s := newSetup(t)
-	s.agents = []string{"4242 claude --resume x"}
-	ref := s.ref("fitt/ftcdv-uat", "crn-demo-ntc-film-job-efa0ff04", "v5")
-	_, err := s.push(t, ref, newImage(ref).tar(t))
-	if err == nil || !strings.Contains(err.Error(), "agent") {
-		t.Fatalf("err = %v, want a refusal for the agent", err)
-	}
-	if len(s.reg.requests) > 0 {
-		t.Errorf("it asked the registry: %v", s.reg.requests)
-	}
-}
-
-// Chrome starts Claude's browser bridge by itself and keeps it while Chrome is open: on 17
-// Nov the MacMini's held OKR #9's push for 30 minutes. The bridge runs no model; a session
-// that drives the browser through it is a claude process of its own, and that one counts.
-func TestChromesBridgeToClaudeIsNotAnAgent(t *testing.T) {
-	bridge := "35992 /opt/homebrew/Caskroom/claude-code@latest/2.1.325/claude --chrome-native-host"
-	if got := agentsIn(bridge + "\n"); len(got) != 0 {
-		t.Errorf("only the bridge: %q, want none", got)
-	}
-	got := agentsIn(bridge + "\n4242 claude --resume\n77 /x/claude --chrome-native-host -p go\n78 /x/claude --chrome-native-hostile\n")
-	want := []string{"4242 claude --resume", "77 /x/claude --chrome-native-host -p go", "78 /x/claude --chrome-native-hostile"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestItRefusesWhenItCannotTellWhetherAnAgentRuns(t *testing.T) {
-	s := newSetup(t)
-	ref := s.ref("fitt/ftcdv-uat", "crn-demo-ntc-film-job-efa0ff04", "v5")
-	_, err := Push(context.Background(), s.cfg, ref, newImage(ref).tar(t), Deps{AgentSessions: func() ([]string, error) { return nil, fmt.Errorf("pgrep: no answer") }})
-	if err == nil {
-		t.Fatal("it pushed without knowing")
-	}
-	if len(s.reg.requests) > 0 {
-		t.Errorf("it asked the registry: %v", s.reg.requests)
 	}
 }
 

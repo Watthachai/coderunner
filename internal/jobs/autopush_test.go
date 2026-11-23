@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -155,37 +156,32 @@ func TestAnUnlistedBuildPushesThroughTheHelper(t *testing.T) {
 	}
 }
 
-// The helper refuses while any agent runs; another build's agent may, so the build waits.
-func TestAnUnlistedBuildWaitsWhileAnotherAgentRuns(t *testing.T) {
-	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery,
-		env:     map[string]string{"FAKE_HELPER_BUSY_TIMES": "2"},
-		manager: func(m *manager) { m.helperRetry = 5 * time.Millisecond },
-		agent:   func(a agentRun) { change(t, a.spec.WorkDir) }})
+// Two gated builds may push to one GitLab project at the same time. Each reads the project's
+// tags before and after its push, and the other's tag would look like something it did not
+// push: so they take turns, from the first read to the last.
+func TestGatedPushesTakeTurnsAtTheRegistry(t *testing.T) {
+	var free atomic.Bool
+	run := runPipelineWith(t, pipelineOpts{helper: true,
+		manager: func(m *manager) {
+			m.registryTurn <- struct{}{} // another build's push
+			time.AfterFunc(2*time.Second, func() { free.Store(true); <-m.registryTurn })
+		},
+		tags: func(_ buildstep.RegistryTags, _ buildstep.ImageRef, _ bool) {
+			if !free.Load() {
+				t.Error("it read the registry while another build's push was open")
+			}
+		},
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
 	if !hasStatus(run, "released") {
 		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
 	}
-	if n := strings.Count(events(run), "crn-push push"); n != 3 {
-		t.Errorf("the helper was asked %d times, want 3:\n%s", n, events(run))
-	}
 }
 
-func TestAnUnlistedBuildStopsWaitingInTime(t *testing.T) {
-	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery,
-		env:     map[string]string{"FAKE_HELPER_BUSY_TIMES": "1000"},
-		manager: func(m *manager) { m.helperRetry = 5 * time.Millisecond; m.helperWait = 50 * time.Millisecond },
-		agent:   func(a agentRun) { change(t, a.spec.WorkDir) }})
-	failedAndNeverReleased(t, run)
-	if !strings.Contains(failedMessage(run), "an agent is running") {
-		t.Errorf("the failure does not say why: %s", failedMessage(run))
-	}
-}
-
-// Any other refusal is final: a tag that is there is never pushed again.
+// A refusal is final: a tag that is there is never pushed again.
 func TestAnUnlistedBuildDoesNotRetryAnotherRefusal(t *testing.T) {
 	run := runPipelineWith(t, pipelineOpts{helper: true, noList: true, delivery: localDelivery,
-		env:     map[string]string{"FAKE_HELPER_FAILS": "the tag is already in the registry"},
-		manager: func(m *manager) { m.helperRetry = 5 * time.Millisecond },
-		agent:   func(a agentRun) { change(t, a.spec.WorkDir) }})
+		env:   map[string]string{"FAKE_HELPER_FAILS": "the tag is already in the registry"},
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
 	failedAndNeverReleased(t, run)
 	if n := strings.Count(events(run), "crn-push push"); n != 1 {
 		t.Errorf("the helper was asked %d times, want 1:\n%s", n, events(run))

@@ -84,6 +84,14 @@ CRN รัน build **หลายโปรเจคพร้อมกัน** �
 
 > งานไม่เคยหาย: ถ้า slot เต็ม job ยัง `queued` อยู่ แล้ว build ที่เสร็จก่อนจะดึงคิวถัดไปเอง
 
+**ตั้งแต่ 23 พ.ย. 2026 ไม่มี build ไหนรอ build อื่น** (ผู้ดูแล CRN ตัดสินใจ)
+- build ของโปรเจกต์ลูกค้า (image ไป `fitt/ftcdv-uat`) รันพร้อมกันได้ ไม่ต้องรอคิวทีละอันแล้ว
+- ตอน push ไม่รอให้ build อื่นจบ และตัวช่วย push (`crn-push`) push ได้แม้ agent ตัวอื่นยังรันอยู่ ข้อเสียคือระหว่างนั้น agent ตัวไหนบนเครื่องก็เรียกตัวช่วย push เพื่อเพิ่ม tag ใหม่เองได้ (tag ที่มีอยู่แล้วยังเขียนทับไม่ได้)
+- ถ้ามี build อื่นรันอยู่ ณ จุดใดก็ตามตั้งแต่ build นี้เริ่ม build นี้จะไม่หยุด process ไม่ลบ container และไม่เทียบสภาพเครื่อง เพราะแยกไม่ออกว่าเป็นของ build ไหน ใน trace จะมีบรรทัด "Other builds ran beside this one"
+- ถ้ารันอยู่ตัวเดียว ทำครบเหมือนเดิม
+- ทางที่ operator ส่ง token ให้ (push window) ยังห้ามเปิดถ้ามี build อื่นรันด้วย เพราะ token จะอยู่ในไฟล์ที่ agent ตัวอื่นอ่านได้ ตอนนี้ไม่มีโปรเจกต์ไหนใช้ทางนี้ ทุก registry ไปทางตัวช่วย push
+- build ลูกค้าที่ push ไป GitLab project เดียวกันจะผลัดกันทีละตัว ตั้งแต่อ่านรายการ tag ก่อน push จนอ่านซ้ำหลัง push ใช้เวลาแค่ช่วง push
+
 **deploy ครั้งแรกต้อง `make migrate` ก่อน `make restart`** (migration `0011` สลับ unique index จากราย org เป็นราย project) · เทสว่าใช้ได้จริง: [test-scripts/concurrent-builds.md](./test-scripts/concurrent-builds.md)
 
 ---

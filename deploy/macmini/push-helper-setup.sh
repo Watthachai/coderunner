@@ -93,13 +93,6 @@ if sudo -u "$crn_user" test -w "$opt/crn-push" 2>/dev/null || sudo -u "$crn_user
 else
 	echo "$crn_user cannot change $opt: OK"
 fi
-# The helper refuses while an agent runs, so it must see other users' command lines.
-if sudo -u "$helper_user" /usr/bin/pgrep -f 'bin/crn-server' >/dev/null; then
-	echo "$helper_user sees CRN's processes by their command line: OK"
-else
-	echo "PROBLEM: $helper_user cannot see CRN's command lines, so it could not see an agent"
-	problems=$((problems + 1))
-fi
 answer=$(sudo -u "$crn_user" /usr/bin/sudo -n -u "$helper_user" "$opt/crn-push" push "$registry/fitt/not-served/crn-demo-x:v1" </dev/null 2>&1 || true)
 case "$answer" in
 *"not one this helper serves"*) echo "$crn_user runs crn-push as $helper_user, and it refuses another project: OK" ;;

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -82,19 +81,25 @@ func TestAProcessThatWillNotStopFailsTheBuild(t *testing.T) {
 func TestAContainerTheAgentLeftIsRemoved(t *testing.T) {
 	run := runPipelineWith(t, pipelineOpts{agent: func(a agentRun) {
 		change(t, a.spec.WorkDir)
-		f, err := os.OpenFile(os.Getenv("FAKE_CONTAINERS"), os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f.Close()
-		if _, err := f.WriteString("agent-container\n"); err != nil {
-			t.Fatal(err)
-		}
+		addContainer(t, "agent-container")
 	}})
 	released(t, run, "app.js", "changed")
 	before(t, run, "docker rm -f agent-container", "operator: ready for a token")
 	if indexOf(run.events, "docker rm -f old-container") >= 0 {
 		t.Errorf("it removed a container older than the agent:\n%s", events(run))
+	}
+}
+
+// addContainer has the fake docker list one more container.
+func addContainer(t *testing.T, id string) {
+	t.Helper()
+	f, err := os.OpenFile(os.Getenv("FAKE_CONTAINERS"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(id + "\n"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -300,61 +305,82 @@ func TestAFailedPushTellsTheOperatorToRevoke(t *testing.T) {
 	}
 }
 
-// With other builds running, another agent could read the token. The pause waits for them,
-// keeps new ones from starting, and gives their slots back afterwards.
-func TestThePauseWaitsForOtherBuildsAndHoldsNewOnesBack(t *testing.T) {
+// Another build running is no reason to wait: the build goes on to its push at once. What
+// is on the machine may be the other build's, so this build stops no process, removes no
+// container and compares nothing, and says so.
+func TestAGatedBuildDoesNotWaitForOtherBuilds(t *testing.T) {
 	other := make(chan struct{})
-	var m *manager
-	var freed atomic.Bool
-	sweptAfterOther, heldAtToken := false, false
+	defer close(other)
+	swept := false
 	run := runPipelineWith(t, pipelineOpts{
+		helper:        true,
 		maxConcurrent: 3,
 		otherBuild:    other,
-		manager:       func(got *manager) { m = got },
-		agent: func(a agentRun) {
-			change(t, a.spec.WorkDir)
-			time.AfterFunc(100*time.Millisecond, func() {
-				freed.Store(true)
-				close(other)
-			})
-		},
-		strays: func() ([]string, error) {
-			sweptAfterOther = freed.Load()
-			return nil, nil
-		},
-		credential: func(t *testing.T, path string) {
-			heldAtToken = len(m.slots) == cap(m.slots)
-			putCredential(t, path, goodCredential)
+		agent:         func(a agentRun) { change(t, a.spec.WorkDir); addContainer(t, "other-builds-container") },
+		strays:        func() ([]string, error) { swept = true; return nil, nil },
+		machine: func(look int) buildstep.MachineState {
+			if look > 1 {
+				return buildstep.MachineState{"program docker": "changed by the other build"}
+			}
+			return buildstep.MachineState{"program docker": "same"}
 		},
 	})
-	released(t, run, "app.js", "changed")
-	if !sweptAfterOther {
-		t.Error("it swept for strays while another build could still be running")
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
 	}
-	if !heldAtToken {
-		t.Error("the slots were not all held when the operator was asked for a token")
+	if swept {
+		t.Error("it stopped processes while another build was running")
 	}
-	if n := len(m.slots); n != 0 {
-		t.Errorf("%d slots still held after the build", n)
+	if indexOf(run.events, "docker rm -f other-builds-container") >= 0 {
+		t.Errorf("it removed a container that may be the other build's:\n%s", events(run))
+	}
+	raw, _ := json.Marshal(run.store.trace)
+	if !strings.Contains(string(raw), "other builds") {
+		t.Errorf("the trace does not say why nothing was stopped:\n%s", raw)
 	}
 }
 
-func TestABuildThatIsWaitedOnTooLongFails(t *testing.T) {
+// A build that ran and ended while this one's agent ran may have changed the machine too.
+func TestABuildThatCameAndWentMeanwhileIsNotThisBuildsChange(t *testing.T) {
+	var m *manager
+	run := runPipelineWith(t, pipelineOpts{
+		helper:        true,
+		maxConcurrent: 2,
+		manager:       func(got *manager) { m = got },
+		agent: func(a agentRun) {
+			change(t, a.spec.WorkDir)
+			m.slots <- struct{}{} // another build starts
+			m.builds.Add(1)
+			m.freeSlot() // and ends
+		},
+		machine: func(look int) buildstep.MachineState {
+			if look > 1 {
+				return buildstep.MachineState{"cron": "the other build's"}
+			}
+			return buildstep.MachineState{"cron": "before"}
+		},
+	})
+	if !hasStatus(run, "released") {
+		t.Fatalf("no released:\n%s\n%s", events(run), run.logs)
+	}
+}
+
+// The push window hands an operator's registry token to this build, in a file any agent on
+// the machine could read. With other builds beside it, it is never opened: no token exists
+// while another build's agent may run.
+func TestThePushWindowIsNotOpenedBesideOtherBuilds(t *testing.T) {
 	other := make(chan struct{})
 	defer close(other)
-	run := runPipelineWith(t, pipelineOpts{
-		maxConcurrent: 2,
-		otherBuild:    other,
-		noCredential:  true,
-		agent:         func(a agentRun) { change(t, a.spec.WorkDir) },
-	})
+	run := runPipelineWith(t, pipelineOpts{maxConcurrent: 2, otherBuild: other,
+		agent: func(a agentRun) { change(t, a.spec.WorkDir) }})
 	failedAndNeverReleased(t, run)
-	if !strings.Contains(failedMessage(run), "other builds") {
+	if indexOf(run.events, "operator: ready for a token") >= 0 {
+		t.Errorf("it asked for a token beside another build:\n%s", events(run))
+	}
+	if !strings.Contains(failedMessage(run), "token") {
 		t.Errorf("the failure does not say why: %s", failedMessage(run))
 	}
-	if head := run.head(t); head != run.seed {
-		t.Errorf("it committed while another agent could still be running: %s", head)
-	}
+	noRegistryWrite(t, run)
 }
 
 // --- the machine ------------------------------------------------------------------------

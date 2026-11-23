@@ -13,10 +13,8 @@ import (
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 )
 
-// A gated build takes every build slot before its push (holdBuilds). Two of them, each in
-// a slot and each waiting for the other's, waited for each other until one timed out: FITT
-// Billing #2 and AEC #6 on 12 Nov. So only one gated build runs at a time; the next stays
-// queued, holding nothing, until it ends.
+// Builds of different projects run side by side, up to the slot cap, whatever lane their
+// images go to. Since 23 Nov no build waits for another's: not to start, not to push.
 
 // queueStore is the queue as dispatch reads it: queued jobs in order, a lock per project.
 type queueStore struct {
@@ -57,7 +55,7 @@ func (s *queueStore) AcquireProjectLock(_ context.Context, project uuid.UUID) (f
 	}, nil
 }
 
-func TestTwoGatedBuildsNeverWaitForEachOther(t *testing.T) {
+func TestTwoGatedBuildsRunSideBySide(t *testing.T) {
 	store := &queueStore{locked: map[uuid.UUID]bool{}}
 	org := uuid.New()
 	for i := 0; i < 2; i++ {
@@ -67,42 +65,27 @@ func TestTwoGatedBuildsNeverWaitForEachOther(t *testing.T) {
 		store:              store,
 		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 		slots:              make(chan struct{}, 2),
-		gateLane:           make(chan struct{}, 1),
 		imageRegistry:      "172.168.1.234:5050/fitt/ftcdv-uat",
 		pushWindowProjects: map[string]bool{"fitt/ftcdv-uat": true},
-		pushCredentialWait: 500 * time.Millisecond,
-		hist:               map[uuid.UUID][]domain.BuildEventMsg{},
-		subs:               map[uuid.UUID][]*subscriber{},
 	}
-	var mu sync.Mutex
-	var results []error
-	done := make(chan struct{}, 2)
+	started := make(chan uuid.UUID, 2)
+	release := make(chan struct{})
+	defer close(release)
 	m.runJobFn = func(ctx context.Context, job *domain.Job) {
-		gate := &jobGate{}
-		err := m.holdBuilds(ctx, job, gate)
-		time.Sleep(20 * time.Millisecond) // the push
-		m.releaseBuilds(gate)
-		mu.Lock()
-		results = append(results, err)
-		mu.Unlock()
-		done <- struct{}{}
+		started <- job.ID
+		<-release
 	}
 	m.dispatch(context.Background())
 	for i := 0; i < 2; i++ {
 		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("only %d of 2 builds ended", i)
-		}
-	}
-	for _, err := range results {
-		if err != nil {
-			t.Errorf("a gated build waited for the other: %v", err)
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d of 2 gated builds started", i)
 		}
 	}
 }
 
-// A build that is not gated is not held back by the lane.
+// A build that is not gated runs beside a gated one.
 func TestAnUngatedBuildRunsBesideAGatedOne(t *testing.T) {
 	store := &queueStore{locked: map[uuid.UUID]bool{}}
 	gated := &domain.Job{ID: uuid.New(), ProjectID: uuid.New(), OrgID: uuid.New(), BuildNo: 1, Status: domain.JobQueued}
@@ -112,7 +95,6 @@ func TestAnUngatedBuildRunsBesideAGatedOne(t *testing.T) {
 		store:              store,
 		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 		slots:              make(chan struct{}, 2),
-		gateLane:           make(chan struct{}, 1),
 		imageRegistry:      "172.168.1.234:5050/fitt/demos",
 		orgRegistries:      map[uuid.UUID]string{gated.OrgID: "172.168.1.234:5050/fitt/ftcdv-uat"},
 		pushWindowProjects: map[string]bool{"fitt/ftcdv-uat": true},

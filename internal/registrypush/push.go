@@ -3,8 +3,9 @@
 //
 // CRN runs it through sudo as a user of its own (deploy/macmini/auto-push-setup.sh). CRN's OS
 // user is also the agents' user, so whatever reaches the helper is treated as if an agent
-// wrote it: the image name, the tag and the layout are all checked, it refuses while an agent
-// runs, and it never writes a tag the registry already has. The worst a caller can do is add
+// wrote it: the image name, the tag and the layout are all checked, and it never writes a tag the
+// registry already has. Since 23 Nov 2026 it pushes while agents run: builds no longer wait
+// for each other, so an agent on the machine could call it too. The worst a caller can do is add
 // a new tag of a CRN image of a project the helper serves; no existing image is ever changed.
 package registrypush
 
@@ -23,7 +24,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -40,9 +40,6 @@ const (
 	maxMetadata = 1 << 20
 	maxConfig   = 4 << 20
 )
-
-// AgentRunning is how a refusal for a running agent begins: a caller may try again later.
-const AgentRunning = "an agent is running"
 
 // Config is root's: which registry, each served project's login, where the log is.
 type Config struct {
@@ -64,10 +61,8 @@ type Result struct {
 
 var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*(?:/[a-z0-9][a-z0-9._-]*)+$`)
 
-// Deps is what the helper asks of the machine.
+// Deps is what the helper is told about who runs it.
 type Deps struct {
-	// AgentSessions lists every agent process on the machine.
-	AgentSessions func() ([]string, error)
 	// Caller is who ran the helper (sudo's SUDO_USER), for the log.
 	Caller string
 }
@@ -166,13 +161,6 @@ func push(ctx context.Context, cfg Config, ref string, layout io.Reader, deps De
 	t, err := parseTarget(cfg, ref)
 	if err != nil {
 		return "", "", refused(err)
-	}
-	agents, err := deps.AgentSessions()
-	if err != nil {
-		return "", "", refused(fmt.Errorf("cannot tell whether an agent runs: %w", err))
-	}
-	if len(agents) > 0 {
-		return "", "", refused(fmt.Errorf("%s (%s): CRN pushes only once every agent has stopped", AgentRunning, strings.Join(agents, "; ")))
 	}
 	user, password, err := readLogin(cfg, t.project)
 	if err != nil {
@@ -587,36 +575,4 @@ func (c *client) putManifest(ctx context.Context, t target, img *unpacked) (stri
 		return "", fmt.Errorf("the registry says %s is %s, the image is %s", t.ref, got, img.digest)
 	}
 	return img.digest, nil
-}
-
-// AgentSessions is every agent process on this machine, as push-window.sh looks for them.
-func AgentSessions() ([]string, error) {
-	out, err := exec.Command("/usr/bin/pgrep", "-fl", `(^|/)(claude|codex|gemini|aider|opencode|cursor-agent|goose|amp)( |$)|claude-code`).Output()
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return agentsIn(string(out)), nil
-}
-
-// chromeBridge is Claude's browser bridge exactly as Chrome starts it, as pgrep -fl prints it.
-// It runs no model and lives as long as Chrome does; anything more on the line is not it.
-var chromeBridge = regexp.MustCompile(`^[0-9]+ ([^ ]*/)?claude --chrome-native-host$`)
-
-// agentsIn is pgrep -fl's answer without Chrome's bridge, each line cut to 80 characters.
-func agentsIn(out string) []string {
-	var sessions []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" || chromeBridge.MatchString(line) {
-			continue
-		}
-		if len(line) > 80 {
-			line = line[:80]
-		}
-		sessions = append(sessions, line)
-	}
-	return sessions
 }

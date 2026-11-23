@@ -20,7 +20,7 @@ import (
 // is one it can use. So the token does not exist while an agent runs:
 //
 //  1. the agent's process group dies with it (domain.RunSpec.StopGroupOnExit);
-//  2. the build waits for every other build, and keeps new ones from starting;
+//  2. other builds go on: since 23 Nov 2026 none is waited for and none is held back;
 //  3. it stops what the agent left, and compares the machine with how it was before;
 //  4. it commits, pushes to git, and builds the image, none of which needs the token;
 //  5. it stops strays and compares again, reads every tag in the GitLab project, writes READY
@@ -30,7 +30,12 @@ import (
 //     token can no longer push, and reads every tag again: only this build's tag is new;
 //  8. only then does the candidate gate run, and "released" can follow.
 //
-// A failure at any step is a failed build, and a watchdog limits steps 6 and 7.
+// A failure at any step is a failed build, and a watchdog limits steps 6 and 7. Other builds
+// run beside this one and are not waited for. When one has (sharedMachine), step 3 stops and
+// compares nothing, since what it finds may be the other build's, and the window is not
+// opened: no token may exist while another build's agent may run. Gated pushes take turns
+// at the registry (registryTurnFor), so the tags read in 5 and 7 are this build's alone to
+// change.
 const (
 	// buildBudget ends a listed build before Fittcore's 4 hours from dispatch to a final event.
 	buildBudget = 3*time.Hour + 45*time.Minute
@@ -94,31 +99,36 @@ func (m *manager) refuseEarlyCredential(job *domain.Job) error {
 	return nil
 }
 
-// holdBuilds takes every build slot but the one this build runs in, waiting for the builds
-// that hold them. No other agent runs until releaseBuilds.
-func (m *manager) holdBuilds(ctx context.Context, job *domain.Job, gate *jobGate) error {
-	if gate.held >= cap(m.slots)-1 {
+// checkMachine stops what the agent left and compares the machine with how it was before,
+// when this build had the machine to itself. Otherwise it says why it does neither.
+func (m *manager) checkMachine(ctx context.Context, job *domain.Job, gate *jobGate, log *slog.Logger) error {
+	if m.sharedMachine(gate) {
+		m.publishText(job.ID, sharedMachineNote)
 		return nil
 	}
-	m.publishText(job.ID, "Waiting for other builds to finish; none may run while this build's push is open.")
-	timeout := time.NewTimer(m.pushWait())
-	defer timeout.Stop()
-	for gate.held < cap(m.slots)-1 {
-		select {
-		case m.slots <- struct{}{}:
-			gate.held++
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timeout.C:
-			return fmt.Errorf("other builds were still running after %s", m.pushWait())
-		}
+	if _, err := m.stopStrays(ctx, gate.agentStarted, log); err != nil {
+		return err
 	}
-	return nil
+	return m.compareMachine(ctx, gate)
 }
 
-func (m *manager) releaseBuilds(gate *jobGate) {
-	for ; gate.held > 0; gate.held-- {
-		m.freeSlot()
+// registryTurnFor waits until no other gated build is between its first and last read of
+// the registry's tags, and returns what ends this build's turn.
+func (m *manager) registryTurnFor(ctx context.Context, job *domain.Job) (func(), error) {
+	if m.registryTurn == nil {
+		return func() {}, nil
+	}
+	select {
+	case m.registryTurn <- struct{}{}:
+		return func() { <-m.registryTurn }, nil
+	default:
+	}
+	m.publishText(job.ID, "Another build is pushing to the registry; this one pushes when it is done.")
+	select {
+	case m.registryTurn <- struct{}{}:
+		return func() { <-m.registryTurn }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -135,10 +145,11 @@ func (m *manager) compareMachine(ctx context.Context, gate *jobGate) error {
 }
 
 // stopAgent ends all the agent left, before anything is committed, and fails if it changed
-// the machine.
+// the machine: when this build had the machine to itself (sharedMachine).
 func (m *manager) stopAgent(ctx context.Context, job *domain.Job, gate *jobGate, log *slog.Logger) error {
-	if err := m.holdBuilds(ctx, job, gate); err != nil {
-		return fmt.Errorf("candidate acceptance: %w", err)
+	if m.sharedMachine(gate) {
+		m.publishText(job.ID, sharedMachineNote)
+		return nil
 	}
 	processes, err := m.stopStrays(ctx, gate.agentStarted, log)
 	if err != nil {
@@ -179,8 +190,11 @@ func (m *manager) openPushWindow(ctx context.Context, job *domain.Job, gate *job
 	if err != nil {
 		return nil, err
 	}
-	if err := m.holdBuilds(ctx, job, gate); err != nil {
-		return nil, err
+	// The token lands in a file any agent on the machine can read, and builds no longer
+	// wait for each other: so the window opens only for a build that ran alone.
+	if m.sharedMachine(gate) {
+		m.publishText(job.ID, "Other builds ran beside this one, so no registry token is asked for: one of their agents could read it. Push this project through CRN's push helper instead.")
+		return nil, errors.New("other builds ran beside this one, and the push window hands out a registry token their agents could read; nothing was pushed")
 	}
 	dir := m.credentialDirOf(job)
 	path := filepath.Join(dir, pushCredentialFile)
@@ -189,10 +203,7 @@ func (m *manager) openPushWindow(ctx context.Context, job *domain.Job, gate *job
 		m.publishText(job.ID, "A push credential appeared before this build asked for one: revoke that token.")
 		return nil, errors.New("a push credential appeared before this build asked for one")
 	}
-	if _, err := m.stopStrays(ctx, gate.agentStarted, log); err != nil {
-		return nil, err
-	}
-	if err := m.compareMachine(ctx, gate); err != nil {
+	if err := m.checkMachine(ctx, job, gate, log); err != nil {
 		return nil, err
 	}
 	tags, err := m.readRegistryTags(ctx, ref)
@@ -288,7 +299,6 @@ func (m *manager) closePushWindow(ctx context.Context, job *domain.Job, gate *jo
 		m.publishText(job.ID, "The registry holds something this build did not push: stop this lane until both sides have talked.")
 		return err
 	}
-	m.releaseBuilds(gate)
 	return nil
 }
 
@@ -322,6 +332,12 @@ func (m *manager) waitForRevoke(window *pushWindow, log *slog.Logger) error {
 
 // pushThroughWindow is steps 5 to 7. It returns the digest only when all of them held.
 func (m *manager) pushThroughWindow(ctx context.Context, job *domain.Job, gate *jobGate, appTag string, log *slog.Logger) (string, error) {
+	endTurn, err := m.registryTurnFor(ctx, job)
+	if err != nil {
+		buildstep.RemoveLocalImage(context.WithoutCancel(ctx), appTag, log)
+		return "", fmt.Errorf("candidate acceptance: %w", err)
+	}
+	defer endTurn()
 	window, err := m.openPushWindow(ctx, job, gate, appTag, log)
 	if err != nil {
 		buildstep.RemoveLocalImage(context.WithoutCancel(ctx), appTag, log)
