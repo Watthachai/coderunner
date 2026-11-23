@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -189,5 +190,61 @@ func TestReadDBModeAndItsLabel(t *testing.T) {
 	}
 	if _, err := ReadDBMode(dir); err == nil {
 		t.Error("an unknown database_mode was accepted")
+	}
+}
+
+// The release checker refuses an app that reads a variable crn.runtime.json does not
+// declare, and the route CRN injects is the app's code. OKR build 16 (23 Nov 2026) was
+// refused for FITT_TICKET_WINDOW after 70a2ef0 put it in the route: every variable the
+// route reads is CRN's to declare, as FITT_FEEDBACK_URL is. Runs the checker's own scan.
+func TestTheReleaseCheckFindsEveryVariableTheWidgetReadsDeclared(t *testing.T) {
+	for _, appEnv := range []string{
+		`[]`,
+		`[{"name": "PLATFORM_FITTCORE_ORIGIN", "required": "always", "note": "the app's own"}]`,
+	} {
+		route := feedbackRouteFor(t, "layout.tsx")
+		dir := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(route))))
+		writeRuntime(t, dir, `{"env": `+appEnv+`}`)
+		if err := FinalizeRuntime(dir); err != nil {
+			t.Fatal(err)
+		}
+		checker := filepath.Join(t.TempDir(), "verify-delivery.mjs")
+		if err := os.WriteFile(checker, []byte(deliveryVerifier), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// The app dir goes first: the checker runs itself when process.argv[1] is its path.
+		script := `const v = await import(process.argv[2]);
+const fs = await import('node:fs/promises');
+const runtime = JSON.parse(await fs.readFile(process.argv[1] + '/crn.runtime.json', 'utf8'));
+v.validateRuntime(runtime, await v.appEnvNames(process.argv[1]), '');
+console.log(JSON.stringify(runtime.env));`
+		out, err := exec.Command("node", "--input-type=module", "-e", script, dir, checker).CombinedOutput()
+		if err != nil {
+			t.Fatalf("app env %s: the release check refuses it: %s", appEnv, out)
+		}
+		if appEnv != `[]` && !strings.Contains(string(out), `"PLATFORM_FITTCORE_ORIGIN","required":"always","note":"the app's own"`) {
+			t.Fatalf("the app's own declaration should stay as it wrote it: %s", out)
+		}
+	}
+}
+
+// Without the widget the entries CRN wrote for it go; an app's own
+// PLATFORM_FITTCORE_ORIGIN stays.
+func TestFinalizeRuntimeTakesOutOnlyWhatItAddedForTheWidget(t *testing.T) {
+	added := `{"env": [
+	  {"name": "FITT_TICKET_WINDOW", "required": "no"},
+	  {"name": "PLATFORM_FITTCORE_ORIGIN", "required": "no", "note": "the company fittcore; the feedback widget's ticket window needs it"}
+	]}`
+	own := `{"env": [{"name": "PLATFORM_FITTCORE_ORIGIN", "required": "no"}]}`
+	for body, keep := range map[string]bool{added: false, own: true} {
+		dir := t.TempDir()
+		writeRuntime(t, dir, body)
+		if err := FinalizeRuntime(dir); err != nil {
+			t.Fatal(err)
+		}
+		got := readFile(t, filepath.Join(dir, "crn.runtime.json"))
+		if strings.Contains(got, "FITT_TICKET_WINDOW") || strings.Contains(got, `"PLATFORM_FITTCORE_ORIGIN"`) != keep {
+			t.Fatalf("from %s got\n%s", body, got)
+		}
 	}
 }

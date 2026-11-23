@@ -44,12 +44,22 @@ type RuntimeEnv struct {
 	Note      string `json:"note,omitempty"`
 }
 
-// feedbackEnv is the variable the injected 💬 widget's route reads.
-var feedbackEnv = RuntimeEnv{Name: "FITT_FEEDBACK_URL", Required: "no", Note: "where the feedback widget sends reports"}
+// widgetEnv is what the injected widget's route reads. CRN writes these entries
+// itself, in place of any the app wrote. Until 23 Nov 2026 only FITT_FEEDBACK_URL
+// was here, and the release check refused OKR build 16 for FITT_TICKET_WINDOW.
+var widgetEnv = []RuntimeEnv{
+	{Name: "FITT_FEEDBACK_URL", Required: "no", Note: "where the feedback widget sends reports"},
+	{Name: "FITT_TICKET_WINDOW", Required: "no", Note: "1 shows the feedback widget's ticket window; it also needs FITT_FEEDBACK_URL and PLATFORM_FITTCORE_ORIGIN on the same origin"},
+}
+
+// fittcoreOriginEnv is read by the route too, but an app that signs in at fittcore
+// reads it itself and declares it as it needs it: CRN keeps that entry, adds this
+// one only when the app has none, and takes out only this one.
+var fittcoreOriginEnv = RuntimeEnv{Name: "PLATFORM_FITTCORE_ORIGIN", Required: "no", Note: "the company fittcore; the feedback widget's ticket window needs it"}
 
 // FinalizeRuntime rewrites the app's crn.runtime.json with the fields CRN owns
 // (contract, first migration, port, health, volumes, writable) and the widget's
-// variable when the widget is in the app, keeping the env the app declared. Run
+// variables when the widget is in the app, keeping the env the app declared. Run
 // it after the widget is injected and before the release check, which then
 // checks the file the image will carry. A missing or malformed file fails.
 func FinalizeRuntime(dir string) error {
@@ -79,22 +89,40 @@ func FinalizeRuntime(dir string) error {
 	rt.Volumes = []string{"/data/uploads"}
 	rt.Writable = []string{"/tmp", "/data/uploads"}
 
-	env := make([]RuntimeEnv, 0, len(rt.Env)+1)
-	for _, e := range rt.Env {
-		if e.Name != feedbackEnv.Name {
-			env = append(env, e)
-		}
-	}
-	if HasFeedbackWidget(dir) {
-		env = append(env, feedbackEnv)
-	}
-	rt.Env = env
+	rt.Env = withWidgetEnv(rt.Env, HasFeedbackWidget(dir))
 
 	out, err := json.MarshalIndent(rt, "", "  ")
 	if err != nil {
 		return fmt.Errorf("%s: %w", RuntimeFile, err)
 	}
 	return os.WriteFile(path, append(out, '\n'), 0o644)
+}
+
+// withWidgetEnv is the app's env with the widget's variables when the widget is in
+// the app (widget true) and without them when it is not.
+func withWidgetEnv(appEnv []RuntimeEnv, widget bool) []RuntimeEnv {
+	owned := map[string]bool{}
+	for _, e := range widgetEnv {
+		owned[e.Name] = true
+	}
+	env := make([]RuntimeEnv, 0, len(appEnv)+len(widgetEnv)+1)
+	hasOrigin := false
+	for _, e := range appEnv {
+		switch {
+		case owned[e.Name]:
+		case e == fittcoreOriginEnv && !widget:
+		default:
+			hasOrigin = hasOrigin || e.Name == fittcoreOriginEnv.Name
+			env = append(env, e)
+		}
+	}
+	if !widget {
+		return env
+	}
+	if !hasOrigin {
+		env = append(env, fittcoreOriginEnv)
+	}
+	return append(env, widgetEnv...)
 }
 
 // firstMigration is the earliest Prisma migration directory ("" when none).
