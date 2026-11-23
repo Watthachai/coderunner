@@ -296,6 +296,12 @@
     ".askgo{background:" + GREEN + ";color:#fff}.askgo:disabled{opacity:.5;cursor:default}" +
     ".mic{background:#f2f2f2}.mic.on{background:#ff4b4b;color:#fff;animation:fittpulse 1s infinite}" +
     "@keyframes fittpulse{50%{box-shadow:0 0 0 6px rgba(255,75,75,.2)}}" +
+    ".atts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}.atts:empty{display:none}" +
+    ".att{display:flex;align-items:center;gap:4px;max-width:100%;border:1px solid #e5e5e5;border-radius:999px;padding:2px 4px 2px 8px;font-size:11px;color:#555}" +
+    ".att span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}" +
+    ".att img{width:20px;height:20px;object-fit:cover;border-radius:4px}" +
+    ".att button{border:none;background:none;color:#ff4b4b;cursor:pointer;font-weight:800;padding:0 4px}" +
+    ".clip{flex:none;width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;font-size:15px;display:grid;place-items:center;background:#f2f2f2}" +
     ".self{display:block;margin:0 0 10px auto;border:none;background:none;padding:0;color:#0b7fb5;font-weight:700;cursor:pointer;font-size:12px;text-decoration:underline}" +
     ".notewrap{position:relative}.notewrap textarea{padding-right:42px}.notewrap .mic{position:absolute;right:6px;bottom:10px}" +
     // 🐞 error surface — a second FAB that only appears when errors are detected.
@@ -386,8 +392,10 @@
     "<button class='fab' title='Send feedback'>💬</button>" +
     "<div class='panel' hidden>" +
     "<h3>💬 บอกสิ่งที่อยากให้แก้</h3>" +
-    "<div class='chat' hidden><div class='log' aria-live='polite'></div>" +
-    "<div class='ask'><input class='askin' maxlength='2000' placeholder='พิมพ์หรือกด 🎤 พูดก็ได้'>" +
+    "<div class='chat' hidden><div class='log' aria-live='polite'></div><div class='atts'></div>" +
+    "<div class='ask'><button class='clip' title='แนบรูปหรือเอกสาร' aria-label='แนบรูปหรือเอกสาร'>📎</button>" +
+    "<input class='filein' type='file' multiple hidden accept='image/png,image/jpeg,image/webp,application/pdf,text/plain,text/csv,.pdf,.txt,.csv'>" +
+    "<input class='askin' maxlength='2000' placeholder='พิมพ์ กด 🎤 พูด หรือวางรูปที่แคปไว้'>" +
     "<button class='mic askmic' hidden title='พูดแทนพิมพ์' aria-label='พูดแทนพิมพ์'>🎤</button>" +
     "<button class='askgo' title='ส่งข้อความ' aria-label='ส่งข้อความ'>➤</button></div>" +
     "<button class='self'>เขียนคำขอเอง</button></div>" +
@@ -1066,7 +1074,9 @@
   var fhead = root.querySelector(".fhead");
   var ftail = root.querySelector(".ftail");
   var noteLbl = root.querySelector(".notelbl");
-  var ai = { on: false, messages: [], busy: false };
+  var ai = { on: false, messages: [], busy: false, files: [] };
+  var attsEl = root.querySelector(".atts");
+  var fileIn = root.querySelector(".filein");
   var GREETING = "อยากให้แก้อะไรในหน้านี้ เล่าได้เลยครับ จะพิมพ์หรือกด 🎤 พูดก็ได้ ถ้าเป็นจุดบนหน้า กด 📍 ปักไว้ได้";
 
   function assistCall(body) {
@@ -1094,6 +1104,8 @@
   }
   function startChat() {
     ai.messages = [];
+    ai.files = [];
+    renderAtts();
     logEl.textContent = "";
     say("bot", GREETING);
     chatMode(true);
@@ -1123,12 +1135,15 @@
     ai.busy = true;
     askGo.disabled = true;
     var wait = say("note", "กำลังคิด…");
-    assistCall({
-      messages: ai.messages.slice(-20),
-      context: {
-        page: location.pathname,
-        pins: pins.map(function (p) { return [p.label, p.note].filter(Boolean).join(" — "); }),
-      },
+    Promise.all(shots).then(function () {
+      return assistCall({
+        messages: ai.messages.slice(-20),
+        context: {
+          page: location.pathname,
+          pins: pins.map(function (p) { return [p.label, p.note].filter(Boolean).join(" — "); }),
+        },
+        files: chatFiles(),
+      });
     }).then(function (r) {
       wait.remove();
       if (r.status === 200 && typeof r.data.reply === "string") {
@@ -1145,6 +1160,100 @@
       askIn.focus();
     });
   }
+  // --- 📎 pictures and documents in the chat ------------------------------------
+  // The AI reads what the customer attaches, with the page's crops and pins. Pictures
+  // also go to the team in the report (pinsFromChat); a document the AI reads, and its
+  // draft says what the team needs from it.
+  var ATTACH_TYPES = ["image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain", "text/csv"];
+  var ATTACH_MAX = 9 * 1024 * 1024; // everything the AI gets in one turn, before base64
+  function attachedSize() {
+    var n = 0;
+    ai.files.forEach(function (f) { n += f.size; });
+    return n;
+  }
+  function attach(file) {
+    var name = (file.name || "รูปที่วาง.png").slice(0, 200);
+    var type = file.type || (/\.csv$/i.test(name) ? "text/csv" : /\.txt$/i.test(name) ? "text/plain" : "");
+    if (/\.(docx?|xlsx?|pptx?)$/i.test(name)) { say("note", "ไฟล์ Word, Excel หรือ PowerPoint ให้บันทึกเป็น PDF ก่อน แล้วแนบใหม่นะครับ"); return; }
+    if (ATTACH_TYPES.indexOf(type) < 0) { say("note", "แนบได้เฉพาะรูป, PDF หรือไฟล์ข้อความครับ"); return; }
+    if (ai.files.length >= 5) { say("note", "แนบได้ไม่เกิน 5 ไฟล์ครับ"); return; }
+    if (attachedSize() + file.size > ATTACH_MAX) { say("note", "ไฟล์ใหญ่เกินไป แนบรวมกันได้ไม่เกิน 9 MB ครับ"); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var url = String(reader.result);
+      ai.files.push({ name: name, type: type, data: url.slice(url.indexOf(",") + 1), size: file.size,
+        url: type.indexOf("image/") === 0 ? url : "" });
+      renderAtts();
+    };
+    reader.readAsDataURL(file);
+  }
+  function renderAtts() {
+    attsEl.textContent = "";
+    ai.files.forEach(function (f, i) {
+      var chip = document.createElement("div");
+      chip.className = "att";
+      if (f.url) { var img = document.createElement("img"); img.src = f.url; img.alt = ""; chip.appendChild(img); }
+      var label = document.createElement("span");
+      label.textContent = (f.url ? "" : "📄 ") + f.name;
+      chip.appendChild(label);
+      var x = document.createElement("button");
+      x.textContent = "✕";
+      x.title = "เอาออก";
+      x.addEventListener("click", function () { ai.files.splice(i, 1); renderAtts(); });
+      chip.appendChild(x);
+      attsEl.appendChild(chip);
+    });
+  }
+  // What the AI gets: the customer's files, then the pictures of the page's pins and
+  // crops while they fit in the same budget.
+  function chatFiles() {
+    var files = ai.files.map(function (f) { return { name: f.name, type: f.type, data: f.data }; });
+    var room = ATTACH_MAX - attachedSize();
+    pins.forEach(function (p, i) {
+      var shot = p.region_shot || "";
+      var data = shot.slice(shot.indexOf(",") + 1);
+      if (!shot || files.length >= 10 || data.length * 3 / 4 > room) return;
+      room -= data.length * 3 / 4;
+      files.push({ name: "จุดที่ " + (i + 1) + ".png", type: "image/png", data: data });
+    });
+    return files;
+  }
+  // A picture as the payload's pins carry them: PNG, its longest side at most 1600px.
+  function toPNG(url) {
+    return new Promise(function (done) {
+      var img = new Image();
+      img.onload = function () {
+        var k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+        var c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.naturalWidth * k));
+        c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        done({ url: c.toDataURL("image/png"), w: c.width, h: c.height });
+      };
+      img.onerror = function () { done(null); };
+      img.src = url;
+    });
+  }
+  // The pictures attached in the chat, for the report.
+  function pinsFromChat() {
+    return Promise.all(ai.files.filter(function (f) { return f.url; }).map(function (f) {
+      return toPNG(f.url).then(function (p) {
+        return p && { selector: "region", label: "รูปที่แนบ: " + f.name, note: "", box: { x: 0, y: 0, w: p.w, h: p.h }, region_shot: p.url };
+      });
+    })).then(function (list) { return list.filter(Boolean); });
+  }
+  root.querySelector(".clip").addEventListener("click", function () { fileIn.click(); });
+  fileIn.addEventListener("change", function () {
+    Array.prototype.forEach.call(fileIn.files || [], attach);
+    fileIn.value = "";
+  });
+  // A screenshot copied to the clipboard is pasted straight into the chat.
+  askIn.addEventListener("paste", function (e) {
+    var files = e.clipboardData && e.clipboardData.files;
+    if (!files || !files.length) return;
+    e.preventDefault();
+    Array.prototype.forEach.call(files, attach);
+  });
   askGo.addEventListener("click", ask);
   askIn.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); ask(); }
@@ -1376,7 +1485,8 @@
     sendBtn.disabled = true;
     setStatus("กำลังส่ง…", "");
     Promise.all(shots)
-      .then(function () {
+      .then(pinsFromChat)
+      .then(function (fromChat) {
         var body = {
           project_id: PROJECT,
           category: category,
@@ -1385,7 +1495,7 @@
           page_url: location.href,
           reporter: "",
           payload: {
-            pins: pins,
+            pins: pins.concat(fromChat),
             full_shot: "",
             viewport: { w: window.innerWidth, h: window.innerHeight },
             user_agent: navigator.userAgent,

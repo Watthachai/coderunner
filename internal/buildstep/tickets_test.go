@@ -182,6 +182,7 @@ type step struct {
 	Advance int    `json:"advance,omitempty"` // ms the clock moves first
 	Sweep   bool   `json:"sweep,omitempty"`   // run the route's periodic sweep
 	Poke    string `json:"poke,omitempty"`    // POST this URL (the fake's controls)
+	Pad     int    `json:"pad,omitempty"`     // each "@@PAD@@" in Body becomes this many "A"s, in node
 }
 
 type answer struct {
@@ -214,7 +215,8 @@ for (const s of JSON.parse(process.argv[2])) {
   if (s.sweep) { if (tick) await tick(); out.push({ status: 0, body: "", type: "", nosniff: "" }); continue; }
   if (s.poke) { await fetch(s.poke, { method: "POST" }); out.push({ status: 0, body: "", type: "", nosniff: "" }); continue; }
   const headers = s.cookie ? { cookie: s.cookie } : {};
-  const req = new Request("http://app.test" + s.target, { method: s.method, headers, body: s.method === "POST" ? (s.body || "") : undefined });
+  const sent = s.pad ? (s.body || "").split("@@PAD@@").join("A".repeat(s.pad)) : (s.body || "");
+  const req = new Request("http://app.test" + s.target, { method: s.method, headers, body: s.method === "POST" ? sent : undefined });
   const res = await mod[s.method](req);
   const body = Buffer.from(await res.arrayBuffer()).toString("utf8");
   out.push({ status: res.status, body, type: res.headers.get("content-type") || "", nosniff: res.headers.get("x-content-type-options") || "" });

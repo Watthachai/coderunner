@@ -130,10 +130,12 @@ func TestAssistRefusesWhatItCannotPassOn(t *testing.T) {
 		"a stranger's role":  {`{"messages":[{"role":"system","text":"x"}]}`, 400},
 		"a message too long": {`{"messages":[{"role":"user","text":"` + long + `"}]}`, 400},
 		"too many messages":  {`{"messages":[` + many + `]}`, 400},
-		"too large":          {`{"messages":[{"role":"user","text":"` + strings.Repeat("x", 70*1024) + `"}]}`, 413},
+		"too large":          {`{"messages":[{"role":"user","text":"@@PAD@@"}]}`, 413}, // 15 MB, made in node
 	} {
-		if got := runStepsEnv(t, route, env, assistStep(tc.body)); got[0].Status != tc.status {
-			t.Errorf("%s: got %d %s, want %d", name, got[0].Status, got[0].Body, tc.status)
+		s := assistStep(tc.body)
+		s.Pad = 15 * 1024 * 1024
+		if got := runStepsEnv(t, route, env, s); got[0].Status != tc.status {
+			t.Errorf("%s: got %d %.200s, want %d", name, got[0].Status, got[0].Body, tc.status)
 		}
 	}
 	if len(ai.got) != 0 {
@@ -212,6 +214,80 @@ func TestTheWidgetOffersTheAssistantOnlyWhereTheAppHasOne(t *testing.T) {
 // The 🎤 button turns speech into text, in Thai, where the browser can.
 func TestTheMicListensInThaiWhereTheBrowserCan(t *testing.T) {
 	for _, want := range []string{`window.SpeechRecognition || window.webkitSpeechRecognition`, `rec.lang = "th-TH"`} {
+		if !strings.Contains(feedbackWidgetJS, want) {
+			t.Errorf("the widget lacks %s", want)
+		}
+	}
+}
+
+// Customers explain with pictures — crops of the page, screenshots they paste — and
+// with documents ("อยากได้เมนูใหม่จากเอกสารไฟล์นี้"). The chat passes them to the AI, which
+// reads them, so the draft can say what the team needs from them.
+func TestAssistPassesTheCustomersFilesToTheAI(t *testing.T) {
+	ai := newFakeAI(t)
+	png := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
+	pdf := "JVBERi0xLjQKJcOkw7zDtsOfCg=="
+	body := `{"messages":[{"role":"user","text":"อยากได้เมนูใหม่จากเอกสารไฟล์นี้"}],"files":[` +
+		`{"name":"ตัวอย่าง.pdf","type":"application/pdf","data":"` + pdf + `"},` +
+		`{"name":"จุดที่ 1.png","type":"image/png","data":"` + png + `"}]}`
+	got := runStepsEnv(t, ticketRoute(t), map[string]string{"FITT_FEEDBACK_AI_URL": ai.URL}, assistStep(body))
+	if got[0].Status != 200 {
+		t.Fatalf("got %d %s", got[0].Status, got[0].Body)
+	}
+	files, _ := ai.got[0]["files"].([]any)
+	if len(files) != 2 {
+		t.Fatalf("the AI got %d files: %v", len(files), ai.got[0]["files"])
+	}
+	first, _ := files[0].(map[string]any)
+	if first["name"] != "ตัวอย่าง.pdf" || first["type"] != "application/pdf" || first["data"] != pdf {
+		t.Errorf("the document was not passed on as sent: %v", first)
+	}
+	if instr, _ := ai.got[0]["instructions"].(string); !strings.Contains(instr, "files") {
+		t.Errorf("the instructions do not tell the AI about the files:\n%s", instr)
+	}
+}
+
+func TestAssistTakesOnlyFilesTheAICanRead(t *testing.T) {
+	route := ticketRoute(t)
+	ai := newFakeAI(t)
+	env := map[string]string{"FITT_FEEDBACK_AI_URL": ai.URL}
+	msg := `"messages":[{"role":"user","text":"x"}]`
+	file := func(name, typ, data string) string {
+		return `{"name":"` + name + `","type":"` + typ + `","data":"` + data + `"}`
+	}
+	seven := strings.TrimSuffix(strings.Repeat(file("a.png", "image/png", "AAAA")+",", 11), ",")
+	big := "@@PAD@@" // 9 MB of base64, made in node
+	for name, tc := range map[string]struct {
+		body   string
+		status int
+	}{
+		"a Word file":     {`{` + msg + `,"files":[` + file("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "AAAA") + `]}`, 400},
+		"not base64":      {`{` + msg + `,"files":[` + file("a.png", "image/png", "<svg>") + `]}`, 400},
+		"no name":         {`{` + msg + `,"files":[` + file("", "image/png", "AAAA") + `]}`, 400},
+		"too many files":  {`{` + msg + `,"files":[` + seven + `]}`, 400},
+		"files too large": {`{` + msg + `,"files":[` + file("a.pdf", "application/pdf", big) + `,` + file("b.pdf", "application/pdf", big) + `]}`, 413},
+	} {
+		s := assistStep(tc.body)
+		s.Pad = 9 * 1024 * 1024
+		if got := runStepsEnv(t, route, env, s); got[0].Status != tc.status {
+			t.Errorf("%s: got %d %.200s, want %d", name, got[0].Status, got[0].Body, tc.status)
+		}
+	}
+	if len(ai.got) != 0 {
+		t.Errorf("the AI was asked %d times for requests the route refuses", len(ai.got))
+	}
+}
+
+// In the chat the customer attaches pictures and documents with 📎 or pastes a
+// screenshot; the AI gets them with the page's crops. Pictures also go to the team in
+// the report, as pins in the payload's own shape (PNG, longest side at most 1600px);
+// Word and Excel are asked for as PDF, which the AI reads.
+func TestTheChatTakesPicturesAndDocuments(t *testing.T) {
+	for _, want := range []string{
+		`type='file'`, `application/pdf`, `clipboardData`,
+		`files: chatFiles()`, `label: "รูปที่แนบ: " + f.name`, `selector: "region"`, `toDataURL("image/png")`, `1600 /`,
+		`บันทึกเป็น PDF`,
+	} {
 		if !strings.Contains(feedbackWidgetJS, want) {
 			t.Errorf("the widget lacks %s", want)
 		}

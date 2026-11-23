@@ -335,7 +335,11 @@ const feedbackRouteAssist = `
 // This server calls the AI, with FITT_FEEDBACK_AI_KEY when set: the browser sees
 // neither. The instructions are CRN's; the AI service passes them and the schema on to
 // its model. Without FITT_FEEDBACK_AI_URL the widget shows no assistant.
-const ASSIST_MAX_BYTES = 64 * 1024;
+// Pictures and documents the customer attaches go to the AI with every turn of the chat.
+const ASSIST_MAX_BYTES = 14 * 1024 * 1024;
+const ASSIST_FILES = 10;
+const ASSIST_FILE_TYPES = ["image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain", "text/csv"];
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const ASSIST_TIMEOUT_MS = 30000;
 const ASSIST_MESSAGES = 20;
 const ASSIST_TEXT = 2000;
@@ -352,6 +356,7 @@ const ASSIST_INSTRUCTIONS = [
   "draft.category is bug when something is broken, style when only the look changes, feature otherwise. draft.priority is high when the customer says it is urgent or blocks their work, low when they say it can wait, med otherwise.",
   "When the customer only asks how to use the app, answer briefly and set draft to null. Otherwise set draft to null until you know what to change.",
   "context.page is the page the customer is on; context.pins are the elements they pinned on it.",
+  "files are what the customer attached: pictures (crops of the page, screenshots) and documents. Read them fully. When a change comes from a file, put in draft.text what the team needs from it (for a new menu from a document: its fields, lists and steps) and name the file, since the team may not have the file itself.",
 ].join("\n");
 const ASSIST_SCHEMA = {
   type: "object",
@@ -372,6 +377,7 @@ const ASSIST_SCHEMA = {
 };
 
 «type AssistMessage = { role: string; text: string };
+type AssistFile = { name: string; type: string; data: string };
 »
 function assistAnswer(status«: number», body«: unknown») {
   return new Response(JSON.stringify(body), {
@@ -389,7 +395,7 @@ async function assist(request«: Request»)«: Promise<Response>» {
   const url = process.env.FITT_FEEDBACK_AI_URL;
   const raw = await readBody(request, ASSIST_MAX_BYTES);
   if (!raw) return assistAnswer(413, { error: "payload_too_large" });
-  let b«: { messages?: unknown; context?: unknown } | null» = null;
+  let b«: { messages?: unknown; context?: unknown; files?: unknown } | null» = null;
   try {
     b = JSON.parse(new TextDecoder().decode(raw));
   } catch {
@@ -403,6 +409,17 @@ async function assist(request«: Request»)«: Promise<Response>» {
     const text = m ? assistText(m.text, ASSIST_TEXT) : null;
     if (!m || (m.role !== "user" && m.role !== "assistant") || text === null) return assistAnswer(400, { error: "invalid_request" });
     messages.push({ role: m.role, text });
+  }
+  const files«: AssistFile[]» = [];
+  if (b.files !== undefined) {
+    if (!Array.isArray(b.files) || b.files.length > ASSIST_FILES) return assistAnswer(400, { error: "invalid_request" });
+    for (const f of b.files« as { name?: unknown; type?: unknown; data?: unknown }[]») {
+      const name = f ? assistText(f.name, 200) : null;
+      const ok = f && name && typeof f.type === "string" && ASSIST_FILE_TYPES.includes(f.type) &&
+        typeof f.data === "string" && f.data.length % 4 === 0 && BASE64.test(f.data);
+      if (!ok) return assistAnswer(400, { error: "invalid_request" });
+      files.push({ name: name« as string», type: f.type« as string», data: f.data« as string» });
+    }
   }
   // The widget asks with no messages, on every page, to learn whether to show the
   // assistant: answered plainly either way, so an app without one logs no error for it.
@@ -422,7 +439,7 @@ async function assist(request«: Request»)«: Promise<Response>» {
     res = await fetch(url, {
       method: "POST",
       headers,
-      body: JSON.stringify({ instructions: ASSIST_INSTRUCTIONS, messages, context, schema: ASSIST_SCHEMA }),
+      body: JSON.stringify({ instructions: ASSIST_INSTRUCTIONS, messages, context, files, schema: ASSIST_SCHEMA }),
       redirect: "manual",
       signal: AbortSignal.timeout(ASSIST_TIMEOUT_MS),
     });
