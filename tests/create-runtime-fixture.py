@@ -47,7 +47,7 @@ try { await bootstrapOnce(prisma,{
 }); } finally {await prisma.$disconnect();}
 ''',
 'app/layout.tsx': '''import type {ReactNode} from 'react';
-export default function Layout({children}:{children:ReactNode}){return <html lang="en"><body>{children}</body></html>;}''',
+export default function Layout({children}:{children:ReactNode}){return <html lang="en"><head><script src="/fitt-service-status.js" defer></script></head><body><div id="fitt-service-status" hidden suppressHydrationWarning/>{children}</body></html>;}''',
 'app/page.tsx': ''''use client';
 import {useEffect,useState} from 'react';
 export default function Page(){const [items,setItems]=useState<{id:string,name:string}[]>([]); const [name,setName]=useState('');
@@ -81,10 +81,16 @@ export const config={matcher:['/((?!_next/static|_next/image|favicon.ico).*)']};
  'app/api/health/route.ts':'''export const dynamic='force-dynamic';
 export function GET(){return Response.json({ok:true});}
 ''',
+ 'app/api/service-status/route.ts':'''import {serviceStatusNow} from '../../../lib/service-status.mjs';
+export const dynamic='force-dynamic';
+export async function GET(){return Response.json(await serviceStatusNow(),{headers:{'cache-control':'no-store'}});}
+''',
  'tsconfig.json': json.dumps({'compilerOptions':{'target':'ES2017','lib':['dom','dom.iterable','esnext'],'allowJs':True,'skipLibCheck':True,'strict':True,'noEmit':True,'esModuleInterop':True,'module':'esnext','moduleResolution':'bundler','resolveJsonModule':True,'isolatedModules':True,'jsx':'preserve','plugins':[{'name':'next'}]},'include':['next-env.d.ts','**/*.ts','**/*.tsx','.next/types/**/*.ts'],'exclude':['node_modules']})
 }
 for f,s in files.items():
  q=p/f;q.parent.mkdir(parents=True,exist_ok=True);q.write_text(s)
 shutil.copy(root/'cmd/server/skillassets/assets/bootstrap-once.mjs',p/'prisma/bootstrap-once.mjs')
 shutil.copy(root/'cmd/server/skillassets/assets/service-status.mjs',p/'lib/service-status.mjs')
+(p/'public').mkdir(exist_ok=True)
+shutil.copy(root/'cmd/server/skillassets/assets/fitt-service-status.js',p/'public/fitt-service-status.js')
 print(p)

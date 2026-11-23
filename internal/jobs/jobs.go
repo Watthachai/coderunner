@@ -789,6 +789,12 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		}
 	}
 
+	// The release check refuses a switch that knows no read-only (23 Nov 2026): an edit of
+	// an app that still carries version 1 is told so, not left to notice the skill changed.
+	if spec.Mode == "edit" && repoImage.Image == nil && buildstep.OlderServiceStatusSwitch(workDir) {
+		claudePrompt += switchUpgradePrompt
+	}
+
 	// The agent runs the app's own tests, so it works beside the widget this build ships:
 	// an edit that will carry the widget gets this CRN's before the agent starts, and again
 	// after (below), so what ships is CRN's whatever the agent did to it. OKR build 17
@@ -1564,6 +1570,12 @@ func editPrompt(change string) string {
 		everyItem +
 		"Apply this change and keep everything else working:\n\n" + change
 }
+
+// switchUpgradePrompt asks for service-status switch version 2, which knows read-only.
+const switchUpgradePrompt = "\n\nThis app carries an older FITT service-status switch, without read-only mode, and the release check now refuses it. " +
+	"As part of this build, follow the skill's references/service-status.md again: replace the app's copy of service-status.mjs with assets/service-status.mjs, " +
+	"pass the app's sign-in and sign-out paths as allowWrites in the proxy, add GET /api/service-status, and copy assets/fitt-service-status.js to public/ " +
+	"with its script tag and placeholder in the root layout. "
 
 // widgetPrompt tells the agent the widget in the app is CRN's, and what its route reads.
 func widgetPrompt() string {

@@ -13,7 +13,7 @@ A build is one unattended job with a bounded implement → verify → repair loo
 - `references/prisma-setup.md`: database constraints, migrations and first-install bootstrap. Required for persistent apps.
 - `references/auth-and-bootstrap.md`: authenticated sessions, permissions and the once-only initial administrator. Required when the app has login or private data.
 - `references/delivery-checks.md`: executable validation contract and bounded repair. Required on every build and edit.
-- `references/service-status.md`: the FITT Billing suspension switch and the health route. Required on every build and edit.
+- `references/service-status.md`: the FITT Billing switch (suspended and read-only), the health and service-status routes, and the read-only banner. Required on every build and edit.
 - `references/runs-anywhere.md`: one image for a customer's server and for Cloud Run — uploads, scheduled work, shared state, request length, declared environment (`crn.runtime.json`). Required on every build and edit.
 - `references/test-cases.md`: requirement-linked customer acceptance instructions. Keep results not actually executed blank.
 

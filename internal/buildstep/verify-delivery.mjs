@@ -54,11 +54,26 @@ export function unitFailures(result, cwd) {
 // The suspension switch (FITT Billing, references/service-status.md): the customer image
 // runs against this fake status server — started from the same image under node — and
 // must answer 503 on / while suspended, keep /api/health reachable, and work normally
-// while active. It listens on 8080 — not PORT, which the image sets to 3000 for Next.js.
+// while active. While read-only (23 Nov 2026) it must serve pages, refuse a write with 423
+// and the message, answer GET /api/service-status and load the banner on every page; the
+// fake tells only a switch that says it is version 2 that it is read-only. It listens on
+// 8080 — not PORT, which the image sets to 3000 for Next.js.
 export const SWITCH_TEST_KEY = 'fbl_crn-verify-switch';
 export const SWITCH_TEST_MESSAGE = 'CRN verify: service suspended';
-export const FAKE_STATUS_SERVER = `require('http').createServer((q,s)=>{const ok=q.headers.authorization==='Bearer ${SWITCH_TEST_KEY}';const st=q.url==='/suspended'?'suspended':'active';s.writeHead(ok?200:401,{'content-type':'application/json'});s.end(JSON.stringify(ok?{status:st,message:st==='suspended'?'${SWITCH_TEST_MESSAGE}':'',checkedAt:new Date().toISOString()}:{code:'unauthorized'}));}).listen(Number(process.env.CRN_FAKE_STATUS_PORT||8080));`;
-export function switchVerdict(wanted, { homeStatus, homeBody, healthStatus }) {
+export const SWITCH_TEST_READ_ONLY = 'CRN verify: read-only';
+export const SWITCH_TEST_WRITE = '/crn-verify-write';
+export const FAKE_STATUS_SERVER = `require('http').createServer((q,s)=>{const ok=q.headers.authorization==='Bearer ${SWITCH_TEST_KEY}';const v2=Number(q.headers['x-fitt-switch-version'])>=2;const st=q.url==='/suspended'?'suspended':q.url==='/read_only'&&v2?'read_only':'active';s.writeHead(ok?200:401,{'content-type':'application/json'});s.end(JSON.stringify(ok?{status:st,message:st==='suspended'?'${SWITCH_TEST_MESSAGE}':st==='read_only'?'${SWITCH_TEST_READ_ONLY}':'',checkedAt:new Date().toISOString()}:{code:'unauthorized'}));}).listen(Number(process.env.CRN_FAKE_STATUS_PORT||8080));`;
+export function switchVerdict(wanted, { homeStatus, homeBody, healthStatus, pageHtml = '', writeStatus, writeBody = '', statusRoute }) {
+  if (wanted === 'read_only') {
+    if (homeStatus >= 500) return `A read-only app must still serve its pages (got ${homeStatus} on /)`;
+    if (healthStatus === 423 || healthStatus >= 500) return `/api/health must stay reachable while the app is read-only (got ${healthStatus})`;
+    if (writeStatus !== 423) return `A read-only app must refuse POST ${SWITCH_TEST_WRITE} with 423 (got ${writeStatus}): copy the current assets/service-status.mjs (version 2) to lib/ and call it first in the request proxy`;
+    if (!writeBody.includes(SWITCH_TEST_READ_ONLY)) return 'The read-only refusal must carry the message from the status server';
+    if (statusRoute?.status !== 200 || statusRoute.body?.status !== 'read_only' || statusRoute.body?.message !== SWITCH_TEST_READ_ONLY) return 'GET /api/service-status must answer serviceStatusNow() from lib/service-status.mjs as JSON (references/service-status.md)';
+    if (!pageHtml.includes('/fitt-service-status.js')) return 'Every page must load /fitt-service-status.js, the read-only banner, from the root layout (references/service-status.md)';
+    if (!pageHtml.includes('id="fitt-service-status"')) return 'The root layout must render <div id="fitt-service-status" hidden suppressHydrationWarning /> first in <body>, for the read-only banner (references/service-status.md)';
+    return null;
+  }
   if (wanted === 'suspended') {
     if (homeStatus !== 503) return `A suspended app must answer 503 on / (got ${homeStatus}); wire assets/service-status.mjs into the request proxy`;
     if (!homeBody.includes(SWITCH_TEST_MESSAGE)) return 'The suspension page must show the message from the status server';
@@ -560,7 +575,7 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
     const statusName = `crn-verify-status-${suffix}`;
     containers.add(statusName);
     await run('start fake status server', 'docker', ['run', '-d', '--name', statusName, '--network', networkName, '--network-alias', 'fitt-status', '--entrypoint', 'node', imageName, '-e', FAKE_STATUS_SERVER]);
-    for (const wanted of ['suspended', 'active']) {
+    for (const wanted of ['suspended', 'read_only', 'active']) {
       const switchName = `crn-verify-switch-${suffix}`;
       containers.add(switchName);
       await run(`start customer image while ${wanted}`, 'docker', ['run', '-d', '--name', switchName, '--network', networkName, '-p', '127.0.0.1::3000', ...HARDENED_RUN, ...runtimeEnv, '-e', `FITT_STATUS_URL=http://fitt-status:8080/${wanted}`, '-e', `FITT_LICENSE_KEY=${SWITCH_TEST_KEY}`, imageName], containerEnv);
@@ -571,7 +586,17 @@ export async function verify(cwd = process.cwd(), dockerfile = fileURLToPath(new
           const home = await fetch(switchBase, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
           const homeBody = await home.text();
           const health = await fetch(`${switchBase}/api/health`, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
-          verdict = switchVerdict(wanted, { homeStatus: home.status, homeBody, healthStatus: health.status });
+          const seen = { homeStatus: home.status, homeBody, healthStatus: health.status };
+          if (wanted === 'read_only') {
+            // The page a visitor lands on, after any sign-in redirect, carries the banner.
+            seen.pageHtml = await (await fetch(switchBase, { signal: AbortSignal.timeout(5000) })).text();
+            const write = await fetch(`${switchBase}${SWITCH_TEST_WRITE}`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: '{}', redirect: 'manual', signal: AbortSignal.timeout(5000) });
+            seen.writeStatus = write.status;
+            seen.writeBody = await write.text();
+            const route = await fetch(`${switchBase}/api/service-status`, { redirect: 'manual', signal: AbortSignal.timeout(5000) });
+            seen.statusRoute = { status: route.status, body: await route.json().catch(() => null) };
+          }
+          verdict = switchVerdict(wanted, seen);
           if (!verdict) break;
         } catch {}
         await new Promise(r => setTimeout(r, 500));

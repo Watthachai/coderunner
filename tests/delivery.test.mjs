@@ -37,15 +37,16 @@ test('invalid input replaces a fabricated pass with an actual failed receipt',as
 // The suspension switch check (FITT Billing): the customer image runs against a fake
 // status server — itself, under node — and must obey it.
 import { spawn as spawnChild } from 'node:child_process';
-import { FAKE_STATUS_SERVER, SWITCH_TEST_KEY, SWITCH_TEST_MESSAGE, switchVerdict } from '../internal/buildstep/verify-delivery.mjs';
+import { FAKE_STATUS_SERVER, SWITCH_TEST_KEY, SWITCH_TEST_MESSAGE, SWITCH_TEST_READ_ONLY, switchVerdict } from '../internal/buildstep/verify-delivery.mjs';
 test('the fake status server answers like FITT Builder, and only to the test key', async () => {
   const port = String(20000 + Math.floor(Math.random() * 20000));
   // The customer image sets PORT=3000 for Next.js; the fake server must not take it.
   const child = spawnChild(process.execPath, ['-e', FAKE_STATUS_SERVER], { env: { PATH: process.env.PATH, PORT: '3000', CRN_FAKE_STATUS_PORT: port }, stdio: 'ignore' });
   try {
-    const ask = async (p, key = SWITCH_TEST_KEY) => {
+    const ask = async (p, key = SWITCH_TEST_KEY, version) => {
+      const headers = { authorization: `Bearer ${key}`, ...(version ? { 'x-fitt-switch-version': version } : {}) };
       for (let i = 0; i < 50; i++) {
-        try { const r = await fetch(`http://127.0.0.1:${port}${p}`, { headers: { authorization: `Bearer ${key}` } }); return { status: r.status, body: await r.json() }; } catch { await new Promise(r => setTimeout(r, 100)); }
+        try { const r = await fetch(`http://127.0.0.1:${port}${p}`, { headers }); return { status: r.status, body: await r.json() }; } catch { await new Promise(r => setTimeout(r, 100)); }
       }
       throw new Error('fake status server did not start');
     };
@@ -55,6 +56,10 @@ test('the fake status server answers like FITT Builder, and only to the test key
     assert.equal(suspended.body.message, SWITCH_TEST_MESSAGE);
     assert.deepEqual((await ask('/active')).body.status, 'active');
     assert.equal((await ask('/suspended', 'fbl_wrong')).status, 401);
+    // Only a switch that says it is version 2 learns read_only; an older one is told active.
+    assert.deepEqual((await ask('/read_only', SWITCH_TEST_KEY, '2')).body.status, 'read_only');
+    assert.equal((await ask('/read_only', SWITCH_TEST_KEY, '2')).body.message, SWITCH_TEST_READ_ONLY);
+    assert.equal((await ask('/read_only')).body.status, 'active');
   } finally { child.kill('SIGKILL'); }
 });
 test('a release needs an app that obeys the switch', () => {
@@ -67,6 +72,19 @@ test('a release needs an app that obeys the switch', () => {
   assert.equal(switchVerdict('active', { homeStatus: 200, homeBody: 'app', healthStatus: 200 }), null);
   assert.equal(switchVerdict('active', { homeStatus: 307, homeBody: '', healthStatus: 200 }), null);
   assert.match(switchVerdict('active', { homeStatus: 503, homeBody: page, healthStatus: 200 }), /normally/);
+});
+test('a release needs an app that serves reads and refuses writes while read-only, with the banner', () => {
+  const good = { homeStatus: 200, healthStatus: 200, pageHtml: '<script src="/fitt-service-status.js"></script><div id="fitt-service-status" hidden=""></div>', writeStatus: 423, writeBody: JSON.stringify({ error: 'read_only', message: SWITCH_TEST_READ_ONLY }), statusRoute: { status: 200, body: { status: 'read_only', message: SWITCH_TEST_READ_ONLY } } };
+  assert.equal(switchVerdict('read_only', good), null);
+  assert.equal(switchVerdict('read_only', { ...good, homeStatus: 307 }), null);
+  assert.match(switchVerdict('read_only', { ...good, homeStatus: 503 }), /serve/);
+  assert.match(switchVerdict('read_only', { ...good, writeStatus: 404 }), /423.*service-status\.mjs/);
+  assert.match(switchVerdict('read_only', { ...good, writeBody: '{}' }), /message/);
+  assert.match(switchVerdict('read_only', { ...good, statusRoute: { status: 404, body: null } }), /\/api\/service-status/);
+  assert.match(switchVerdict('read_only', { ...good, statusRoute: { status: 200, body: { status: 'active', message: '' } } }), /\/api\/service-status/);
+  assert.match(switchVerdict('read_only', { ...good, pageHtml: '<p>app</p>' }), /fitt-service-status\.js/);
+  assert.match(switchVerdict('read_only', { ...good, pageHtml: '<script src="/fitt-service-status.js"></script>' }), /id="fitt-service-status"/);
+  assert.match(switchVerdict('read_only', { ...good, healthStatus: 423 }), /health/);
 });
 
 test('the checker runs the customer image read-only with no capabilities', async () => {

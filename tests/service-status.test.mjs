@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServiceStatus, serviceStatusResponse, EXEMPT_PATHS } from '../cmd/server/skillassets/assets/service-status.mjs';
+import { createServiceStatus, serviceStatusResponse, serviceStatusNow, EXEMPT_PATHS, SWITCH_VERSION } from '../cmd/server/skillassets/assets/service-status.mjs';
 
 // The suspension switch every delivered app carries (FITT Billing phase 2). It must
 // never make an app slower or fall over: an unreachable status server leaves the
@@ -13,7 +13,7 @@ const answer = (status, message = '') => ({ ok: true, status: 200, json: async (
 function fakeFetch(responses) {
   const calls = [];
   const fetchImpl = async (url, init) => {
-    calls.push({ url, authorization: init?.headers?.authorization });
+    calls.push({ url, authorization: init?.headers?.authorization, version: init?.headers?.['x-fitt-switch-version'] });
     const next = responses.length > 1 ? responses.shift() : responses[0];
     if (next instanceof Error) throw next;
     return typeof next === 'function' ? next() : next;
@@ -30,7 +30,7 @@ test('the first request waits for the first answer, so a suspended app never ser
   const { fetchImpl, calls } = fakeFetch([answer('suspended', 'บริการถูกระงับชั่วคราว')]);
   const s = createServiceStatus({ url: URL_, key: KEY, fetchImpl });
   assert.deepEqual(await s.current(), { status: 'suspended', message: 'บริการถูกระงับชั่วคราว' });
-  assert.deepEqual(calls, [{ url: URL_, authorization: `Bearer ${KEY}` }]);
+  assert.deepEqual(calls, [{ url: URL_, authorization: `Bearer ${KEY}`, version: String(SWITCH_VERSION) }]);
 });
 
 test('asks at most once per interval, however many requests arrive', async () => {
@@ -113,31 +113,92 @@ test('unset or half-set switch does nothing and asks nobody', async () => {
   let asked = 0;
   const fetchImpl = async () => { asked++; return answer('suspended'); };
   for (const e of [{}, { FITT_STATUS_URL: URL_ }, { FITT_LICENSE_KEY: KEY }, { FITT_STATUS_URL: '', FITT_LICENSE_KEY: '' }]) {
-    assert.equal(await serviceStatusResponse(request('/'), e, { fetchImpl }), null);
+    assert.equal(await serviceStatusResponse(request('/'), { env: e, fetchImpl }), null);
   }
   assert.equal(asked, 0);
 });
 
 test('a suspended app answers every page with a 503 suspension page, uncached, except health', async () => {
   const { fetchImpl } = fakeFetch([answer('suspended', 'บริการถูกระงับชั่วคราว กรุณาติดต่อผู้ให้บริการ')]);
-  const res = await serviceStatusResponse(request('/orders/42?x=1'), env, { fetchImpl });
+  const res = await serviceStatusResponse(request('/orders/42?x=1'), { env: env, fetchImpl });
   assert.equal(res.status, 503);
   assert.equal(res.headers.get('cache-control'), 'no-store');
   assert.match(res.headers.get('content-type'), /^text\/html/);
   const html = await res.text();
   assert.match(html, /บริการถูกระงับชั่วคราว กรุณาติดต่อผู้ให้บริการ/);
-  assert.equal(await serviceStatusResponse(request('/api/orders'), env, { fetchImpl }).then(r => r?.status), 503);
-  for (const path of EXEMPT_PATHS) assert.equal(await serviceStatusResponse(request(path), env, { fetchImpl }), null);
+  assert.equal(await serviceStatusResponse(request('/api/orders'), { env: env, fetchImpl }).then(r => r?.status), 503);
+  for (const path of EXEMPT_PATHS) assert.equal(await serviceStatusResponse(request(path), { env: env, fetchImpl }), null);
 });
 
 test('the message is shown as text, never as markup', async () => {
   const { fetchImpl } = fakeFetch([answer('suspended', '<script>alert(1)</script>')]);
-  const html = await (await serviceStatusResponse(request('/'), { ...env, FITT_LICENSE_KEY: 'fbl_other' }, { fetchImpl })).text();
+  const html = await (await serviceStatusResponse(request('/'), { env: { ...env, FITT_LICENSE_KEY: 'fbl_other' }, fetchImpl })).text();
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /&lt;script&gt;/);
 });
 
 test('an active app passes every request through', async () => {
   const { fetchImpl } = fakeFetch([answer('active')]);
-  assert.equal(await serviceStatusResponse(request('/'), { ...env, FITT_LICENSE_KEY: 'fbl_active' }, { fetchImpl }), null);
+  assert.equal(await serviceStatusResponse(request('/'), { env: { ...env, FITT_LICENSE_KEY: 'fbl_active' }, fetchImpl }), null);
+});
+
+// read_only (FITT Billing, 23 Nov 2026): people can still sign in, look, search, print and
+// export; nothing they send can change the app's data. The app tells Billing it knows
+// read_only by the version it sends (FITT Builder keeps it as billing.switchVersion).
+const write = (path, init = {}) => new Request(`http://app.test${path}`, { method: 'POST', body: '{}', ...init });
+const readOnly = 'ระบบอยู่ในโหมดอ่านอย่างเดียว ดูข้อมูลได้ แต่บันทึกหรือแก้ไขไม่ได้ กรุณาติดต่อผู้ให้บริการ';
+
+test('asks as switch version 2', () => {
+  assert.equal(SWITCH_VERSION, 2);
+});
+
+test('a read-only app serves every read and refuses every write with 423 and the message', async () => {
+  const { fetchImpl } = fakeFetch([answer('read_only', readOnly)]);
+  const opts = { env: { ...env, FITT_LICENSE_KEY: 'fbl_ro1' }, fetchImpl };
+  for (const method of ['GET', 'HEAD', 'OPTIONS']) {
+    assert.equal(await serviceStatusResponse(new Request('http://app.test/orders', { method }), opts), null, method);
+  }
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    const res = await serviceStatusResponse(write('/api/orders/42', { method }), opts);
+    assert.equal(res?.status, 423, method);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await res.json(), { error: 'read_only', message: readOnly });
+  }
+});
+
+test('a form sent from a page while read-only gets a page, a server action gets JSON', async () => {
+  const { fetchImpl } = fakeFetch([answer('read_only', readOnly)]);
+  const opts = { env: { ...env, FITT_LICENSE_KEY: 'fbl_ro2' }, fetchImpl };
+  const form = await serviceStatusResponse(write('/orders/new', { headers: { accept: 'text/html,application/xhtml+xml' } }), opts);
+  assert.equal(form.status, 423);
+  assert.match(form.headers.get('content-type'), /^text\/html/);
+  assert.match(await form.text(), new RegExp(readOnly));
+  const action = await serviceStatusResponse(write('/orders/new', { headers: { accept: 'text/x-component', 'next-action': 'abc' } }), opts);
+  assert.equal(action.status, 423);
+  assert.match(action.headers.get('content-type'), /^application\/json/);
+});
+
+test('while read-only, the sign-in and other listed writes go through, and nothing else', async () => {
+  const { fetchImpl } = fakeFetch([answer('read_only', readOnly)]);
+  const opts = { env: { ...env, FITT_LICENSE_KEY: 'fbl_ro3' }, fetchImpl, allowWrites: ['/api/auth/', '/login', '/api/reports/export'] };
+  for (const path of ['/api/auth/login', '/api/auth/logout', '/login', '/api/reports/export']) {
+    assert.equal(await serviceStatusResponse(write(path), opts), null, path);
+  }
+  for (const path of ['/login/reset', '/api/authz', '/api/reports/export/../delete', '/api/reports']) {
+    assert.equal((await serviceStatusResponse(write(path), opts))?.status, 423, path);
+  }
+});
+
+test('a read-only answer from an unset message says read-only in Thai', async () => {
+  const { fetchImpl } = fakeFetch([answer('read_only', '')]);
+  const res = await serviceStatusResponse(write('/x'), { env: { ...env, FITT_LICENSE_KEY: 'fbl_ro4' }, fetchImpl });
+  assert.match((await res.json()).message, /อ่านอย่างเดียว/);
+});
+
+test('the banner route reads the status without being blocked, and off means active', async () => {
+  const { fetchImpl } = fakeFetch([answer('read_only', readOnly)]);
+  const e = { ...env, FITT_LICENSE_KEY: 'fbl_ro5' };
+  assert.ok(EXEMPT_PATHS.includes('/api/service-status'));
+  assert.deepEqual(await serviceStatusNow({ env: e, fetchImpl }), { status: 'read_only', message: readOnly });
+  assert.deepEqual(await serviceStatusNow({ env: {}, fetchImpl }), { status: 'active', message: '' });
 });

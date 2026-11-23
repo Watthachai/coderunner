@@ -61,6 +61,9 @@ var refServiceStatus string
 //go:embed skillassets/assets/service-status.mjs
 var assetServiceStatus string
 
+//go:embed skillassets/assets/fitt-service-status.js
+var assetServiceStatusBanner string
+
 //go:embed skillassets/references/runs-anywhere.md
 var refRunsAnywhere string
 
@@ -76,6 +79,7 @@ var builtinSkillFiles = map[string]string{
 	"assets/bootstrap-once.mjs":        assetBootstrap,
 	"references/service-status.md":     refServiceStatus,
 	"assets/service-status.mjs":        assetServiceStatus,
+	"assets/fitt-service-status.js":    assetServiceStatusBanner,
 	"references/runs-anywhere.md":      refRunsAnywhere,
 	"assets/scheduler.mjs":             assetScheduler,
 	"scripts/verify-delivery.mjs":      deliveryVerifier,
