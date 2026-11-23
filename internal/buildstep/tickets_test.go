@@ -41,8 +41,13 @@ type fakeSite struct {
 	sessions   map[string]string // session id -> fittcore user id
 	revoked    map[string]bool
 	notEnabled bool
-	polled     map[string]int
-	challenges map[string]string // challenge id -> fittcore user id
+	// noWidgetAPI is a fittcore without /api/site/widget/v1 at all, as DV's own is: its
+	// catch-all answers every path there 404 {"error":"not_found"}; htmlNotFound answers
+	// it with a page instead.
+	noWidgetAPI  bool
+	htmlNotFound bool
+	polled       map[string]int
+	challenges   map[string]string // challenge id -> fittcore user id
 }
 
 // challengeID is the id fakeSite gives the challenge it starts for the user ref.
@@ -100,7 +105,13 @@ func newFakeSite(t *testing.T) *fakeSite {
 			return
 		}
 		path, ok := strings.CutPrefix(r.URL.Path, "/api/site/widget/v1")
-		if !ok {
+		if f.htmlNotFound && ok {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte("<!DOCTYPE html><title>404</title>"))
+			return
+		}
+		if !ok || f.noWidgetAPI {
 			answer(404, `{"error":"not_found"}`)
 			return
 		}
@@ -180,15 +191,15 @@ type answer struct {
 	Nosniff string `json:"nosniff"`
 }
 
-// runSteps runs the steps against an app that sends reports to feedbackURL and logs
-// its users in through the same fittcore, as DV requires.
+// runSteps runs the steps against an app that sends reports to feedbackURL, logs its
+// users in through the same fittcore, as DV requires, and has the window turned on.
 func runSteps(t *testing.T, route, feedbackURL string, steps ...step) []answer {
 	t.Helper()
 	platform := ""
 	if u, err := url.Parse(feedbackURL); err == nil && u.Host != "" {
 		platform = u.Scheme + "://" + u.Host
 	}
-	return runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": feedbackURL, "PLATFORM_FITTCORE_ORIGIN": platform}, steps...)
+	return runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": feedbackURL, "PLATFORM_FITTCORE_ORIGIN": platform, "FITT_TICKET_WINDOW": "1"}, steps...)
 }
 
 func runStepsEnv(t *testing.T, route string, env map[string]string, steps ...step) []answer {
@@ -253,6 +264,11 @@ func stateAs(cookie string) step {
 
 func loginAs(cookie string) step {
 	return step{Method: "POST", Target: "/api/fitt-feedback?op=login", Cookie: cookie, Body: `{"project":"proj-xyz"}`}
+}
+
+// openAt is what the widget asks when the page loads: whether to show 📋 at all.
+func openAt() step {
+	return step{Method: "GET", Target: "/api/fitt-feedback?op=open"}
 }
 
 func pollAs(cookie string) step {
@@ -366,8 +382,8 @@ func TestTicketWindowIsNotOpenWhenTheAppLogsInElsewhere(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
 	for _, platform := range []string{"", "http://other-fittcore.test:3100", site.URL + "x"} {
-		a := runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": platform},
-			stateAs("fc=s1"), loginAs("fc=s1"))
+		a := runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": platform, "FITT_TICKET_WINDOW": "1"},
+			stateAs("fc=s1"), loginAs("fc=s1"), openAt())
 		for i, x := range a {
 			if x.Status != 503 || x.Body != `{"error":"not_open"}` {
 				t.Errorf("PLATFORM_FITTCORE_ORIGIN=%q: answer %d = %+v, want not_open", platform, i, x)
@@ -475,6 +491,91 @@ func TestTicketWindowIsNotOpenWhereTheSiteLacksIt(t *testing.T) {
 		if a := runSteps(t, route, env, stateAs("fc=s1")); a[0].Status != 503 {
 			t.Errorf("FITT_FEEDBACK_URL=%q: state = %+v, want not_open", env, a[0])
 		}
+	}
+}
+
+// DV, 23 Nov: the window opens only where the app's server turns it on, with
+// FITT_TICKET_WINDOW=1. Without it, the same fittcore for reports and logins is not
+// enough: 📋 is not shown and the site is asked nothing. OKR, DV's own app, leaves it off.
+func TestTicketWindowIsOffUnlessTheAppTurnsItOn(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	for _, on := range []string{"", "0", "true", "yes", " 1"} {
+		a := runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": site.URL, "FITT_TICKET_WINDOW": on},
+			openAt(), stateAs("fc=s1"), loginAs("fc=s1"))
+		for i, x := range a {
+			if x.Status != 503 || x.Body != `{"error":"not_open"}` {
+				t.Errorf("FITT_TICKET_WINDOW=%q: answer %d = %+v, want not_open", on, i, x)
+			}
+		}
+	}
+	if len(site.got("/")) != 0 {
+		t.Errorf("the site was asked anything at all: %+v", site.got("/"))
+	}
+}
+
+// The widget asks whether to show 📋 when a page loads. The route asks the site once,
+// without anyone's token or cookie, and keeps the answer for 5 minutes either way.
+func TestTicketWindowSaysWhetherToShowTheButton(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	a := runSteps(t, route, siteEnv(site), openAt(), openAt())
+	for i, x := range a {
+		if x.Status != 200 || x.Body != `{"open":true}` {
+			t.Errorf("answer %d = %+v, want open", i, x)
+		}
+	}
+	calls := site.widgetCalls()
+	if len(calls) != 1 {
+		t.Fatalf("the site was asked %d times, want once: %+v", len(calls), calls)
+	}
+	if c := calls[0]; c.auth != "" || c.cookie != "" || c.user != "" || c.origin != "" {
+		t.Errorf("the question carried someone's credentials: %+v", c)
+	}
+	if a := runSteps(t, route, siteEnv(site), step{Method: "GET", Target: "/api/fitt-feedback?op=open", Advance: 5*60*1000 + 1000}); a[0].Body != `{"open":true}` {
+		t.Errorf("after 5 minutes: %+v", a[0])
+	}
+}
+
+// DV, 23 Nov: OKR on UAT showed "ขอสิทธิ์จาก fittcore ก่อน" against DV's own fittcore,
+// which has no /api/site/widget/v1: its catch-all answered 404 {"error":"not_found"},
+// the route took that for the widget's own answer, and "ขอรหัสอนุมัติ" failed with 404.
+// Only widget_not_enabled and the not_found of a ticket's pictures are the widget's;
+// any other 404 means the site does not have it.
+func TestTicketWindowIsNotOpenWhereFittcoreHasNoWidgetAPI(t *testing.T) {
+	for name, set := range map[string]func(*fakeSite){
+		"json not_found": func(f *fakeSite) { f.noWidgetAPI = true },
+		"html page":      func(f *fakeSite) { f.htmlNotFound = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			route := ticketRoute(t)
+			site := newFakeSite(t)
+			set(site)
+			a := runSteps(t, route, siteEnv(site), openAt(), stateAs("fc=s1"), loginAs("fc=s1"))
+			for i, x := range a {
+				if x.Status != 503 || x.Body != `{"error":"not_open"}` {
+					t.Errorf("answer %d = %+v, want not_open", i, x)
+				}
+			}
+			if n := len(site.widgetCalls()); n != 1 {
+				t.Errorf("the site was asked %d times, want once in 5 minutes", n)
+			}
+		})
+	}
+}
+
+// A ticket or picture that is not there is the widget's own 404, and says so.
+func TestTicketWindowSaysAPictureIsNotThere(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+		step{Method: "GET", Target: "/api/fitt-feedback?op=images&id=" + tkOther, Cookie: "fc=s1"},
+		step{Method: "GET", Target: "/api/fitt-feedback?op=list", Cookie: "fc=s1"})
+	if a[2].Status != 404 || !strings.Contains(a[2].Body, "not_found") {
+		t.Errorf("pictures of a ticket that is not there: %+v, want 404 not_found", a[2])
+	}
+	if a[3].Status != 200 {
+		t.Errorf("after it, the list: %+v, want the window still open", a[3])
 	}
 }
 
@@ -612,11 +713,24 @@ func TestTheWidgetShowsTheTicketWindowOnlyWithDataTickets(t *testing.T) {
 	for _, want := range []string{
 		`var TICKETS = cfg.tickets || "";`,
 		`<button class='tfab' hidden`,
-		"if (TICKETS) {\n    tfab.hidden = false;",
+		`ticketCall("GET", "open").then(function (r) {`,
+		`if (r.status === 200 && r.data.open === true) showTicketButton(true);`,
 	} {
 		if !strings.Contains(feedbackWidgetJS, want) {
 			t.Errorf("the widget lacks %s", want)
 		}
+	}
+	if strings.Contains(feedbackWidgetJS, "if (TICKETS) {\n    tfab.hidden = false;") {
+		t.Error("the widget shows 📋 before the route says the window is open")
+	}
+}
+
+// DV, 23 Nov: once the site says the window is not open, 📋 goes away when the window
+// closes, so nobody is asked to press for a code that cannot come.
+func TestTheWidgetTakesTheTicketButtonAwayWhenTheWindowIsNotOpen(t *testing.T) {
+	want := `if (tk.view === "closed") { showTicketButton(false); fab.focus(); return; }`
+	if !strings.Contains(feedbackWidgetJS, want) {
+		t.Errorf("the widget lacks %s", want)
 	}
 }
 

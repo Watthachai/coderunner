@@ -887,15 +887,27 @@
     tbody.innerHTML = h + "</ol>" + more();
   }
 
+  // showTicketButton puts 📋 left of 💬 (🐞 moves one further left), or takes it away.
+  function showTicketButton(on) {
+    tfab.hidden = !on;
+    if (on) efab.classList.add("shift");
+    else efab.classList.remove("shift");
+  }
+
   function closeTickets() {
     tscrim.hidden = true;
     tk.confirm = null;
+    // A site that turned out not to offer the window keeps no button that cannot work.
+    if (tk.view === "closed") { showTicketButton(false); fab.focus(); return; }
     tfab.focus();
   }
 
   if (TICKETS) {
-    tfab.hidden = false;
-    efab.classList.add("shift");
+    // 📋 shows only when the app's route says the window is open: the app's server
+    // turned it on (FITT_TICKET_WINDOW=1) and its company fittcore has the widget API.
+    ticketCall("GET", "open").then(function (r) {
+      if (r.status === 200 && r.data.open === true) showTicketButton(true);
+    });
     tfab.addEventListener("click", function () {
       panel.hidden = true;
       epanel.hidden = true;

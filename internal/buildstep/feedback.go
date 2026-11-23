@@ -224,11 +224,12 @@ func feedbackRoute(appDir, layoutExt, ingestURL string) (string, string) {
 	return filepath.Join(appDir, "api", "fitt-feedback", "route.ts"), strings.NewReplacer("«", "", "»", "").Replace(src)
 }
 
-// ticketWindow turns on the widget's 📋 window: data-tickets in a Next layout and the
-// route's ticket ops. On for every build since 20 Nov 2026, because every site gets it:
-// a site whose company fittcore does not have DV's widget API yet shows "ยังไม่เปิดใช้"
-// and is asked again at most once per 5 minutes; an app whose FITT_FEEDBACK_URL and
-// PLATFORM_FITTCORE_ORIGIN are not the same origin calls no one.
+// ticketWindow puts the widget's 📋 window into every build: data-tickets in a Next
+// layout and the route's ticket ops (since 20 Nov 2026). Whether it shows is the app
+// server's call at run time (DV, 23 Nov): only with FITT_TICKET_WINDOW=1, the same
+// origin in FITT_FEEDBACK_URL and PLATFORM_FITTCORE_ORIGIN, and a company fittcore that
+// has DV's widget API; otherwise 📋 is not shown and the route calls no one, or asks the
+// site again at most once per 5 minutes.
 var ticketWindow = true
 
 const (
@@ -354,8 +355,10 @@ type Me = { key: string; ref: string; until: number };
 // One entry per app session: a token is never shared between users or sessions.
 const held«: Map<string, Held>» = new Map();
 // Until when the company fittcore counts as not offering the window: it is asked at
-// most once per CLOSED_FOR_MS after it answers 404 widget_not_enabled or not at all.
+// most once per CLOSED_FOR_MS after it answers 404 widget_not_enabled, a 404 that is
+// not the widget's own, or not at all. openUntil is the same for the other answer.
 let closedUntil = 0;
+let openUntil = 0;
 let sweeping = false;
 
 export const dynamic = "force-dynamic";
@@ -382,11 +385,26 @@ function originOf(value«: string | undefined») {
 }
 
 // site is the company fittcore that both takes this app's reports (FITT_FEEDBACK_URL)
-// and logs its users in (PLATFORM_FITTCORE_ORIGIN), or "" when they are not the same
-// one: then the window is not open, and no challenge starts (DV, 17 Nov).
+// and logs its users in (PLATFORM_FITTCORE_ORIGIN) (DV, 17 Nov), or "" when they are not
+// the same one or the app's server has not turned the window on with
+// FITT_TICKET_WINDOW=1 (DV, 23 Nov). Then the window is not open: 📋 is not shown, no
+// challenge starts, and nobody is asked anything.
 function site() {
+  if (process.env.FITT_TICKET_WINDOW !== "1") return "";
   const reports = originOf(process.env.FITT_FEEDBACK_URL);
   return reports && reports === originOf(process.env.PLATFORM_FITTCORE_ORIGIN) ? reports : "";
+}
+
+// isOpen says whether the site offers the window, asking it at most once per
+// CLOSED_FOR_MS, as this server, with no one's token or cookie.
+async function isOpen() {
+  if (!site() || Date.now() < closedUntil) return false;
+  if (Date.now() < openUntil) return true;
+  const probe = await call("GET", "/tickets?status=open&limit=1", null);
+  if (!probe) return false;
+  await probe.text().catch(() => "");
+  openUntil = Date.now() + CLOSED_FOR_MS;
+  return true;
 }
 
 // who is the app user behind this request as the company fittcore knows them (the
@@ -504,8 +522,12 @@ async function call(method«: string», path«: string», h«: Held | null», bo
     } catch {
       code = "";
     }
-    if (!code || code === "widget_not_enabled") {
+    // The widget's own 404s are widget_not_enabled and the not_found of a ticket's
+    // pictures. Any other is a fittcore without the widget API (DV's own answers every
+    // path there 404 not_found, 23 Nov): not open, like widget_not_enabled.
+    if (code !== "not_found" || !/^\/tickets\/[^/]+\/images(\/|$)/.test(path)) {
       closedUntil = Date.now() + CLOSED_FOR_MS;
+      openUntil = 0;
       return null;
     }
     return new Response(text, { status: 404, headers: { "content-type": "application/json" } });
@@ -548,6 +570,8 @@ async function me(request«: Request») {
 export async function GET(request«: Request»)«: Promise<Response>» {
   const q = new URL(request.url).searchParams;
   const op = q.get("op");
+  // open is what the widget asks when a page loads: whether to show 📋 at all.
+  if (op === "open") return (await isOpen()) ? json(200, { open: true }) : notOpen();
   if (op !== "state" && op !== "list" && op !== "images" && op !== "image") return json(404, { error: "unknown_op" });
   const h = await me(request);
   if (h instanceof Response) return h;
@@ -557,9 +581,7 @@ export async function GET(request«: Request»)«: Promise<Response>» {
     const c = h.challenge;
     if (c && c.expires > Date.now()) return json(200, { ready: false, pending: shown(c) });
     // Without a token, ask whether the site offers the window at all.
-    const probe = await call("GET", "/tickets?status=open&limit=1", null);
-    if (!probe) return notOpen();
-    await probe.text().catch(() => "");
+    if (!(await isOpen())) return notOpen();
     return json(200, { ready: false });
   }
   if (!h.token) return json(401, { error: "invalid_token" });

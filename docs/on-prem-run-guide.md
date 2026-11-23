@@ -29,6 +29,7 @@
 | `BOOTSTRAP_ADMIN_EMAIL` | ✅ ตอนติดตั้งครั้งแรก | อีเมลรูปแบบปกติ (ระบบตัดช่องว่างและแปลงเป็นตัวพิมพ์เล็ก) |
 | `BOOTSTRAP_ADMIN_PASSWORD` | ✅ ตอนติดตั้งครั้งแรก | อย่างน้อย 16 ตัวอักษร ห้ามใช้ซ้ำข้ามลูกค้า |
 | `FITT_FEEDBACK_URL` | – | ปลายทาง feedback widget (เฉพาะ build ที่ฝัง widget) |
+| `FITT_TICKET_WINDOW` | – | `1` = เปิดปุ่ม 📋 (ticket ของฉัน) ค่าอื่นหรือไม่ตั้ง = ไม่มีปุ่ม 📋 ส่วน 💬 ใช้ได้ตามปกติทุกกรณี · ตั้งเฉพาะไซต์ลูกค้าที่ fittcore ของบริษัทเปิด widget API แล้ว และ `PLATFORM_FITTCORE_ORIGIN` ต้องเป็น origin เดียวกับ `FITT_FEEDBACK_URL` · ถ้าตั้งแล้วแต่ fittcore ไม่มี `/api/site/widget/v1` ปุ่ม 📋 ก็ไม่ขึ้น (build ที่ทำหลัง 23 พ.ย. 2026) |
 | `DEV_EMAIL` / `DEV_PASSWORD` | – | **เลิกใช้แล้ว** image ปัจจุบันไม่อ่าน |
 
 **admin คนแรก (bootstrap):**
