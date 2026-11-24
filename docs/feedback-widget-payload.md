@@ -59,13 +59,13 @@ Content-Type: application/json
 | `project_id` | uuid string | demo ไหน — map กับ CRN project |
 | `category` | enum | `bug` \| `feature` \| `style` \| **`error`** (auto-detected system error) |
 | `priority` | enum | `low` \| `med` \| `high` |
-| `note` | string | คำอธิบายรวม |
+| `note` | string | ข้อความที่ลูกค้าพิมพ์ (หรือร่างจากผู้ช่วย 💬) อย่างเดียว ไม่เกิน 4,000 ตัวอักษร · โน้ตของแต่ละจุดไม่รวมมาที่นี่ |
 | `page_url` | string (URL) | หน้าที่ user อยู่ตอนส่ง |
 | `reporter` | string | "" เสมอ (ยังไม่เก็บ) |
-| `payload.pins[]` | array | จุดปัก — ว่างได้ถ้ามีแค่ `note` |
+| `payload.pins[]` | array | จุดปัก — ว่างได้ถ้ามีแค่ `note` · ไม่เกิน 20 จุด (นับรวมรูปที่แนบในแชต) |
 | `payload.pins[].selector` | string | CSS path หรือ `"region"` |
 | `payload.pins[].label` | string | ป้าย element / "พื้นที่ W×H" |
-| `payload.pins[].note` | string | โน้ตต่อจุด |
+| `payload.pins[].note` | string | โน้ตต่อจุด ไม่เกิน 1,000 ตัวอักษร |
 | `payload.pins[].box` | `{x,y,w,h}` | **page** coords (รวม `scrollX/Y`) หน่วย px, int |
 | `payload.pins[].region_shot` | string (data URL) | `data:image/png;base64,…` ด้านยาวสุด ≤ 1600px, หรือ `""` (ไม่ส่ง SVG อีกแล้ว) |
 | `payload.full_shot` | string | "" เสมอ |
@@ -143,7 +143,8 @@ curl -sS -X POST "http://172.168.1.247:3101/api/ingest/feedback" \
 - [ ] **required:** `project_id` (uuid) + อย่างน้อย `note` **หรือ** 1 pin (widget บังคับก่อนส่ง)
 - [ ] **body size limit** — `region_shot` เป็น base64 PNG ต่อ pin (ปกติหลัก KB–ร้อย KB, หน้าเต็มไปด้วยรูปอาจถึงหลาย MB) → กัน 413. แนะนำ ≥ 25MB (route ของแอปตัดที่ 25 MB อยู่แล้ว ใหญ่กว่านั้นไม่ถึง receiver)
 - [ ] ตอบ **200/201** เมื่อรับสำเร็จ (ไม่งั้น widget โชว์ "ส่งไม่สำเร็จ")
-- [ ] `note` อยู่ 2 ระดับ: top-level = คำอธิบายรวม · `payload.pins[].note` = ต่อจุด
+- [ ] `note` อยู่ 2 ระดับ: top-level = ข้อความที่ลูกค้าพิมพ์ · `payload.pins[].note` = ต่อจุด
+- [ ] เพดานของ relay และ Gateway (DV, 24 พ.ย. 2026): `note` ≤ 4,000 · pins ≤ 20 · `pins[].note` ≤ 1,000 (นับแบบ `string.length` ของ JavaScript) widget ตรวจก่อนส่งและบอกลูกค้าเป็นภาษาไทยว่าช่องไหนเกินเท่าไร ถ้า receiver ยังตอบ `422 invalid_payload` widget แปล `issues` เป็นภาษาไทย ไม่โชว์ "HTTP 422"
 - [ ] validate enum: `category` ∈ {bug,feature,style} · `priority` ∈ {low,med,high}
 - [ ] **ไม่ต้องเปิด CORS** — feedback มาจาก server ของแอป (route `/api/fitt-feedback`) ไม่ใช่จากเบราว์เซอร์
 - [ ] เก็บ `payload` (nested) เป็น **jsonb** ทั้งก้อนได้; field บนเป็นคอลัมน์

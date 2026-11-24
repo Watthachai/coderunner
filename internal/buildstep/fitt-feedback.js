@@ -1474,6 +1474,57 @@
     }
   }
 
+  // --- DV's limits -------------------------------------------------------------
+  // DV's relay and Gateway take a report only within these (DV, 24 Nov 2026): the
+  // note at most 4,000 characters, at most 20 pins, each pin's note at most 1,000,
+  // counted as JavaScript counts a string's length. The widget checks the report
+  // before sending and says in Thai what is too long and by how much: a customer
+  // who went over used to see only "HTTP 422".
+  var NOTE_MAX = 4000;
+  var PINS_MAX = 20;
+  var PIN_NOTE_MAX = 1000;
+  function num(n) { return n.toLocaleString("en-US"); }
+  // overLimits says, in Thai, each way a report of note and pins is over the limits;
+  // noteName is what the note's field is called on the panel.
+  function overLimits(note, pins, noteName) {
+    var over = [];
+    if (note.length > NOTE_MAX) {
+      over.push("ช่อง \"" + noteName + "\" ยาว " + num(note.length) + " ตัวอักษร เกินมา " + num(note.length - NOTE_MAX) +
+        " (ได้ไม่เกิน " + num(NOTE_MAX) + ")");
+    }
+    if (pins.length > PINS_MAX) {
+      over.push("มี " + num(pins.length) + " จุด เกินมา " + num(pins.length - PINS_MAX) + " จุด (ได้ไม่เกิน " + PINS_MAX +
+        " จุด นับรวมรูปที่แนบในแชต)");
+    }
+    pins.forEach(function (p, i) {
+      var n = (p.note || "").length;
+      if (n > PIN_NOTE_MAX) {
+        over.push("โน้ตของจุดที่ " + (i + 1) + " ยาว " + num(n) + " ตัวอักษร เกินมา " + num(n - PIN_NOTE_MAX) +
+          " (ได้จุดละไม่เกิน " + num(PIN_NOTE_MAX) + ")");
+      }
+    });
+    return over;
+  }
+  // refusal is what to tell the customer when the receiver turned the report away:
+  // the fields DV named, in Thai, for a 422; otherwise the status.
+  function refusal(status, text) {
+    var v = null;
+    try { v = JSON.parse(text); } catch (e) { v = null; }
+    if (status !== 422 || !v || v.error !== "invalid_payload" || !Array.isArray(v.issues) || !v.issues.length) {
+      return "HTTP " + status;
+    }
+    return "ระบบปลายทางไม่รับ: " + v.issues.map(function (s) {
+      var path = Array.isArray(s && s.path) ? s.path.join(".") : String((s && s.path) || "");
+      var pin = /^payload\.pins\.(\d+)\.note$/.exec(path);
+      var big = s && s.code === "too_big";
+      if (path === "note") return "ช่อง \"สิ่งที่อยากให้แก้\"" + (big ? " ยาวเกิน (ได้ไม่เกิน " + num(NOTE_MAX) + " ตัวอักษร)" : " ไม่ถูกต้อง");
+      if (pin) return "โน้ตของจุดที่ " + (Number(pin[1]) + 1) + (big ? " ยาวเกิน (ได้จุดละไม่เกิน " + num(PIN_NOTE_MAX) + " ตัวอักษร)" : " ไม่ถูกต้อง");
+      if (path === "payload.pins") return big ? "จุดมากเกิน (ได้ไม่เกิน " + PINS_MAX + " จุด)" : "จุดที่ปักไม่ถูกต้อง";
+      return "ช่อง " + path + (big ? " ยาวเกิน" : " ไม่ถูกต้อง");
+    }).join(" · ");
+  }
+  // --- end of DV's limits -------------------------------------------------------
+
   // --- submit -----------------------------------------------------------------
 
   sendBtn.addEventListener("click", function () {
@@ -1487,6 +1538,13 @@
     Promise.all(shots)
       .then(pinsFromChat)
       .then(function (fromChat) {
+        // The note is what the customer wrote; each pin's note stays in its pin.
+        var all = pins.concat(fromChat);
+        var over = overLimits(note, all, noteLbl.textContent);
+        if (over.length) {
+          setStatus("ยังไม่ได้ส่ง — " + over.join(" · "), "err");
+          return null;
+        }
         var body = {
           project_id: PROJECT,
           category: category,
@@ -1495,7 +1553,7 @@
           page_url: location.href,
           reporter: "",
           payload: {
-            pins: pins.concat(fromChat),
+            pins: all,
             full_shot: "",
             viewport: { w: window.innerWidth, h: window.innerHeight },
             user_agent: navigator.userAgent,
@@ -1508,7 +1566,12 @@
         });
       })
       .then(function (res) {
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res) return; // over the limits: said so, nothing sent
+        if (!res.ok) {
+          return res.text().catch(function () { return ""; }).then(function (text) {
+            throw new Error(refusal(res.status, text));
+          });
+        }
         pins = []; shots = []; renderPins(); noteEl.value = "";
         if (ai.on) startChat();
         if (TICKETS) {
