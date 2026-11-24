@@ -6,6 +6,17 @@
 - **ใครเรียก AI:** server ของแอปเป็นคนเรียก ผ่าน route `/api/fitt-feedback?op=assist` เบราว์เซอร์ไม่เห็นทั้ง URL และ key
 - **🎤:** ใช้ตัวแปลงเสียงเป็นข้อความของเบราว์เซอร์ ภาษาไทย (`th-TH`) ปุ่มขึ้นเฉพาะเบราว์เซอร์ที่รองรับ เช่น Chrome, Edge และ Safari ใน Chrome เสียงจะถูกส่งไปแปลงที่ Google
 
+## ตัวเชื่อมของ CRN (Gemini, 24 พ.ย. 2026)
+
+CRN มีตัวเชื่อมให้แล้วที่ `/feedback-ai` ของ server CRN (`internal/aiassist`) ถาม Gemini (`CRN_GEMINI_MODEL`, ค่าเริ่ม `gemini-3.8-flash`) ผ่าน `generateContent` ตามสัญญาข้างล่าง
+
+- แอปตั้ง `FITT_FEEDBACK_AI_URL=http://172.168.1.171:8080/feedback-ai` และ `FITT_FEEDBACK_AI_KEY=<key ของแอป>` แล้ว restart ไม่ต้อง build ใหม่ ถ้าแอปมี route ตั้งแต่ 462ae7d
+- key อยู่ในไฟล์บนเครื่อง build อ่านใหม่ทุกคำขอ เปลี่ยนแล้วไม่ต้อง restart CRN:
+  - `~/crn-secrets/gemini-key`: API key ของ Gemini
+  - `~/crn-secrets/feedback-ai-key`: key ที่แอปส่งมาเป็น Bearer (ใช้ร่วมทุกแอป)
+- ถ้ายังไม่มีไฟล์ใดไฟล์หนึ่ง ตอบ 503 และไม่ถาม Gemini ส่วน key ของแอปที่ผิดจะได้ 401
+- log มีแค่สถานะ เวลา จำนวนข้อความและจำนวนไฟล์ ไม่มีสิ่งที่ลูกค้าเขียนหรือแนบ
+
 ## สิ่งที่ตัวเชื่อม AI ต้องรับ
 
 แอปส่ง `POST` ไปที่ `FITT_FEEDBACK_AI_URL` เป็น JSON ถ้าตั้ง `FITT_FEEDBACK_AI_KEY` ไว้ จะใส่ `Authorization: Bearer <key>` ไปด้วย รอคำตอบนานสุด 30 วินาที และไม่ตาม redirect

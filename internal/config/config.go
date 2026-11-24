@@ -171,6 +171,15 @@ type Config struct {
 	// next to it. Default $HOME/crn-secrets/push.
 	PushCredentialDir string
 
+	// The 💬 assistant's AI (internal/aiassist, served at /feedback-ai): the Gemini API
+	// key and the key apps send as Bearer (their FITT_FEEDBACK_AI_KEY), each a file read
+	// on every request; and which Gemini to ask. Defaults $HOME/crn-secrets/gemini-key,
+	// $HOME/crn-secrets/feedback-ai-key, gemini-3.8-flash and Google's v1beta endpoint.
+	GeminiKeyFile     string
+	FeedbackAIKeyFile string
+	GeminiModel       string
+	GeminiEndpoint    string
+
 	// PushHelper is the command through which every build pushes by itself: the push
 	// helper (cmd/crn-push) that alone reads the registry login, such as
 	// "sudo -n -u _crnpush /opt/crn-push/crn-push". Empty keeps the push window for a
@@ -289,6 +298,10 @@ func Load() (*Config, error) {
 		ArtifactDir:        os.Getenv("CRN_ARTIFACT_DIR"),
 		ForbiddenValuesDir: getEnv("CRN_FORBIDDEN_VALUES_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "forbidden")),
 		PushCredentialDir:  getEnv("CRN_PUSH_CREDENTIAL_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "push")),
+		GeminiKeyFile:      getEnv("CRN_GEMINI_KEY_FILE", filepath.Join(os.Getenv("HOME"), "crn-secrets", "gemini-key")),
+		FeedbackAIKeyFile:  getEnv("CRN_FEEDBACK_AI_KEY_FILE", filepath.Join(os.Getenv("HOME"), "crn-secrets", "feedback-ai-key")),
+		GeminiModel:        getEnv("CRN_GEMINI_MODEL", "gemini-3.8-flash"),
+		GeminiEndpoint:     getEnv("CRN_GEMINI_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta"),
 		PushHelper:         strings.Fields(os.Getenv("CRN_PUSH_HELPER")),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),

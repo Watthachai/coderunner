@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Watthachai/fitt-coderunner/internal/aiassist"
 	"github.com/Watthachai/fitt-coderunner/internal/api"
 	"github.com/Watthachai/fitt-coderunner/internal/buildinfo"
 	"github.com/Watthachai/fitt-coderunner/internal/buildsettings"
@@ -194,9 +195,21 @@ func run() error {
 	// remote is echoed back to FBD in the ingest response.
 	handler := api.NewServer(logger, st, jobManager, cfg.GitRemote, cfg.GithubOwner, cfg.ProjectsDir, cfg.TerminalShell, cfg.TerminalEnabled, cfg.ClaudeBinPath, claudeDefaults, cfg.InternalTokenHashes, cfg.InternalOpenIPs, authMonitor.Status)
 
+	// /feedback-ai is the 💬 assistant's AI, which apps' routes call server to server
+	// with their own key (internal/aiassist); everything else is the API.
+	mux := http.NewServeMux()
+	mux.Handle("/feedback-ai", aiassist.Handler(aiassist.Config{
+		GeminiKeyFile: cfg.GeminiKeyFile,
+		AppKeyFile:    cfg.FeedbackAIKeyFile,
+		Model:         cfg.GeminiModel,
+		Endpoint:      cfg.GeminiEndpoint,
+		Logger:        logger,
+	}))
+	mux.Handle("/", handler)
+
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: handler,
+		Handler: mux,
 	}
 
 	// Run the server; report ListenAndServe errors through a channel so we can
