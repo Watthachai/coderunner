@@ -294,11 +294,35 @@ async function readBody(request«: Request», max«: number») {
   return body;
 }
 
+// sizeOf is how big a report is: the note's length, how many pins and the longest
+// pin note, counted as JavaScript counts a string's length. Never what was written.
+function sizeOf(body«: Uint8Array») {
+  let r«: { note?: unknown; payload?: { pins?: unknown } } | null» = null;
+  try {
+    r = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    r = null;
+  }
+  const pins = r && r.payload && Array.isArray(r.payload.pins) ? r.payload.pins : [];
+  let longest = 0;
+  for (const p of pins) {
+    if (p && typeof p.note === "string") longest = Math.max(longest, p.note.length);
+  }
+  return { bytes: body.byteLength, note: r && typeof r.note === "string" ? r.note.length : null, pins: pins.length, pin_note_max: longest };
+}
+
+// logReport logs one line for each report the route sends on: its size and what the
+// receiver answered (DV asked, 24 Nov 2026, to trace a 422 to what was sent).
+function logReport(size«: ReturnType<typeof sizeOf>», receiver«: number | string») {
+  console.info("[fitt-feedback] " + JSON.stringify({ ...size, receiver }));
+}
+
 export async function POST(request«: Request»)«: Promise<Response>» {
   if (new URL(request.url).searchParams.get("op") === "assist") return assist(request);
   // ticket ops
   const body = await readBody(request, MAX_BYTES);
   if (!body) return tooLarge();
+  const size = sizeOf(body);
 
   const target = process.env.FITT_FEEDBACK_URL || FALLBACK;
   try {
@@ -310,16 +334,24 @@ export async function POST(request«: Request»)«: Promise<Response>» {
         redirect: "manual",
         signal: AbortSignal.timeout(15000),
       });
-      if (res.ok) return new Response(null, { status: 204 });
+      if (res.ok) {
+        logReport(size, res.status);
+        return new Response(null, { status: 204 });
+      }
       if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+        logReport(size, "redirect");
         return new Response("feedback receiver answered with a redirect, which is not followed", { status: 502 });
       }
       const wait = res.status === 503 && sent <= AGAIN ? waitFor(res) : MAX_WAIT_MS + 1;
-      if (wait > MAX_WAIT_MS) return new Response(await res.text(), { status: res.status });
+      if (wait > MAX_WAIT_MS) {
+        logReport(size, res.status);
+        return new Response(await res.text(), { status: res.status });
+      }
       await res.body?.cancel();
       await new Promise((done) => setTimeout(done, wait));
     }
   } catch {
+    logReport(size, "unreachable");
     return new Response("feedback receiver unreachable", { status: 502 });
   }
 }

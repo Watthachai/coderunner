@@ -117,6 +117,50 @@ func TestTheWidgetChecksTheReportItSends(t *testing.T) {
 	}
 }
 
+// The route logs each report's size and what the receiver answered, so a refusal like
+// DV's 422 can be traced to what was sent (DV asked, 24 Nov 2026), and never what the
+// customer wrote.
+func TestTheRouteLogsTheReportsSizeNotItsWords(t *testing.T) {
+	route := feedbackRouteFor(t, "layout.tsx")
+	status := http.StatusCreated
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(status)
+	}))
+	defer receiver.Close()
+	report := `JSON.stringify({ note: "ย้ายปุ่มบันทึก", payload: { pins: [{ note: "สีเขียว" }, { note: "ก".repeat(1000) }, {}] } })`
+
+	for _, c := range []struct {
+		status  int
+		want    string
+		receive string
+	}{
+		{http.StatusCreated, "204", `"receiver":201`},
+		{http.StatusUnprocessableEntity, "422", `"receiver":422`},
+	} {
+		status = c.status
+		answer, logged := postToFeedbackRouteLogged(t, route, receiver.URL, report)
+		if !strings.HasPrefix(answer, c.want) {
+			t.Errorf("receiver %d: route answered %q", c.status, answer)
+		}
+		if len(logged) != 1 {
+			t.Fatalf("receiver %d: want one line logged, got %q", c.status, logged)
+		}
+		for _, w := range []string{`"note":14`, `"pins":3`, `"pin_note_max":1000`, c.receive} {
+			if !strings.Contains(logged[0], w) {
+				t.Errorf("receiver %d: %q does not say %s", c.status, logged[0], w)
+			}
+		}
+		if strings.Contains(logged[0], "ย้าย") || strings.Contains(logged[0], "ก") || strings.Contains(logged[0], "สี") {
+			t.Errorf("the log holds what the customer wrote: %q", logged[0])
+		}
+	}
+
+	if _, logged := postToFeedbackRouteLogged(t, route, "", report); len(logged) != 1 || !strings.Contains(logged[0], `"receiver":"unreachable"`) {
+		t.Errorf("unreachable receiver: logged %q", logged)
+	}
+}
+
 // The route passes a report of 20 pins of 1,000 characters on as it came: the note
 // stays the customer's text and each pin keeps its own note.
 func TestTheRoutePassesTwentyPinsOfAThousandCharactersOn(t *testing.T) {

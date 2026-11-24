@@ -369,6 +369,14 @@ func feedbackRouteFor(t *testing.T, layout string) string {
 // and a body made by the JavaScript expression body, and returns "<status> <text>".
 func postToFeedbackRoute(t *testing.T, route, env, body string) string {
 	t.Helper()
+	answer, _ := postToFeedbackRouteLogged(t, route, env, body)
+	return answer
+}
+
+// postToFeedbackRouteLogged is postToFeedbackRoute that also returns the lines the
+// route logged.
+func postToFeedbackRouteLogged(t *testing.T, route, env, body string) (string, []string) {
+	t.Helper()
 	script := `const { POST } = await import(process.argv[1]);
 const res = await POST(new Request("http://app.test/api/fitt-feedback", { method: "POST", body: ` + body + ` }));
 console.log(res.status, await res.text());`
@@ -378,7 +386,15 @@ console.log(res.status, await res.text());`
 	if err != nil {
 		t.Fatalf("node: %v\n%s", err, out)
 	}
-	return strings.TrimSpace(string(out))
+	var answer, logged []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasPrefix(line, "[fitt-feedback] ") {
+			logged = append(logged, line)
+		} else {
+			answer = append(answer, line)
+		}
+	}
+	return strings.Join(answer, "\n"), logged
 }
 
 func TestFeedbackRouteForwardsToTheReceiverNamedAtRunTime(t *testing.T) {

@@ -145,6 +145,7 @@ curl -sS -X POST "http://172.168.1.247:3101/api/ingest/feedback" \
 - [ ] ตอบ **200/201** เมื่อรับสำเร็จ (ไม่งั้น widget โชว์ "ส่งไม่สำเร็จ")
 - [ ] `note` อยู่ 2 ระดับ: top-level = ข้อความที่ลูกค้าพิมพ์ · `payload.pins[].note` = ต่อจุด
 - [ ] เพดานของ relay และ Gateway (DV, 24 พ.ย. 2026): `note` ≤ 4,000 · pins ≤ 20 · `pins[].note` ≤ 1,000 (นับแบบ `string.length` ของ JavaScript) widget ตรวจก่อนส่งและบอกลูกค้าเป็นภาษาไทยว่าช่องไหนเกินเท่าไร ถ้า receiver ยังตอบ `422 invalid_payload` widget แปล `issues` เป็นภาษาไทย ไม่โชว์ "HTTP 422"
+- [ ] route `/api/fitt-feedback` log หนึ่งบรรทัดต่อ report ที่ส่งต่อ: `[fitt-feedback] {"bytes":…,"note":<ความยาว note>,"pins":<จำนวนจุด>,"pin_note_max":<โน้ตจุดที่ยาวสุด>,"receiver":<status ที่ receiver ตอบ | "redirect" | "unreachable">}` มีแค่ขนาด ไม่มีเนื้อหาที่ลูกค้าเขียน ดูได้จาก log ของ container แอป
 - [ ] validate enum: `category` ∈ {bug,feature,style} · `priority` ∈ {low,med,high}
 - [ ] **ไม่ต้องเปิด CORS** — feedback มาจาก server ของแอป (route `/api/fitt-feedback`) ไม่ใช่จากเบราว์เซอร์
 - [ ] เก็บ `payload` (nested) เป็น **jsonb** ทั้งก้อนได้; field บนเป็นคอลัมน์
