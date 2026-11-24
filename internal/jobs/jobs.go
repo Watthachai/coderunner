@@ -1567,6 +1567,7 @@ func editPrompt(change string) string {
 		"Use the fitt-build skill and its delivery checks for this edit. Preserve migration history, accounts and customer data. " +
 		"If the project has no crn.runtime.json yet, add it as the skill's references/runs-anywhere.md says, declaring only the variables the app already reads. " +
 		"Keep the edit to what the change asks: no unrelated refactors, dependency, schema or migration changes unless the change needs them. " +
+		ownInstructions +
 		politeQuestions +
 		everyItem +
 		"Apply this change and keep everything else working:\n\n" + change
@@ -1584,6 +1585,14 @@ func widgetPrompt() string {
 		"CRN puts its own copy back after you finish, so leave them as they are. " +
 		"Its route reads " + strings.Join(buildstep.WidgetEnvNames(), ", ") + ": where the app's own tests check which environment variables its code reads, allow these. "
 }
+
+// ownInstructions: a team that hands its part of a repository to CRN leaves its rules in
+// a CRN-HANDOFF.md, as Billing does in OKR from 1 Dec 2026 (docs/billing/CRN-HANDOFF.md:
+// money and accounting rules, tests to pass before a build, what not to do).
+const ownInstructions = "Before you change a part of the project, read the repository's own instructions for it and follow them: " +
+	"AGENTS.md, CLAUDE.md and CRN.md where they exist, and every CRN-HANDOFF.md, which a team leaves for CRN with the rules of its part, " +
+	"the tests to pass and what not to do (for example docs/billing/CRN-HANDOFF.md, before changing src/modules/billing). " +
+	"Run the tests they ask for that can run here, and say in your summary which could not. "
 
 // politeQuestions: customers ask for changes as questions ("ย้ายปุ่มบันทึกไปไว้ใต้ตารางได้ไหม"),
 // and builds answered "ทำได้ครับ" without changing anything (23 Nov 2026).
@@ -1657,7 +1666,7 @@ func repoImagePrompt(change string, img *buildstep.RepoImage) string {
 		"When you finish, CRN commits your changes, builds that commit with that Dockerfile and pushes the image itself: " +
 		"do not run docker build or docker push, and do not add a Dockerfile, crn-delivery.json, Next.js or a feedback widget. " +
 		"Do not change " + buildstep.RepoImageFile + ", " + img.Dockerfile + " or any .dockerignore: a build that does is stopped. " +
-		"Follow the repository's own instructions (CRN.md, AGENTS.md) for what you may change. " +
+		ownInstructions +
 		everyItem +
 		"Apply this change:\n\n" + change
 }
