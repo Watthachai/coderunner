@@ -8,7 +8,7 @@
 
 ## ตัวเชื่อมของ CRN (Gemini, 24 พ.ย. 2026)
 
-CRN มีตัวเชื่อมให้แล้วที่ `/feedback-ai` ของ server CRN (`internal/aiassist`) ถาม Gemini (`CRN_GEMINI_MODEL`, ค่าเริ่ม `gemini-3.8-flash`) ผ่าน `generateContent` ตามสัญญาข้างล่าง
+CRN มีตัวเชื่อมให้แล้วที่ `/feedback-ai` ของ server CRN (`internal/aiassist`) ถาม Gemini (`CRN_GEMINI_MODEL`, ค่าเริ่ม `gemini-2.5-flash-lite`) ผ่าน `generateContent` ตามสัญญาข้างล่าง
 
 - แอปตั้ง `FITT_FEEDBACK_AI_URL=http://172.168.1.171:8080/feedback-ai` และ `FITT_FEEDBACK_AI_KEY=<key ของแอป>` แล้ว restart ไม่ต้อง build ใหม่ ถ้าแอปมี route ตั้งแต่ 462ae7d
 - key อยู่ในไฟล์บนเครื่อง build อ่านใหม่ทุกคำขอ เปลี่ยนแล้วไม่ต้อง restart CRN:
