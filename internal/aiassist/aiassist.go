@@ -50,7 +50,7 @@ const (
 )
 
 var (
-	fileTypes  = []string{"image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain", "text/csv"}
+	fileTypes  = []string{"image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain", "text/csv", xlsxType, docxType}
 	categories = []string{"bug", "feature", "style"}
 	priorities = []string{"low", "med", "high"}
 )
@@ -209,8 +209,17 @@ func geminiRequest(req appRequest) (map[string]any, error) {
 		if f.Name == "" || utf8.RuneCountInString(f.Name) > 200 || !slices.Contains(fileTypes, f.Type) {
 			return nil, errors.New("file")
 		}
-		if _, err := base64.StdEncoding.DecodeString(f.Data); err != nil || f.Data == "" {
+		data, err := base64.StdEncoding.DecodeString(f.Data)
+		if err != nil || f.Data == "" {
 			return nil, errors.New("file data")
+		}
+		if f.Type == xlsxType || f.Type == docxType {
+			text, err := officeText(f.Type, data)
+			if err != nil {
+				return nil, fmt.Errorf("file %s", err)
+			}
+			last.Parts = append(last.Parts, part{"text": "file: " + f.Name + " (its text)\n" + text})
+			continue
 		}
 		last.Parts = append(last.Parts, part{"text": "file: " + f.Name}, part{"inlineData": map[string]string{"mimeType": f.Type, "data": f.Data}})
 	}

@@ -370,7 +370,11 @@ const feedbackRouteAssist = `
 // Pictures and documents the customer attaches go to the AI with every turn of the chat.
 const ASSIST_MAX_BYTES = 14 * 1024 * 1024;
 const ASSIST_FILES = 10;
-const ASSIST_FILE_TYPES = ["image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain", "text/csv"];
+const ASSIST_FILE_TYPES = [
+  "image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain", "text/csv",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+];
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const ASSIST_TIMEOUT_MS = 30000;
 const ASSIST_MESSAGES = 20;

@@ -1,7 +1,11 @@
 package aiassist
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The app's route sends what docs/feedback-assistant.md describes; this is one such call.
@@ -257,5 +262,114 @@ func TestAConversationCutToItsLastMessagesStartsWithTheCustomer(t *testing.T) {
 	raw, _ := json.Marshal((<-g.got)["contents"])
 	if !strings.HasPrefix(string(raw), `[{"parts":[{"text":"เปลี่ยนสีหัวตาราง"}`) {
 		t.Errorf("contents %s", raw)
+	}
+}
+
+// zipOf is a base64 Office file holding the given parts.
+func zipOf(t *testing.T, parts map[string]string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	for name, body := range parts {
+		w, err := z.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, body)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// A spec as customers send it: a sheet of the new menu's fields.
+func specXLSX(t *testing.T) string {
+	return zipOf(t, map[string]string{
+		"xl/workbook.xml":            `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="ฟิลด์เมนูใหม่" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
+		"xl/sharedStrings.xml":       `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>ชื่อฟิลด์</t></si><si><t>ชนิด</t></si><si><t>เลขที่สัญญา</t></si><si><r><t>ข้อ</t></r><r><t>ความ</t></r></si></sst>`,
+		"xl/worksheets/sheet1.xml": `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>` +
+			`<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="inlineStr"><is><t>บังคับ</t></is></c></row>` +
+			`<row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" t="s"><v>3</v></c><c r="D2"><v>12</v></c></row>` +
+			`</sheetData></worksheet>`,
+	})
+}
+
+func specDOCX(t *testing.T) string {
+	return zipOf(t, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+			`<w:p><w:r><w:t>เมนูสัญญาเช่า</w:t></w:r></w:p>` +
+			`<w:p><w:r><w:t xml:space="preserve">ขั้นตอน: </w:t></w:r><w:r><w:t>บันทึก แล้วอนุมัติ</w:t></w:r></w:p>` +
+			`<w:tbl><w:tr><w:tc><w:p><w:r><w:t>ฟิลด์</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>ชนิด</w:t></w:r></w:p></w:tc></w:tr>` +
+			`<w:tr><w:tc><w:p><w:r><w:t>วันเริ่ม</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>วันที่</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+			`</w:body></w:document>`,
+	})
+}
+
+// Customers send the spec of a new menu as Excel or Word. Gemini reads neither, so CRN
+// gives it their text: each sheet as CSV, the document's paragraphs and table rows.
+func TestExcelAndWordReachGeminiAsText(t *testing.T) {
+	g := newFakeGemini(t)
+	body := `{"instructions":"x","messages":[{"role":"user","text":"อยากได้เมนูใหม่ตามไฟล์นี้"}],` +
+		`"files":[{"name":"ฟิลด์.xlsx","type":"` + xlsxType + `","data":"` + specXLSX(t) + `"},` +
+		`{"name":"สเปก.docx","type":"` + docxType + `","data":"` + specDOCX(t) + `"}],"schema":{"type":"object"}}`
+	if w := call(handlerFor(t, g.URL, true), appKey, body); w.Code != 200 {
+		t.Fatalf("answered %d %s", w.Code, w.Body)
+	}
+	raw, _ := json.Marshal((<-g.got)["contents"])
+	var contents []struct {
+		Parts []map[string]any
+	}
+	_ = json.Unmarshal(raw, &contents)
+	var texts []string
+	for _, p := range contents[len(contents)-1].Parts {
+		if _, ok := p["inlineData"]; ok {
+			t.Errorf("an Office file went to Gemini as a file: %v", p)
+		}
+		if s, ok := p["text"].(string); ok {
+			texts = append(texts, s)
+		}
+	}
+	joined := strings.Join(texts, "\n")
+	for _, want := range []string{
+		"ฟิลด์.xlsx", "ฟิลด์เมนูใหม่", "ชื่อฟิลด์,ชนิด,บังคับ", "เลขที่สัญญา,ข้อความ,,12",
+		"สเปก.docx", "เมนูสัญญาเช่า", "ขั้นตอน: บันทึก แล้วอนุมัติ", "ฟิลด์ | ชนิด", "วันเริ่ม | วันที่",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("Gemini did not get %q in:\n%s", want, joined)
+		}
+	}
+}
+
+func TestAFileThatIsNotTheOfficeFileItSaysIsRefused(t *testing.T) {
+	g := newFakeGemini(t)
+	body := `{"instructions":"x","messages":[{"role":"user","text":"x"}],"files":[{"name":"a.xlsx","type":"` + xlsxType + `","data":"AAAA"}],"schema":{}}`
+	if w := call(handlerFor(t, g.URL, true), appKey, body); w.Code != http.StatusBadRequest {
+		t.Errorf("answered %d %s", w.Code, w.Body)
+	}
+}
+
+// A long sheet is cut, and Gemini is told so, so one file can't cost a fortune.
+func TestALongSpreadsheetIsCut(t *testing.T) {
+	var rows strings.Builder
+	for i := 1; i <= 5000; i++ {
+		fmt.Fprintf(&rows, `<row r="%d"><c r="A%d" t="inlineStr"><is><t>%s</t></is></c></row>`, i, i, strings.Repeat("ก", 40))
+	}
+	data := zipOf(t, map[string]string{
+		"xl/workbook.xml":          `<workbook><sheets><sheet name="S" sheetId="1"/></sheets></workbook>`,
+		"xl/worksheets/sheet1.xml": `<worksheet><sheetData>` + rows.String() + `</sheetData></worksheet>`,
+	})
+	g := newFakeGemini(t)
+	body := `{"instructions":"x","messages":[{"role":"user","text":"x"}],"files":[{"name":"a.xlsx","type":"` + xlsxType + `","data":"` + data + `"}],"schema":{}}`
+	if w := call(handlerFor(t, g.URL, true), appKey, body); w.Code != 200 {
+		t.Fatalf("answered %d %s", w.Code, w.Body)
+	}
+	raw, _ := json.Marshal((<-g.got)["contents"])
+	if n := utf8.RuneCount(raw); n > officeTextMax+2000 {
+		t.Errorf("Gemini got %d characters", n)
+	}
+	if !strings.Contains(string(raw), "ตัดเหลือ") {
+		t.Error("Gemini was not told the file was cut")
 	}
 }

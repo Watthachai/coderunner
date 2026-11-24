@@ -394,7 +394,7 @@
     "<h3>💬 บอกสิ่งที่อยากให้แก้</h3>" +
     "<div class='chat' hidden><div class='log' aria-live='polite'></div><div class='atts'></div>" +
     "<div class='ask'><button class='clip' title='แนบรูปหรือเอกสาร' aria-label='แนบรูปหรือเอกสาร'>📎</button>" +
-    "<input class='filein' type='file' multiple hidden accept='image/png,image/jpeg,image/webp,application/pdf,text/plain,text/csv,.pdf,.txt,.csv'>" +
+    "<input class='filein' type='file' multiple hidden accept='image/png,image/jpeg,image/webp,application/pdf,text/plain,text/csv,.pdf,.txt,.csv,.xlsx,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document'>" +
     "<input class='askin' maxlength='2000' placeholder='พิมพ์ กด 🎤 พูด หรือวางรูปที่แคปไว้'>" +
     "<button class='mic askmic' hidden title='พูดแทนพิมพ์' aria-label='พูดแทนพิมพ์'>🎤</button>" +
     "<button class='askgo' title='ส่งข้อความ' aria-label='ส่งข้อความ'>➤</button></div>" +
@@ -1164,7 +1164,11 @@
   // The AI reads what the customer attaches, with the page's crops and pins. Pictures
   // also go to the team in the report (pinsFromChat); a document the AI reads, and its
   // draft says what the team needs from it.
-  var ATTACH_TYPES = ["image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain", "text/csv"];
+  // A spec for a new menu or section often comes as Excel or Word: the AI reads their
+  // text (CRN's AI turns them into text for Gemini); like a PDF, they don't go in the report.
+  var XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  var DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  var ATTACH_TYPES = ["image/png", "image/jpeg", "image/webp", "application/pdf", "text/plain", "text/csv", XLSX, DOCX];
   var ATTACH_MAX = 9 * 1024 * 1024; // everything the AI gets in one turn, before base64
   function attachedSize() {
     var n = 0;
@@ -1173,9 +1177,10 @@
   }
   function attach(file) {
     var name = (file.name || "รูปที่วาง.png").slice(0, 200);
-    var type = file.type || (/\.csv$/i.test(name) ? "text/csv" : /\.txt$/i.test(name) ? "text/plain" : "");
-    if (/\.(docx?|xlsx?|pptx?)$/i.test(name)) { say("note", "ไฟล์ Word, Excel หรือ PowerPoint ให้บันทึกเป็น PDF ก่อน แล้วแนบใหม่นะครับ"); return; }
-    if (ATTACH_TYPES.indexOf(type) < 0) { say("note", "แนบได้เฉพาะรูป, PDF หรือไฟล์ข้อความครับ"); return; }
+    var type = /\.xlsx$/i.test(name) ? XLSX : /\.docx$/i.test(name) ? DOCX :
+      file.type || (/\.csv$/i.test(name) ? "text/csv" : /\.txt$/i.test(name) ? "text/plain" : "");
+    if (/\.(doc|xls|pptx?)$/i.test(name)) { say("note", "ไฟล์ .doc, .xls หรือ PowerPoint ให้บันทึกเป็น .docx, .xlsx หรือ PDF ก่อน แล้วแนบใหม่นะครับ"); return; }
+    if (ATTACH_TYPES.indexOf(type) < 0) { say("note", "แนบได้เฉพาะรูป, PDF, Excel, Word หรือไฟล์ข้อความครับ"); return; }
     if (ai.files.length >= 5) { say("note", "แนบได้ไม่เกิน 5 ไฟล์ครับ"); return; }
     if (attachedSize() + file.size > ATTACH_MAX) { say("note", "ไฟล์ใหญ่เกินไป แนบรวมกันได้ไม่เกิน 9 MB ครับ"); return; }
     var reader = new FileReader();

@@ -261,11 +261,12 @@ func TestAssistTakesOnlyFilesTheAICanRead(t *testing.T) {
 		body   string
 		status int
 	}{
-		"a Word file":     {`{` + msg + `,"files":[` + file("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "AAAA") + `]}`, 400},
-		"not base64":      {`{` + msg + `,"files":[` + file("a.png", "image/png", "<svg>") + `]}`, 400},
-		"no name":         {`{` + msg + `,"files":[` + file("", "image/png", "AAAA") + `]}`, 400},
-		"too many files":  {`{` + msg + `,"files":[` + seven + `]}`, 400},
-		"files too large": {`{` + msg + `,"files":[` + file("a.pdf", "application/pdf", big) + `,` + file("b.pdf", "application/pdf", big) + `]}`, 413},
+		"an old Word file": {`{` + msg + `,"files":[` + file("a.doc", "application/msword", "AAAA") + `]}`, 400},
+		"PowerPoint":       {`{` + msg + `,"files":[` + file("a.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "AAAA") + `]}`, 400},
+		"not base64":       {`{` + msg + `,"files":[` + file("a.png", "image/png", "<svg>") + `]}`, 400},
+		"no name":          {`{` + msg + `,"files":[` + file("", "image/png", "AAAA") + `]}`, 400},
+		"too many files":   {`{` + msg + `,"files":[` + seven + `]}`, 400},
+		"files too large":  {`{` + msg + `,"files":[` + file("a.pdf", "application/pdf", big) + `,` + file("b.pdf", "application/pdf", big) + `]}`, 413},
 	} {
 		s := assistStep(tc.body)
 		s.Pad = 9 * 1024 * 1024
@@ -280,16 +281,39 @@ func TestAssistTakesOnlyFilesTheAICanRead(t *testing.T) {
 
 // In the chat the customer attaches pictures and documents with 📎 or pastes a
 // screenshot; the AI gets them with the page's crops. Pictures also go to the team in
-// the report, as pins in the payload's own shape (PNG, longest side at most 1600px);
-// Word and Excel are asked for as PDF, which the AI reads.
+// the report, as pins in the payload's own shape (PNG, longest side at most 1600px).
+// A spec comes as PDF, Excel (.xlsx) or Word (.docx), which the AI reads; old .doc and
+// .xls files and PowerPoint are asked for in one of those.
 func TestTheChatTakesPicturesAndDocuments(t *testing.T) {
 	for _, want := range []string{
 		`type='file'`, `application/pdf`, `clipboardData`,
 		`files: chatFiles()`, `label: "รูปที่แนบ: " + f.name`, `selector: "region"`, `toDataURL("image/png")`, `1600 /`,
-		`บันทึกเป็น PDF`,
+		`.xlsx,.docx`, `spreadsheetml.sheet`, `wordprocessingml.document`, `บันทึกเป็น .docx, .xlsx หรือ PDF`,
 	} {
 		if !strings.Contains(feedbackWidgetJS, want) {
 			t.Errorf("the widget lacks %s", want)
+		}
+	}
+}
+
+// The spec of a new menu often comes as Excel or Word: the route passes them on as
+// sent, and the AI (CRN's turns them into text for Gemini) reads them.
+func TestAssistPassesExcelAndWordToTheAI(t *testing.T) {
+	ai := newFakeAI(t)
+	body := `{"messages":[{"role":"user","text":"อยากได้เมนูใหม่ตามไฟล์นี้"}],"files":[` +
+		`{"name":"ฟิลด์.xlsx","type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","data":"UEsDBA=="},` +
+		`{"name":"สเปก.docx","type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","data":"UEsDBA=="}]}`
+	got := runStepsEnv(t, ticketRoute(t), map[string]string{"FITT_FEEDBACK_AI_URL": ai.URL}, assistStep(body))
+	if got[0].Status != 200 {
+		t.Fatalf("got %d %s", got[0].Status, got[0].Body)
+	}
+	files, _ := ai.got[0]["files"].([]any)
+	if len(files) != 2 {
+		t.Fatalf("the AI got %d files: %v", len(files), ai.got[0]["files"])
+	}
+	for i, name := range []string{"ฟิลด์.xlsx", "สเปก.docx"} {
+		if f, _ := files[i].(map[string]any); f["name"] != name || f["data"] != "UEsDBA==" {
+			t.Errorf("file %d was not passed on as sent: %v", i, f)
 		}
 	}
 }
