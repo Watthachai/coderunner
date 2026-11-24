@@ -32,7 +32,7 @@ import (
 type Config struct {
 	GeminiKeyFile string // the Gemini API key
 	AppKeyFile    string // the key apps send as Bearer
-	Model         string // e.g. gemini-2.5-flash-lite
+	Model         string // e.g. gemini-3.1-flash-lite
 	Endpoint      string // https://generativelanguage.googleapis.com/v1beta
 	Client        *http.Client
 	Logger        *slog.Logger

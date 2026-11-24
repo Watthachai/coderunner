@@ -174,7 +174,7 @@ type Config struct {
 	// The 💬 assistant's AI (internal/aiassist, served at /feedback-ai): the Gemini API
 	// key and the key apps send as Bearer (their FITT_FEEDBACK_AI_KEY), each a file read
 	// on every request; and which Gemini to ask. Defaults $HOME/crn-secrets/gemini-key,
-	// $HOME/crn-secrets/feedback-ai-key, gemini-2.5-flash-lite and Google's v1beta endpoint.
+	// $HOME/crn-secrets/feedback-ai-key, gemini-3.1-flash-lite and Google's v1beta endpoint.
 	GeminiKeyFile     string
 	FeedbackAIKeyFile string
 	GeminiModel       string
@@ -300,7 +300,7 @@ func Load() (*Config, error) {
 		PushCredentialDir:  getEnv("CRN_PUSH_CREDENTIAL_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "push")),
 		GeminiKeyFile:      getEnv("CRN_GEMINI_KEY_FILE", filepath.Join(os.Getenv("HOME"), "crn-secrets", "gemini-key")),
 		FeedbackAIKeyFile:  getEnv("CRN_FEEDBACK_AI_KEY_FILE", filepath.Join(os.Getenv("HOME"), "crn-secrets", "feedback-ai-key")),
-		GeminiModel:        getEnv("CRN_GEMINI_MODEL", "gemini-2.5-flash-lite"),
+		GeminiModel:        getEnv("CRN_GEMINI_MODEL", "gemini-3.1-flash-lite"),
 		GeminiEndpoint:     getEnv("CRN_GEMINI_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta"),
 		PushHelper:         strings.Fields(os.Getenv("CRN_PUSH_HELPER")),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
