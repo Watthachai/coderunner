@@ -283,12 +283,14 @@ func TestAssistTakesOnlyFilesTheAICanRead(t *testing.T) {
 // screenshot; the AI gets them with the page's crops. Pictures also go to the team in
 // the report, as pins in the payload's own shape (PNG, longest side at most 1600px).
 // A spec comes as PDF, Excel (.xlsx) or Word (.docx), which the AI reads; old .doc and
-// .xls files and PowerPoint are asked for in one of those.
+// .xls files and PowerPoint are asked for in one of those, and a file with macros
+// (.xlsm, .docm) as one without (DV takes none, 25 Nov 2026).
 func TestTheChatTakesPicturesAndDocuments(t *testing.T) {
 	for _, want := range []string{
 		`type='file'`, `application/pdf`, `clipboardData`,
-		`files: chatFiles()`, `label: "รูปที่แนบ: " + f.name`, `selector: "region"`, `toDataURL("image/png")`, `1600 /`,
+		`files: chatFiles()`, `label: attachedLabel(f.name)`, `selector: "region"`, `toDataURL("image/png")`, `1600 /`,
 		`.xlsx,.docx`, `spreadsheetml.sheet`, `wordprocessingml.document`, `บันทึกเป็น .docx, .xlsx หรือ PDF`,
+		`(xlsm|xltm|docm|dotm)`, `ไฟล์ที่มี macro`,
 	} {
 		if !strings.Contains(feedbackWidgetJS, want) {
 			t.Errorf("the widget lacks %s", want)

@@ -3,10 +3,13 @@
 // to FITT_FEEDBACK_AI_URL, which is CRN's /feedback-ai: CRN asks Gemini and answers
 // {reply, draft} in the route's shape.
 //
-// Two secrets sit in files on the build machine and are read on every request, so
-// adding or changing one needs no restart: the Gemini API key, and the key apps send as
-// Authorization: Bearer (FITT_FEEDBACK_AI_KEY in each app's env). Until both are there
-// it answers 503 and asks no one. Nothing the customer wrote or attached is logged.
+// The secrets sit in files on the build machine and are read on every request, so
+// adding, changing or taking one back needs no restart: the Gemini API key, and the keys
+// apps send as Authorization: Bearer (FITT_FEEDBACK_AI_KEY in each app's env). Each
+// customer's site has its own key, a file named after the site in the keys folder, so
+// one can be taken back alone (DV, 25 Nov 2026); the key all apps shared at first works
+// until its file is gone. Until there is a Gemini key and an app key it answers 503 and
+// asks no one. The log says which site asked; nothing the customer wrote or attached.
 package aiassist
 
 import (
@@ -22,6 +25,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -31,7 +35,8 @@ import (
 // Config says where the secrets are and which Gemini to ask.
 type Config struct {
 	GeminiKeyFile string // the Gemini API key
-	AppKeyFile    string // the key apps send as Bearer
+	AppKeyFile    string // the key all apps shared at first, logged as site "shared"
+	AppKeyDir     string // a file per site: its name is the site, its content the key
 	Model         string // e.g. gemini-3.1-flash-lite
 	Endpoint      string // https://generativelanguage.googleapis.com/v1beta
 	Client        *http.Client
@@ -94,53 +99,89 @@ func Handler(c Config) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		status, body, note := c.serve(r)
+		status, body, site, note := c.serve(r)
 		w.Header().Set("content-type", "application/json")
 		w.Header().Set("cache-control", "no-store")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(body)
-		c.Logger.Info("feedback-ai", "status", status, "model", c.Model, "ms", time.Since(start).Milliseconds(), "note", note)
+		c.Logger.Info("feedback-ai", "status", status, "site", site, "model", c.Model, "ms", time.Since(start).Milliseconds(), "note", note)
 	})
 }
 
 func fail(code string) map[string]string { return map[string]string{"error": code} }
 
-func (c Config) serve(r *http.Request) (int, any, string) {
+func (c Config) serve(r *http.Request) (int, any, string, string) {
 	if r.Method != http.MethodPost {
-		return http.StatusMethodNotAllowed, fail("method_not_allowed"), ""
+		return http.StatusMethodNotAllowed, fail("method_not_allowed"), "", ""
 	}
-	geminiKey, err1 := readSecret(c.GeminiKeyFile)
-	appKey, err2 := readSecret(c.AppKeyFile)
-	if err1 != nil || err2 != nil {
-		return http.StatusServiceUnavailable, fail("not_configured"), "a key file is missing"
+	geminiKey, err := readSecret(c.GeminiKeyFile)
+	keys := c.appKeys()
+	if err != nil || len(keys) == 0 {
+		return http.StatusServiceUnavailable, fail("not_configured"), "", "a key file is missing"
 	}
 	bearer, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	got, want := sha256.Sum256([]byte(bearer)), sha256.Sum256([]byte(appKey))
-	if bearer == "" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
-		return http.StatusUnauthorized, fail("unauthorized"), ""
+	site := siteOf(bearer, keys)
+	if site == "" {
+		return http.StatusUnauthorized, fail("unauthorized"), "", ""
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
 	if err != nil {
-		return http.StatusRequestEntityTooLarge, fail("payload_too_large"), ""
+		return http.StatusRequestEntityTooLarge, fail("payload_too_large"), site, ""
 	}
 	var req appRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return http.StatusBadRequest, fail("invalid_request"), "not json"
+		return http.StatusBadRequest, fail("invalid_request"), site, "not json"
 	}
 	gReq, err := geminiRequest(req)
 	if err != nil {
-		return http.StatusBadRequest, fail("invalid_request"), err.Error()
+		return http.StatusBadRequest, fail("invalid_request"), site, err.Error()
 	}
 	note := fmt.Sprintf("messages=%d files=%d", len(req.Messages), len(req.Files))
 	text, err := c.ask(r.Context(), geminiKey, gReq)
 	if err != nil {
-		return http.StatusBadGateway, fail("ai_unreachable"), note + " " + err.Error()
+		return http.StatusBadGateway, fail("ai_unreachable"), site, note + " " + err.Error()
 	}
 	a, err := checkAnswer(text)
 	if err != nil {
-		return http.StatusBadGateway, fail("bad_answer"), note + " " + err.Error()
+		return http.StatusBadGateway, fail("bad_answer"), site, note + " " + err.Error()
 	}
-	return http.StatusOK, a, note
+	return http.StatusOK, a, site, note
+}
+
+// appKeys is every key an app may send, by the site it belongs to.
+func (c Config) appKeys() map[string]string {
+	keys := map[string]string{}
+	if c.AppKeyDir != "" {
+		entries, _ := os.ReadDir(c.AppKeyDir)
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".") || !e.Type().IsRegular() {
+				continue
+			}
+			if k, err := readSecret(filepath.Join(c.AppKeyDir, e.Name())); err == nil {
+				keys[e.Name()] = k
+			}
+		}
+	}
+	if k, err := readSecret(c.AppKeyFile); err == nil {
+		keys["shared"] = k
+	}
+	return keys
+}
+
+// siteOf is the site whose key bearer is, or "" when it is no site's.
+func siteOf(bearer string, keys map[string]string) string {
+	if bearer == "" {
+		return ""
+	}
+	got := sha256.Sum256([]byte(bearer))
+	site := ""
+	for name, key := range keys {
+		want := sha256.Sum256([]byte(key))
+		if subtle.ConstantTimeCompare(got[:], want[:]) == 1 {
+			site = name
+		}
+	}
+	return site
 }
 
 func readSecret(path string) (string, error) {

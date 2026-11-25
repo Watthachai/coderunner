@@ -12,11 +12,13 @@
 CRN มีตัวเชื่อมให้แล้วที่ `/feedback-ai` ของ server CRN (`internal/aiassist`) ถาม Gemini (`CRN_GEMINI_MODEL`, ค่าเริ่ม `gemini-3.1-flash-lite`) ผ่าน `generateContent` ตามสัญญาข้างล่าง
 
 - แอปตั้ง `FITT_FEEDBACK_AI_URL=http://172.168.1.171:8080/feedback-ai` และ `FITT_FEEDBACK_AI_KEY=<key ของแอป>` แล้ว restart ไม่ต้อง build ใหม่ ถ้าแอปมี route ตั้งแต่ 462ae7d
-- key อยู่ในไฟล์บนเครื่อง build อ่านใหม่ทุกคำขอ เปลี่ยนแล้วไม่ต้อง restart CRN:
+- key อยู่ในไฟล์บนเครื่อง build อ่านใหม่ทุกคำขอ เพิ่ม เปลี่ยน หรือถอน key ไม่ต้อง restart CRN:
   - `~/crn-secrets/gemini-key`: API key ของ Gemini
-  - `~/crn-secrets/feedback-ai-key`: key ที่แอปส่งมาเป็น Bearer (ใช้ร่วมทุกแอป)
-- ถ้ายังไม่มีไฟล์ใดไฟล์หนึ่ง ตอบ 503 และไม่ถาม Gemini ส่วน key ของแอปที่ผิดจะได้ 401
-- log มีแค่สถานะ เวลา จำนวนข้อความและจำนวนไฟล์ ไม่มีสิ่งที่ลูกค้าเขียนหรือแนบ
+  - `~/crn-secrets/feedback-ai-keys/<ไซต์>`: key ของแต่ละไซต์ที่แอปส่งมาเป็น Bearer หนึ่งไฟล์ต่อหนึ่งไซต์ ชื่อไฟล์คือชื่อไซต์ (DV ขอแยก key รายไซต์ จะได้ถอนทีละไซต์ได้ 25 พ.ย. 2026) ถอน key ของไซต์ไหนก็ลบไฟล์นั้น ไฟล์ที่ชื่อขึ้นต้นด้วย `.` ไม่นับ
+  - `~/crn-secrets/feedback-ai-key`: key แรกที่ใช้ร่วมทุกแอป ยังใช้ได้จนกว่าจะลบไฟล์ (log เป็นไซต์ `shared`)
+  - สร้าง key ของไซต์ใหม่: `umask 077; mkdir -p ~/crn-secrets/feedback-ai-keys; openssl rand -hex 32 > ~/crn-secrets/feedback-ai-keys/ntc` (ไม่ต้องพิมพ์ key ออกจอ)
+- ถ้ายังไม่มี key ของ Gemini หรือไม่มี key ของแอปเลยสักตัว ตอบ 503 และไม่ถาม Gemini ส่วน key ของแอปที่ผิดหรือถอนแล้วจะได้ 401
+- log มีแค่สถานะ ชื่อไซต์ เวลา จำนวนข้อความและจำนวนไฟล์ ไม่มี key และไม่มีสิ่งที่ลูกค้าเขียนหรือแนบ
 
 ## สิ่งที่ตัวเชื่อม AI ต้องรับ
 

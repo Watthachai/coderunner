@@ -373,3 +373,82 @@ func TestALongSpreadsheetIsCut(t *testing.T) {
 		t.Error("Gemini was not told the file was cut")
 	}
 }
+
+// DV gives each customer's site its own key, so one site's key can be taken back without
+// touching the others (Jidapa, 25 Nov 2026): one file per site in the keys folder, named
+// after the site, read on every request. The log says which site asked, never its key.
+// The key all apps shared at first still works until its file is gone.
+func TestEachSiteHasItsOwnKey(t *testing.T) {
+	g := newFakeGemini(t)
+	dir := t.TempDir()
+	keys := filepath.Join(dir, "feedback-ai-keys")
+	if err := os.MkdirAll(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, key := range map[string]string{"ntc": "ntc-key", "audit": "audit-key", ".DS_Store": "not-a-key"} {
+		if err := os.WriteFile(filepath.Join(keys, name), []byte(key+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gemini-key"), []byte("gemini-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	h := Handler(Config{
+		GeminiKeyFile: filepath.Join(dir, "gemini-key"),
+		AppKeyFile:    filepath.Join(dir, "feedback-ai-key"),
+		AppKeyDir:     keys,
+		Model:         "gemini-test",
+		Endpoint:      g.URL,
+		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	answered := func(key string) int {
+		w := call(h, key, appCall)
+		if w.Code == 200 {
+			<-g.got
+			<-g.path
+			<-g.apiKey
+		}
+		return w.Code
+	}
+	for _, site := range []string{"ntc", "audit"} {
+		logs.Reset()
+		if code := answered(site + "-key"); code != 200 {
+			t.Errorf("%s's key: answered %d", site, code)
+		}
+		if !strings.Contains(logs.String(), "site="+site) || strings.Contains(logs.String(), site+"-key") {
+			t.Errorf("%s's call logged %q", site, logs.String())
+		}
+	}
+	if code := answered("not-a-key"); code != http.StatusUnauthorized {
+		t.Errorf("a hidden file's content is a key: answered %d", code)
+	}
+	if err := os.Remove(filepath.Join(keys, "ntc")); err != nil {
+		t.Fatal(err)
+	}
+	if code := answered("ntc-key"); code != http.StatusUnauthorized {
+		t.Errorf("a key taken back: answered %d", code)
+	}
+	if code := answered("audit-key"); code != 200 {
+		t.Errorf("another site after one key was taken back: answered %d", code)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "feedback-ai-key"), []byte(appKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logs.Reset()
+	if code := answered(appKey); code != 200 || !strings.Contains(logs.String(), "site=shared") {
+		t.Errorf("the shared key: answered %d, logged %q", code, logs.String())
+	}
+	for _, name := range []string{"audit", "feedback-ai-key"} {
+		p := filepath.Join(keys, name)
+		if name == "feedback-ai-key" {
+			p = filepath.Join(dir, name)
+		}
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := answered("audit-key"); code != http.StatusServiceUnavailable {
+		t.Errorf("no key left: answered %d", code)
+	}
+}

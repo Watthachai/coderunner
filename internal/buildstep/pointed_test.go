@@ -156,9 +156,36 @@ func TestAPinsLabelPutsItTogether(t *testing.T) {
 	if got := pointedString(t, `var el = E("button", {}, ["ส่ง"]);`, `pinLabel(el, "")`); got != `ปุ่ม "ส่ง"` {
 		t.Errorf("without a screen: got %q", got)
 	}
-	long := pointedString(t, `var el = E("button", {}, ["ส่ง"]);`, `pinLabel(el, "ก".repeat(400))`)
-	if n := len([]rune(long)); n > 300 {
-		t.Errorf("a label of %d characters is longer than the AI's route takes (300)", n)
+}
+
+// DV's relay and Gateway at a customer's site take a label of at most 200 characters,
+// and turn the whole report away when one is longer (Jidapa, 25 Nov 2026). The widget
+// counts as JavaScript does, which is never less than the characters a person sees, and
+// never cuts an emoji in half.
+func TestEveryLabelFitsDVsRelay(t *testing.T) {
+	cases := []struct{ name, setup, expr string }{
+		{"a pin on a long screen", `var el = E("button", {}, ["ส่ง"]);`, `pinLabel(el, "ก".repeat(400))`},
+		{"a pin in a long box", `var el = E("button", {}, ["ส่ง".repeat(30)]); E("div", {}, [E("h3", {}, ["ข".repeat(300)]), el]);`, `pinLabel(el, "ค".repeat(60))`},
+		{"a crop over a long list", `var items = Array.from({ length: 80 }, (_, i) => ({ text: "รายการที่ " + i, x: 10, y: 10 + i, w: 50, h: 1 }));`,
+			`regionLabel(800, 600, "ใบงาน".repeat(12), regionWords(items, { x: 0, y: 0, w: 800, h: 600 }))`},
+		{"a picture with a long name", "", `attachedLabel("ใบเสนอราคา".repeat(30) + ".png")`},
+		{"a cut through an emoji", "", `words("ก".repeat(198) + "😀😀😀", LABEL_MAX)`},
+	}
+	for _, c := range cases {
+		raw := pointed(t, c.setup, `(function (s) { return { n: s.length, whole: s.isWellFormed() }; })(`+c.expr+`)`)
+		var got struct {
+			N     int  `json:"n"`
+			Whole bool `json:"whole"`
+		}
+		if err := json.Unmarshal([]byte(raw), &got); err != nil {
+			t.Fatalf("%s: %s: %v", c.name, raw, err)
+		}
+		if got.N > 200 || !got.Whole {
+			t.Errorf("%s: a label of %d characters (whole: %v); DV's relay takes 200", c.name, got.N, got.Whole)
+		}
+	}
+	if got := pointedString(t, "", `attachedLabel("ใบเสนอราคา.png")`); got != "รูปที่แนบ: ใบเสนอราคา.png" {
+		t.Errorf("a picture's label: %q", got)
 	}
 }
 
@@ -180,11 +207,6 @@ func TestACropSaysTheWordsInsideIt(t *testing.T) {
 	}
 	if got := pointedString(t, "", `regionLabel(670, 643, "", "")`); got != "พื้นที่ 670×643" {
 		t.Errorf("a crop with nothing to read: %q", got)
-	}
-	many := pointedString(t, `var items = Array.from({ length: 80 }, (_, i) => ({ text: "รายการที่ " + i, x: 10, y: 10 + i, w: 50, h: 1 }));`,
-		`regionLabel(800, 600, "ใบงาน", regionWords(items, { x: 0, y: 0, w: 800, h: 600 }))`)
-	if n := len([]rune(many)); n > 300 {
-		t.Errorf("a crop over a long list makes a label of %d characters", n)
 	}
 }
 

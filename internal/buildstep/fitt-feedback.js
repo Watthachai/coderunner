@@ -84,13 +84,18 @@
   // menu the owner meant. A pin now names what a person sees on the screen: the
   // button, field, menu or text by its words, the window or box it is in, and the
   // screen. DV's change request carries the label to the builder as it is.
-  var LABEL_MAX = 300; // the AI's route takes a pin of at most 300 characters
+  // DV's relay and Gateway at a customer's site take a label of at most 200 characters and
+  // turn the whole report away when one is longer (Jidapa, 25 Nov 2026).
+  var LABEL_MAX = 200;
   var HEADINGS = "h1,h2,h3,h4,h5,h6,legend,[role=heading]";
-  // words is s in one line, cut to max characters.
+  // words is s in one line, cut to max characters, never through an emoji.
   function words(s, max) {
     s = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
     max = max || 40;
-    return s.length > max ? s.slice(0, max - 1) + "…" : s;
+    if (s.length <= max) return s;
+    var cut = max - 1, c = s.charCodeAt(cut - 1);
+    if (c >= 0xd800 && c <= 0xdbff) cut--;
+    return s.slice(0, cut) + "…";
   }
   function attrOf(el, name) { return (el && el.getAttribute && el.getAttribute(name)) || ""; }
   function tagOf(el) { return String((el && el.nodeName) || "").toLowerCase(); }
@@ -208,6 +213,10 @@
     if (!note || !screen || pagePins > 0 || note.indexOf(screen) >= 0) return note;
     var out = note + "\n(หน้าจอ: " + screen + ")";
     return out.length <= NOTE_MAX ? out : note;
+  }
+  // attachedLabel is the label of a picture the customer attached in the chat.
+  function attachedLabel(name) {
+    return words("รูปที่แนบ: " + name, LABEL_MAX);
   }
   // --- end of what the customer pointed at -----------------------------------------
 
@@ -1326,6 +1335,7 @@
     var type = /\.xlsx$/i.test(name) ? XLSX : /\.docx$/i.test(name) ? DOCX :
       file.type || (/\.csv$/i.test(name) ? "text/csv" : /\.txt$/i.test(name) ? "text/plain" : "");
     if (/\.(doc|xls|pptx?)$/i.test(name)) { say("note", "ไฟล์ .doc, .xls หรือ PowerPoint ให้บันทึกเป็น .docx, .xlsx หรือ PDF ก่อน แล้วแนบใหม่นะครับ"); return; }
+    if (/\.(xlsm|xltm|docm|dotm)$/i.test(name)) { say("note", "ไฟล์ที่มี macro ให้บันทึกเป็น .xlsx หรือ .docx ธรรมดาก่อน แล้วแนบใหม่นะครับ"); return; }
     if (ATTACH_TYPES.indexOf(type) < 0) { say("note", "แนบได้เฉพาะรูป, PDF, Excel, Word หรือไฟล์ข้อความครับ"); return; }
     if (ai.files.length >= 5) { say("note", "แนบได้ไม่เกิน 5 ไฟล์ครับ"); return; }
     if (attachedSize() + file.size > ATTACH_MAX) { say("note", "ไฟล์ใหญ่เกินไป แนบรวมกันได้ไม่เกิน 9 MB ครับ"); return; }
@@ -1389,7 +1399,7 @@
   function pinsFromChat() {
     return Promise.all(ai.files.filter(function (f) { return f.url; }).map(function (f) {
       return toPNG(f.url).then(function (p) {
-        return p && { selector: "region", label: "รูปที่แนบ: " + f.name, note: "", box: { x: 0, y: 0, w: p.w, h: p.h }, region_shot: p.url };
+        return p && { selector: "region", label: attachedLabel(f.name), note: "", box: { x: 0, y: 0, w: p.w, h: p.h }, region_shot: p.url };
       });
     })).then(function (list) { return list.filter(Boolean); });
   }

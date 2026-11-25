@@ -201,6 +201,7 @@ func run() error {
 	mux.Handle("/feedback-ai", aiassist.Handler(aiassist.Config{
 		GeminiKeyFile: cfg.GeminiKeyFile,
 		AppKeyFile:    cfg.FeedbackAIKeyFile,
+		AppKeyDir:     cfg.FeedbackAIKeyDir,
 		Model:         cfg.GeminiModel,
 		Endpoint:      cfg.GeminiEndpoint,
 		Logger:        logger,
