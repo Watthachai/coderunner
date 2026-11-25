@@ -1583,7 +1583,11 @@ const switchUpgradePrompt = "\n\nThis app carries an older FITT service-status s
 func widgetPrompt() string {
 	return "\n\nCRN's feedback widget is in the app: public/fitt-feedback.js, the api/fitt-feedback route and its script tag in the root layout. " +
 		"CRN puts its own copy back after you finish, so leave them as they are. " +
-		"Its route reads " + strings.Join(buildstep.WidgetEnvNames(), ", ") + ": where the app's own tests check which environment variables its code reads, allow these. "
+		"Its route reads " + strings.Join(buildstep.WidgetEnvNames(), ", ") + ": where the app's own tests check which environment variables its code reads, allow these. " +
+		"Where the app runs with FITT_TICKET_WINDOW=1, the route sends the request's cookie to PLATFORM_FITTCORE_ORIGIN's /api/auth/get-session to learn who the user is: " +
+		"on the 📋 window's calls (?op=state, list, images, image, login, poll, submit, logout) and on 💬 reports (POST /api/fitt-feedback without op). " +
+		"If the app's own session cookie is not that fittcore's (for example the app keeps the user's fittcore session on its server), " +
+		"the app must hand the route the user's fittcore cookie on every one of those requests, and never its own cookie or any other. "
 }
 
 // ownInstructions: a team that hands its part of a repository to CRN leaves its rules in

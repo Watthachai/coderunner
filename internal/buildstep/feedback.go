@@ -214,8 +214,10 @@ func feedbackRoute(appDir, layoutExt, ingestURL string) (string, string) {
 	src := feedbackRouteHead + "const FALLBACK = " + string(fallback) + ";\n" + feedbackRouteReport + feedbackRouteAssist
 	if ticketWindow {
 		src = strings.Replace(src, ticketOpsHook, ticketOpsCall, 1) + feedbackRouteTickets
+		src = strings.Replace(src, senderHook, senderCall, 1)
 	} else {
 		src = strings.Replace(src, ticketOpsHook, "", 1)
+		src = strings.Replace(src, senderHook, "", 1)
 	}
 	if layoutExt == ".jsx" {
 		// The only TypeScript in the source is what «» marks.
@@ -235,6 +237,8 @@ var ticketWindow = true
 const (
 	ticketOpsHook = "  // ticket ops\n"
 	ticketOpsCall = "  const op = new URL(request.url).searchParams.get(\"op\");\n  if (op !== null) return ticketOp(op, request);\n"
+	senderHook    = "  // sender\n"
+	senderCall    = "  const signed = await withSender(request, body);\n  if (signed !== null) body = bytesOf(signed);\n"
 )
 
 // typeNoteRe matches the TypeScript the route's source marks with «», which a
@@ -320,8 +324,9 @@ function logReport(size«: ReturnType<typeof sizeOf>», receiver«: number | str
 export async function POST(request«: Request»)«: Promise<Response>» {
   if (new URL(request.url).searchParams.get("op") === "assist") return assist(request);
   // ticket ops
-  const body = await readBody(request, MAX_BYTES);
+  let body = await readBody(request, MAX_BYTES);
   if (!body) return tooLarge();
+  // sender
   const size = sizeOf(body);
 
   const target = process.env.FITT_FEEDBACK_URL || FALLBACK;
@@ -613,6 +618,40 @@ async function who(cookie«: string») {
     closedUntil = Date.now() + CLOSED_FOR_MS;
     return undefined;
   }
+}
+
+// withSender is a 💬 report with the fittcore id of the signed-in app user in it, as
+// app_user_ref and, when the app sends one, payload.app_user.ref: the company fittcore
+// shows each user the tickets that are theirs by it (DV, 25 Nov 2026). It asks the
+// company fittcore who the user is, as 📋 does, only where the window is on; never a
+// name or email. null leaves the report as it came: from nobody signed in, or while
+// the fittcore cannot be asked.
+async function withSender(request«: Request», body«: Uint8Array»)«: Promise<string | null>» {
+  const cookie = request.headers.get("cookie") || "";
+  if (!cookie || !site() || Date.now() < closedUntil) return null;
+  let r«: unknown»;
+  try {
+    r = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return null;
+  }
+  if (!r || typeof r !== "object" || Array.isArray(r)) return null;
+  const m = await who(cookie);
+  if (!m) return null;
+  const report = r« as Record<string, unknown>»;
+  report.app_user_ref = m.ref;
+  const p = report.payload;
+  const u = p && typeof p === "object" ? (p« as Record<string, unknown>»).app_user : undefined;
+  if (u && typeof u === "object" && !Array.isArray(u) && "ref" in u) (u« as Record<string, unknown>»).ref = m.ref;
+  return JSON.stringify(report);
+}
+
+// bytesOf is text as the bytes a report is sent as.
+function bytesOf(text«: string») {
+  const bytes = new TextEncoder().encode(text);
+  const out = new Uint8Array(bytes.byteLength);
+  out.set(bytes);
+  return out;
 }
 
 function entry(me«: Me», cookie«: string») {

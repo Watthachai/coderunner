@@ -95,6 +95,9 @@ func newFakeSite(t *testing.T) *fakeSite {
 				answer(200, `null`)
 			}
 			return
+		case "/api/site/feedback":
+			answer(201, `{"id":"`+tkTicket+`"}`)
+			return
 		case "/test/logout":
 			delete(f.sessions, r.URL.Query().Get("sid"))
 			answer(200, `{}`)
@@ -231,8 +234,10 @@ console.log(JSON.stringify(out));`
 	if err != nil {
 		t.Fatalf("node: %v\n%s", err, out)
 	}
+	// The answers are the last line: the route logs a line of its own for each report.
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	var answers []answer
-	if err := json.Unmarshal(out, &answers); err != nil {
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &answers); err != nil {
 		t.Fatalf("node said %s", out)
 	}
 	return answers
@@ -786,4 +791,71 @@ func TestTheWidgetSaysTheWindowIsNotOpenYet(t *testing.T) {
 			t.Errorf("the widget lacks %s", want)
 		}
 	}
+}
+
+// reportAs is a 💬 report the widget posts, as the user with cookie.
+func reportAs(cookie, body string) step {
+	return step{Method: "POST", Target: "/api/fitt-feedback", Cookie: cookie, Body: body}
+}
+
+// The company fittcore shows each app user the tickets that are theirs by app_user_ref,
+// the fittcore id of who sent the report (DV, 25 Nov 2026: AEC build 11 sent none, so a
+// user's 📋 showed nothing of theirs). Where the window is on, the route asks the
+// company fittcore who the user is, as 📋 does, and puts their id in the report, top
+// level and in payload.app_user.ref when the app sends one; never a name or email. A
+// report from nobody signed in goes on as it came, and where the window is off the
+// route asks no one and changes nothing.
+func TestAReportSaysWhoSentItWhereTheWindowIsOn(t *testing.T) {
+	eachLayout(t, func(t *testing.T, route string) {
+		site := newFakeSite(t)
+		plain := `{"note":"ปุ่มบันทึกกดไม่ได้","page_url":"/","category":"bug","priority":"med","reporter":"","payload":{"pins":[]}}`
+		withApp := `{"note":"แก้สี","app_user_ref":"someone-else","payload":{"pins":[],"app_user":{"ref":"someone-else"}}}`
+		a := runSteps(t, route, siteEnv(site), reportAs("fc=s1", plain), reportAs("fc=s2", withApp), reportAs("", plain), reportAs("fc=gone", plain))
+		for i, x := range a {
+			if x.Status != 204 {
+				t.Fatalf("report %d answered %+v", i, x)
+			}
+		}
+		sent := site.got("/api/site/feedback")
+		if len(sent) != 4 {
+			t.Fatalf("the site got %d reports", len(sent))
+		}
+		var first, second map[string]any
+		_ = json.Unmarshal([]byte(sent[0].body), &first)
+		_ = json.Unmarshal([]byte(sent[1].body), &second)
+		if first["app_user_ref"] != "u1" || first["note"] != "ปุ่มบันทึกกดไม่ได้" {
+			t.Errorf("a signed-in user's report went as %s", sent[0].body)
+		}
+		if _, has := first["app_user_name"]; has || strings.Contains(sent[0].body, "ผู้ใช้ u1") {
+			t.Errorf("the report carries the user's name: %s", sent[0].body)
+		}
+		if p, _ := second["payload"].(map[string]any); second["app_user_ref"] != "u2" || p["app_user"].(map[string]any)["ref"] != "u2" {
+			t.Errorf("the app's own sender was not made the signed-in one: %s", sent[1].body)
+		}
+		for i := 2; i < 4; i++ {
+			if sent[i].body != plain {
+				t.Errorf("report %d from nobody signed in went as %s", i, sent[i].body)
+			}
+			if sent[i].cookie != "" {
+				t.Errorf("the report carried a cookie to the site: %q", sent[i].cookie)
+			}
+		}
+		if n := len(site.got("/api/auth/get-session")); n != 3 {
+			t.Errorf("get-session was asked %d times, want 3 (not for a report without a cookie)", n)
+		}
+	})
+	t.Run("window off", func(t *testing.T) {
+		site := newFakeSite(t)
+		plain := `{"note":"ปุ่มบันทึกกดไม่ได้","payload":{"pins":[]}}`
+		a := runStepsEnv(t, ticketRoute(t), map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": site.URL}, reportAs("fc=s1", plain))
+		if a[0].Status != 204 {
+			t.Fatalf("answered %+v", a[0])
+		}
+		if sent := site.got("/api/site/feedback"); len(sent) != 1 || sent[0].body != plain {
+			t.Errorf("the site got %+v", sent)
+		}
+		if n := len(site.got("/api/auth/get-session")); n != 0 {
+			t.Errorf("get-session was asked %d times with the window off", n)
+		}
+	})
 }
