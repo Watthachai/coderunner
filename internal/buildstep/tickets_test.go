@@ -89,8 +89,8 @@ func newFakeSite(t *testing.T) *fakeSite {
 		sid := ""
 		if c, err := r.Cookie("fc"); err == nil {
 			sid = c.Value
-		} else if c, err := r.Cookie("better-auth.session_token"); err == nil {
-			sid = c.Value // the name a real fittcore (better-auth) gives its session
+		} else if c, err := r.Cookie("paperclip-default.session_token"); err == nil {
+			sid = c.Value // the name DV's fittcore (better-auth, prefix paperclip-<instance>) gives its session
 		}
 		switch r.URL.Path {
 		case "/api/auth/get-session":
@@ -933,23 +933,28 @@ func TestAReportNamesItsSenderByEmailWhereTheWindowIsOn(t *testing.T) {
 // The company fittcore that 📋 and the report go to asks for itself who sent a 💬 report
 // and trusts no sender a report names (DV, 25 Nov 2026: OKR sends its reports straight to
 // DV's fittcore). Where the window is on and the fittcore knows the signed-in user, the
-// route sends the report with that user's fittcore cookies, the better-auth ones, and no
-// other cookie the request has: never one of the app's. With nobody signed in, or with
-// the window off, the report goes with no cookie at all.
+// route sends the report with that user's fittcore cookies and no other cookie the
+// request has: never one of the app's, not even an app's own better-auth session. Every
+// fittcore names its cookies paperclip-<instance id>.session_token, .session_data and
+// .dont_remember, with __Secure- in front over https (DV, 25 Nov 2026). With nobody
+// signed in, or with the window off, the report goes with no cookie at all.
 func TestAReportCarriesOnlyTheSignedInUsersFittcoreCookie(t *testing.T) {
-	jar := "app_session=the-apps-own; better-auth.session_token=s1; theme=dark; better-auth.session_data=cache"
+	jar := "app_session=the-apps-own; paperclip-default.session_token=s1; theme=dark; paperclip-default.session_data=cache; " +
+		"better-auth.session_token=the-apps-own-login; paperclip-default.dont_remember=true"
 	eachLayout(t, func(t *testing.T, route string) {
 		site := newFakeSite(t)
 		plain := `{"note":"แก้สี","reporter":"","payload":{"pins":[]}}`
-		a := runSteps(t, route, siteEnv(site), reportAs(jar, plain), reportAs("app_session=x; better-auth.session_token=gone", plain),
-			reportAs("app_session=x; theme=dark", plain), reportAs("fc=s2; __Secure-better-auth.session_token=s2", plain))
+		a := runSteps(t, route, siteEnv(site), reportAs(jar, plain), reportAs("app_session=x; paperclip-default.session_token=gone", plain),
+			reportAs("app_session=x; theme=dark", plain),
+			reportAs("fc=s2; __Secure-paperclip-testsite.session_token=s2; paperclip-default.other=1; paperclip-.session_token=z; paperclip-a.b.session_token=y", plain))
 		for i, x := range a {
 			if x.Status != 204 {
 				t.Fatalf("report %d answered %+v", i, x)
 			}
 		}
 		sent := site.got("/api/site/feedback")
-		want := []string{"better-auth.session_token=s1; better-auth.session_data=cache", "", "", "__Secure-better-auth.session_token=s2"}
+		want := []string{"paperclip-default.session_token=s1; paperclip-default.session_data=cache; paperclip-default.dont_remember=true", "", "",
+			"__Secure-paperclip-testsite.session_token=s2"}
 		if len(sent) != len(want) {
 			t.Fatalf("the site got %d reports", len(sent))
 		}
@@ -957,7 +962,7 @@ func TestAReportCarriesOnlyTheSignedInUsersFittcoreCookie(t *testing.T) {
 			if s.cookie != want[i] {
 				t.Errorf("report %d went with cookie %q, want %q", i, s.cookie, want[i])
 			}
-			if strings.Contains(s.cookie, "app_session") || strings.Contains(s.cookie, "theme") {
+			if strings.Contains(s.cookie, "app_session") || strings.Contains(s.cookie, "theme") || strings.Contains(s.cookie, "better-auth") {
 				t.Errorf("report %d carried the app's own cookie: %q", i, s.cookie)
 			}
 		}

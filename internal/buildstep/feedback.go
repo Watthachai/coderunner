@@ -534,6 +534,8 @@ const SECRET = /^[\x21-\x7e]{1,512}$/;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 // The company fittcore takes a report's reporter of at most this many characters.
 const REPORTER_MAX = 400;
+// The name of a cookie of the company fittcore's session (fittcoreCookies).
+const FITTCORE_COOKIE = /^(?:__Secure-|__Host-)?paperclip-[A-Za-z0-9_-]+\.(?:session_token|session_data|dont_remember)$/;
 
 «type Challenge = { id: string; secret: string; code: string; url: string; expires: number; interval: number; next: number };
 type Held = { ref: string; cookie: string; sessionExpires: number; token: string; tokenExpires: number; name: string; challenge: Challenge | null };
@@ -672,13 +674,15 @@ async function withSender(request«: Request», body«: Uint8Array»)«: Promise
 }
 
 // fittcoreCookies is the part of a request's cookie header that is the company
-// fittcore's own session: better-auth names its cookies better-auth.*, with __Secure-
-// or __Host- in front over https. Never any other cookie the app's origin holds.
+// fittcore's own session. Every fittcore names its cookies paperclip-<instance id>
+// .session_token, .session_data and .dont_remember, with __Secure- or __Host- in front
+// over https (DV, 25 Nov 2026). Never any other cookie the app's origin holds, not even
+// an app's own better-auth session (better-auth.session_token).
 function fittcoreCookies(header«: string») {
   return header
     .split(";")
     .map((c) => c.trim())
-    .filter((c) => /^(?:__Secure-|__Host-)?better-auth\.[^=;]*=/.test(c))
+    .filter((c) => FITTCORE_COOKIE.test(c.slice(0, c.indexOf("=") < 0 ? 0 : c.indexOf("="))))
     .join("; ");
 }
 

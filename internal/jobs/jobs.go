@@ -1588,8 +1588,9 @@ func widgetPrompt() string {
 		"on the 📋 window's calls (?op=state, list, images, image, login, poll, submit, logout) and on 💬 reports (POST /api/fitt-feedback without op). " +
 		"If the app's own session cookie is not that fittcore's (for example the app keeps the user's fittcore session on its server), " +
 		"the app must hand the route the user's fittcore cookie on every one of those requests, and never its own cookie or any other. " +
-		"With a 💬 report from a user the fittcore knows, the route also sends that user's better-auth.* cookies, and no other cookie, on to FITT_FEEDBACK_URL (the same fittcore), " +
-		"which asks for itself who sent the report: hand the fittcore cookie on under the names the fittcore set (for example better-auth.session_token), never renamed. "
+		"With a 💬 report from a user the fittcore knows, the route also sends that user's fittcore cookies, and no other cookie, on to FITT_FEEDBACK_URL (the same fittcore), " +
+		"which asks for itself who sent the report. Every fittcore names them paperclip-<instance id>.session_token, .session_data and .dont_remember (with __Secure- in front over https): " +
+		"hand the fittcore cookie on under the names the fittcore set (for example paperclip-default.session_token), never renamed. "
 }
 
 // ownInstructions: a team that hands its part of a repository to CRN leaves its rules in
