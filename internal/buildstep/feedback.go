@@ -531,10 +531,12 @@ const KEY = /^[A-Za-z0-9_-]{16,64}$/;
 const CODE = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const SECRET = /^[\x21-\x7e]{1,512}$/;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
+// The company fittcore takes a report's reporter of at most this many characters.
+const REPORTER_MAX = 400;
 
 «type Challenge = { id: string; secret: string; code: string; url: string; expires: number; interval: number; next: number };
 type Held = { ref: string; cookie: string; sessionExpires: number; token: string; tokenExpires: number; name: string; challenge: Challenge | null };
-type Me = { key: string; ref: string; until: number };
+type Me = { key: string; ref: string; until: number; email: string };
 »
 // One entry per app session: a token is never shared between users or sessions.
 const held«: Map<string, Held>» = new Map();
@@ -612,7 +614,8 @@ async function who(cookie«: string») {
     if (session.userId !== user.id || typeof session.id !== "string" || !session.id) return null;
     const until = typeof session.expiresAt === "string" ? Date.parse(session.expiresAt) : NaN;
     if (until <= Date.now()) return null;
-    const found«: Me» = { key: session.id + "\n" + user.id, ref: user.id, until: Number.isNaN(until) ? 0 : until };
+    const email = typeof user.email === "string" && user.email.length <= REPORTER_MAX ? user.email : "";
+    const found«: Me» = { key: session.id + "\n" + user.id, ref: user.id, until: Number.isNaN(until) ? 0 : until, email };
     return found;
   } catch {
     closedUntil = Date.now() + CLOSED_FOR_MS;
@@ -622,12 +625,15 @@ async function who(cookie«: string») {
 
 // withSender is a 💬 report with the fittcore id of the signed-in app user in it, as
 // app_user_ref and, when the app sends one, payload.app_user.ref: the company fittcore
-// shows each user the tickets that are theirs by it (DV, 25 Nov 2026). Where the window
-// is on, who sent a report is only ever what the company fittcore says: a sender the
+// shows each user the tickets that are theirs by it (DV, 25 Nov 2026). Its reporter is
+// the user's email: the company fittcore keeps it, never passing it on to DV, and an
+// app's team-activity page counts each user's reports by it (Jidapa, 25 Nov 2026). The
+// email goes only to the fittcore it came from, as site() is both. Where the window is
+// on, who sent a report is only ever what the company fittcore says: a sender the
 // browser names itself is taken out, and the route asks the company fittcore who the
-// user is, as 📋 does; never a name or email. A report from nobody signed in, or while
-// the fittcore cannot be asked, goes without one. null leaves the report as it came;
-// false is a report that is not a JSON object, which is refused.
+// user is, as 📋 does; never their name. A report from nobody signed in, or while the
+// fittcore cannot be asked, goes without an id and with reporter "". null leaves the
+// report as it came; false is a report that is not a JSON object, which is refused.
 async function withSender(request«: Request», body«: Uint8Array»)«: Promise<string | null | false>» {
   if (!site()) return null;
   let r«: unknown»;
@@ -649,6 +655,11 @@ async function withSender(request«: Request», body«: Uint8Array»)«: Promise
   if (m) {
     report.app_user_ref = m.ref;
     if (app) app.ref = m.ref;
+    changed = true;
+  }
+  const reporter = m ? m.email : "";
+  if (report.reporter !== reporter) {
+    report.reporter = reporter;
     changed = true;
   }
   return changed ? JSON.stringify(report) : null;

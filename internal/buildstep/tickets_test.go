@@ -48,6 +48,9 @@ type fakeSite struct {
 	htmlNotFound bool
 	polled       map[string]int
 	challenges   map[string]string // challenge id -> fittcore user id
+	// emails is the email the fittcore gives for a user: uid@aec.test unless set here,
+	// and none at all when set to "".
+	emails map[string]string
 }
 
 // challengeID is the id fakeSite gives the challenge it starts for the user ref.
@@ -90,7 +93,15 @@ func newFakeSite(t *testing.T) *fakeSite {
 		switch r.URL.Path {
 		case "/api/auth/get-session":
 			if uid, ok := f.sessions[sid]; ok {
-				answer(200, `{"session":{"id":"`+sid+`","userId":"`+uid+`","expiresAt":"2099-01-01T00:00:00Z"},"user":{"id":"`+uid+`","name":"ผู้ใช้ `+uid+`"}}`)
+				email, set := f.emails[uid]
+				if !set {
+					email = uid + "@aec.test"
+				}
+				mail := ""
+				if email != "" {
+					mail = `,"email":"` + email + `"`
+				}
+				answer(200, `{"session":{"id":"`+sid+`","userId":"`+uid+`","expiresAt":"2099-01-01T00:00:00Z"},"user":{"id":"`+uid+`","name":"ผู้ใช้ `+uid+`"`+mail+`}}`)
 			} else {
 				answer(200, `null`)
 			}
@@ -802,7 +813,7 @@ func reportAs(cookie, body string) step {
 // the fittcore id of who sent the report (DV, 25 Nov 2026: AEC build 11 sent none, so a
 // user's 📋 showed nothing of theirs). Where the window is on, the route asks the
 // company fittcore who the user is, as 📋 does, and puts their id in the report, top
-// level and in payload.app_user.ref when the app sends one; never a name or email. A
+// level and in payload.app_user.ref when the app sends one; never their name. A
 // report from nobody signed in goes on as it came, and where the window is off the
 // route asks no one and changes nothing.
 func TestAReportSaysWhoSentItWhereTheWindowIsOn(t *testing.T) {
@@ -859,7 +870,7 @@ func TestAReportSaysWhoSentItWhereTheWindowIsOn(t *testing.T) {
 	})
 	t.Run("window off", func(t *testing.T) {
 		site := newFakeSite(t)
-		plain := `{"note":"ปุ่มบันทึกกดไม่ได้","payload":{"pins":[]}}`
+		plain := `{"note":"ปุ่มบันทึกกดไม่ได้","reporter":"boss@aec.test","payload":{"pins":[]}}`
 		a := runStepsEnv(t, ticketRoute(t), map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": site.URL}, reportAs("fc=s1", plain))
 		if a[0].Status != 204 {
 			t.Fatalf("answered %+v", a[0])
@@ -869,6 +880,49 @@ func TestAReportSaysWhoSentItWhereTheWindowIsOn(t *testing.T) {
 		}
 		if n := len(site.got("/api/auth/get-session")); n != 0 {
 			t.Errorf("get-session was asked %d times with the window off", n)
+		}
+	})
+}
+
+// The site's own fittcore keeps reporter, the text a 💬 report names its sender by, and
+// never passes it on to DV; an app's team-activity page counts each user's reports by
+// it against their email (Jidapa, 25 Nov 2026: AEC's column found no one, as reporter was
+// always ""). Where the window is on, the route puts there the email the company
+// fittcore gives for the signed-in user, the fittcore the report goes to, and "" when
+// nobody signed in can be found: a reporter the browser names itself never goes. The
+// fittcore takes a reporter of at most 400 characters, so a longer email goes as "".
+func TestAReportNamesItsSenderByEmailWhereTheWindowIsOn(t *testing.T) {
+	eachLayout(t, func(t *testing.T, route string) {
+		site := newFakeSite(t)
+		site.sessions["s4"], site.sessions["s5"] = "u4", "u5"
+		site.emails = map[string]string{"u4": strings.Repeat("a", 392) + "@aec.test", "u5": ""}
+		spoof := `{"note":"แก้สี","reporter":"boss@aec.test","payload":{"pins":[]}}`
+		bare := `{"note":"แก้สี","payload":{"pins":[]}}`
+		a := runSteps(t, route, siteEnv(site), reportAs("fc=s1", spoof), reportAs("fc=s2", bare), reportAs("", spoof),
+			reportAs("fc=gone", bare), reportAs("fc=s4", spoof), reportAs("fc=s5", spoof))
+		for i, x := range a {
+			if x.Status != 204 {
+				t.Fatalf("report %d answered %+v", i, x)
+			}
+		}
+		want := []string{"u1@aec.test", "u2@aec.test", "", "", "", ""}
+		sent := site.got("/api/site/feedback")
+		if len(sent) != len(want) {
+			t.Fatalf("the site got %d reports", len(sent))
+		}
+		for i, s := range sent {
+			var r map[string]any
+			if err := json.Unmarshal([]byte(s.body), &r); err != nil {
+				t.Fatalf("report %d went as %s", i, s.body)
+			}
+			if got, ok := r["reporter"].(string); !ok || got != want[i] {
+				t.Errorf("report %d went with reporter %v, want %q: %s", i, r["reporter"], want[i], s.body)
+			}
+		}
+		var first map[string]any
+		_ = json.Unmarshal([]byte(sent[0].body), &first)
+		if first["app_user_ref"] != "u1" || first["note"] != "แก้สี" || strings.Contains(sent[0].body, "ผู้ใช้ u1") {
+			t.Errorf("a signed-in user's report went as %s", sent[0].body)
 		}
 	})
 }
