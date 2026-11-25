@@ -238,7 +238,7 @@ const (
 	ticketOpsHook = "  // ticket ops\n"
 	ticketOpsCall = "  const op = new URL(request.url).searchParams.get(\"op\");\n  if (op !== null) return ticketOp(op, request);\n"
 	senderHook    = "  // sender\n"
-	senderCall    = "  const signed = await withSender(request, body);\n  if (signed === false) return new Response(\"feedback report is not a JSON object\", { status: 400 });\n  if (signed !== null) body = bytesOf(signed);\n"
+	senderCall    = "  const signed = await withSender(request, body);\n  if (signed === false) return new Response(\"feedback report is not a JSON object\", { status: 400 });\n  if (signed.report !== null) body = bytesOf(signed.report);\n  if (signed.cookie) headers.cookie = signed.cookie;\n"
 )
 
 // typeNoteRe matches the TypeScript the route's source marks with «», which a
@@ -326,6 +326,7 @@ export async function POST(request«: Request»)«: Promise<Response>» {
   // ticket ops
   let body = await readBody(request, MAX_BYTES);
   if (!body) return tooLarge();
+  const headers«: Record<string, string>» = { "content-type": "application/json" };
   // sender
   const size = sizeOf(body);
 
@@ -334,7 +335,7 @@ export async function POST(request«: Request»)«: Promise<Response>» {
     for (let sent = 1; ; sent++) {
       const res = await fetch(target, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body,
         redirect: "manual",
         signal: AbortSignal.timeout(15000),
@@ -632,10 +633,15 @@ async function who(cookie«: string») {
 // on, who sent a report is only ever what the company fittcore says: a sender the
 // browser names itself is taken out, and the route asks the company fittcore who the
 // user is, as 📋 does; never their name. A report from nobody signed in, or while the
-// fittcore cannot be asked, goes without an id and with reporter "". null leaves the
-// report as it came; false is a report that is not a JSON object, which is refused.
-async function withSender(request«: Request», body«: Uint8Array»)«: Promise<string | null | false>» {
-  if (!site()) return null;
+// fittcore cannot be asked, goes without an id and with reporter "". The company
+// fittcore also asks for itself who sent a report and trusts no sender a report names
+// (DV, 25 Nov 2026: OKR's reports go straight to DV's fittcore), so a report from a
+// user it knows goes with that user's fittcore cookies (fittcoreCookies), from this
+// server only, to the fittcore they came from; otherwise with no cookie. report null
+// leaves the report as it came; false is a report that is not a JSON object, which is
+// refused.
+async function withSender(request«: Request», body«: Uint8Array»)«: Promise<{ report: string | null; cookie: string } | false>» {
+  if (!site()) return { report: null, cookie: "" };
   let r«: unknown»;
   try {
     r = JSON.parse(new TextDecoder().decode(body));
@@ -662,7 +668,18 @@ async function withSender(request«: Request», body«: Uint8Array»)«: Promise
     report.reporter = reporter;
     changed = true;
   }
-  return changed ? JSON.stringify(report) : null;
+  return { report: changed ? JSON.stringify(report) : null, cookie: m ? fittcoreCookies(cookie) : "" };
+}
+
+// fittcoreCookies is the part of a request's cookie header that is the company
+// fittcore's own session: better-auth names its cookies better-auth.*, with __Secure-
+// or __Host- in front over https. Never any other cookie the app's origin holds.
+function fittcoreCookies(header«: string») {
+  return header
+    .split(";")
+    .map((c) => c.trim())
+    .filter((c) => /^(?:__Secure-|__Host-)?better-auth\.[^=;]*=/.test(c))
+    .join("; ");
 }
 
 // bytesOf is text as the bytes a report is sent as.

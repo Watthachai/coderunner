@@ -12,7 +12,10 @@ import (
 // must hand the route the fittcore cookie on every one of those calls, never its own.
 func TestTheAgentIsToldWhichCookieTheRouteSendsOut(t *testing.T) {
 	p := widgetPrompt()
-	for _, want := range []string{"FITT_TICKET_WINDOW=1", "PLATFORM_FITTCORE_ORIGIN", "/api/auth/get-session", "?op=", "POST /api/fitt-feedback without op", "never its own"} {
+	for _, want := range []string{"FITT_TICKET_WINDOW=1", "PLATFORM_FITTCORE_ORIGIN", "/api/auth/get-session", "?op=", "POST /api/fitt-feedback without op", "never its own",
+		// Since 25 Nov 2026 the route also sends a 💬 report on to FITT_FEEDBACK_URL with the
+		// user's better-auth cookies, and only those (DV: the fittcore asks who sent it).
+		"better-auth.", "under the names the fittcore set"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("the widget prompt lacks %q", want)
 		}

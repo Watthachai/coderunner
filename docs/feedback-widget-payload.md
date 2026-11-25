@@ -18,6 +18,7 @@ Content-Type: application/json
   ```
   ใส่ **full URL รวม path เอง** → ไม่ต้องมี alias route
 - **ไม่มี auth header** (widget ยิงตรง unauthenticated). ถ้า receiver ต้องการ auth ต้องแจ้ง CRN เพิ่ม
+- **cookie (ตั้งแต่ 25 พ.ย. 2026):** แอปที่เปิดหน้าต่าง 📋 (`FITT_TICKET_WINDOW=1` และ origin ของ `FITT_FEEDBACK_URL` ตรงกับ `PLATFORM_FITTCORE_ORIGIN`) และ fittcore ตอบ `/api/auth/get-session` ว่ารู้จักผู้ส่ง: server ของแอปส่ง header `Cookie` ไปกับรายงานด้วย มีเฉพาะ cookie ของ better-auth (`better-auth.*` หรือมี `__Secure-` / `__Host-` นำหน้า) ของคนนั้น ไม่มี cookie อื่นของแอปเลย fittcore ใช้ถามเองว่าใครส่ง (DV ขอ, OKR ส่งตรงเข้า fittcore ของ DV) · ไม่มีใครล็อกอิน ถาม fittcore ไม่ได้ หรือไม่ได้เปิด 📋: ส่งไม่มี cookie · ไม่ตาม redirect
 - receiver ตอบ **2xx** → route ตอบ widget 204 → โชว์ "ส่งแล้ว ขอบคุณ ✓". receiver ตอบ non-2xx → route ส่ง status + body นั้นกลับ → โชว์ error. ต่อ receiver ไม่ได้ / เกิน 15 วินาที → 502
 - **เปิด widget ต่อ build:** `"feedback_widget": true` ใน body ของ build หรือของ change request (`POST /internal/projects/{id}/edit`). change request ที่ไม่ใส่ field นี้คงสถานะเดิม; `false` = เอาออก
 

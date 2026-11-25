@@ -89,6 +89,8 @@ func newFakeSite(t *testing.T) *fakeSite {
 		sid := ""
 		if c, err := r.Cookie("fc"); err == nil {
 			sid = c.Value
+		} else if c, err := r.Cookie("better-auth.session_token"); err == nil {
+			sid = c.Value // the name a real fittcore (better-auth) gives its session
 		}
 		switch r.URL.Path {
 		case "/api/auth/get-session":
@@ -923,6 +925,52 @@ func TestAReportNamesItsSenderByEmailWhereTheWindowIsOn(t *testing.T) {
 		_ = json.Unmarshal([]byte(sent[0].body), &first)
 		if first["app_user_ref"] != "u1" || first["note"] != "แก้สี" || strings.Contains(sent[0].body, "ผู้ใช้ u1") {
 			t.Errorf("a signed-in user's report went as %s", sent[0].body)
+		}
+	})
+}
+
+
+// The company fittcore that 📋 and the report go to asks for itself who sent a 💬 report
+// and trusts no sender a report names (DV, 25 Nov 2026: OKR sends its reports straight to
+// DV's fittcore). Where the window is on and the fittcore knows the signed-in user, the
+// route sends the report with that user's fittcore cookies, the better-auth ones, and no
+// other cookie the request has: never one of the app's. With nobody signed in, or with
+// the window off, the report goes with no cookie at all.
+func TestAReportCarriesOnlyTheSignedInUsersFittcoreCookie(t *testing.T) {
+	jar := "app_session=the-apps-own; better-auth.session_token=s1; theme=dark; better-auth.session_data=cache"
+	eachLayout(t, func(t *testing.T, route string) {
+		site := newFakeSite(t)
+		plain := `{"note":"แก้สี","reporter":"","payload":{"pins":[]}}`
+		a := runSteps(t, route, siteEnv(site), reportAs(jar, plain), reportAs("app_session=x; better-auth.session_token=gone", plain),
+			reportAs("app_session=x; theme=dark", plain), reportAs("fc=s2; __Secure-better-auth.session_token=s2", plain))
+		for i, x := range a {
+			if x.Status != 204 {
+				t.Fatalf("report %d answered %+v", i, x)
+			}
+		}
+		sent := site.got("/api/site/feedback")
+		want := []string{"better-auth.session_token=s1; better-auth.session_data=cache", "", "", "__Secure-better-auth.session_token=s2"}
+		if len(sent) != len(want) {
+			t.Fatalf("the site got %d reports", len(sent))
+		}
+		for i, s := range sent {
+			if s.cookie != want[i] {
+				t.Errorf("report %d went with cookie %q, want %q", i, s.cookie, want[i])
+			}
+			if strings.Contains(s.cookie, "app_session") || strings.Contains(s.cookie, "theme") {
+				t.Errorf("report %d carried the app's own cookie: %q", i, s.cookie)
+			}
+		}
+	})
+	t.Run("window off", func(t *testing.T) {
+		site := newFakeSite(t)
+		a := runStepsEnv(t, ticketRoute(t), map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": site.URL},
+			reportAs(jar, `{"note":"แก้สี","payload":{"pins":[]}}`))
+		if a[0].Status != 204 {
+			t.Fatalf("answered %+v", a[0])
+		}
+		if sent := site.got("/api/site/feedback"); len(sent) != 1 || sent[0].cookie != "" {
+			t.Errorf("the site got %+v", sent)
 		}
 	})
 }

@@ -1587,7 +1587,9 @@ func widgetPrompt() string {
 		"Where the app runs with FITT_TICKET_WINDOW=1, the route sends the request's cookie to PLATFORM_FITTCORE_ORIGIN's /api/auth/get-session to learn who the user is: " +
 		"on the 📋 window's calls (?op=state, list, images, image, login, poll, submit, logout) and on 💬 reports (POST /api/fitt-feedback without op). " +
 		"If the app's own session cookie is not that fittcore's (for example the app keeps the user's fittcore session on its server), " +
-		"the app must hand the route the user's fittcore cookie on every one of those requests, and never its own cookie or any other. "
+		"the app must hand the route the user's fittcore cookie on every one of those requests, and never its own cookie or any other. " +
+		"With a 💬 report from a user the fittcore knows, the route also sends that user's better-auth.* cookies, and no other cookie, on to FITT_FEEDBACK_URL (the same fittcore), " +
+		"which asks for itself who sent the report: hand the fittcore cookie on under the names the fittcore set (for example better-auth.session_token), never renamed. "
 }
 
 // ownInstructions: a team that hands its part of a repository to CRN leaves its rules in
