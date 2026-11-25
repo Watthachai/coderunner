@@ -810,15 +810,28 @@ func TestAReportSaysWhoSentItWhereTheWindowIsOn(t *testing.T) {
 		site := newFakeSite(t)
 		plain := `{"note":"ปุ่มบันทึกกดไม่ได้","page_url":"/","category":"bug","priority":"med","reporter":"","payload":{"pins":[]}}`
 		withApp := `{"note":"แก้สี","app_user_ref":"someone-else","payload":{"pins":[],"app_user":{"ref":"someone-else"}}}`
-		a := runSteps(t, route, siteEnv(site), reportAs("fc=s1", plain), reportAs("fc=s2", withApp), reportAs("", plain), reportAs("fc=gone", plain))
-		for i, x := range a {
+		a := runSteps(t, route, siteEnv(site), reportAs("fc=s1", plain), reportAs("fc=s2", withApp), reportAs("", plain), reportAs("fc=gone", plain),
+			reportAs("", withApp), reportAs("fc=gone", withApp), reportAs("fc=s1", `["not","a","report"]`), reportAs("fc=s1", `{"note":`))
+		for i, x := range a[:6] {
 			if x.Status != 204 {
 				t.Fatalf("report %d answered %+v", i, x)
 			}
 		}
+		for i, x := range a[6:] {
+			if x.Status != 400 {
+				t.Errorf("a report that is not a JSON object (%d) answered %+v", i, x)
+			}
+		}
 		sent := site.got("/api/site/feedback")
-		if len(sent) != 4 {
+		if len(sent) != 6 {
 			t.Fatalf("the site got %d reports", len(sent))
+		}
+		// Who sent a report is only ever what the company fittcore says: one the browser
+		// names itself is taken out when nobody signed in can be found.
+		for i := 4; i < 6; i++ {
+			if strings.Contains(sent[i].body, "someone-else") || strings.Contains(sent[i].body, "app_user_ref") {
+				t.Errorf("report %d went with the sender the browser named: %s", i, sent[i].body)
+			}
 		}
 		var first, second map[string]any
 		_ = json.Unmarshal([]byte(sent[0].body), &first)
@@ -840,8 +853,8 @@ func TestAReportSaysWhoSentItWhereTheWindowIsOn(t *testing.T) {
 				t.Errorf("the report carried a cookie to the site: %q", sent[i].cookie)
 			}
 		}
-		if n := len(site.got("/api/auth/get-session")); n != 3 {
-			t.Errorf("get-session was asked %d times, want 3 (not for a report without a cookie)", n)
+		if n := len(site.got("/api/auth/get-session")); n != 4 {
+			t.Errorf("get-session was asked %d times, want 4 (not for a report without a cookie or one that is not a report)", n)
 		}
 	})
 	t.Run("window off", func(t *testing.T) {

@@ -238,7 +238,7 @@ const (
 	ticketOpsHook = "  // ticket ops\n"
 	ticketOpsCall = "  const op = new URL(request.url).searchParams.get(\"op\");\n  if (op !== null) return ticketOp(op, request);\n"
 	senderHook    = "  // sender\n"
-	senderCall    = "  const signed = await withSender(request, body);\n  if (signed !== null) body = bytesOf(signed);\n"
+	senderCall    = "  const signed = await withSender(request, body);\n  if (signed === false) return new Response(\"feedback report is not a JSON object\", { status: 400 });\n  if (signed !== null) body = bytesOf(signed);\n"
 )
 
 // typeNoteRe matches the TypeScript the route's source marks with «», which a
@@ -622,28 +622,36 @@ async function who(cookie«: string») {
 
 // withSender is a 💬 report with the fittcore id of the signed-in app user in it, as
 // app_user_ref and, when the app sends one, payload.app_user.ref: the company fittcore
-// shows each user the tickets that are theirs by it (DV, 25 Nov 2026). It asks the
-// company fittcore who the user is, as 📋 does, only where the window is on; never a
-// name or email. null leaves the report as it came: from nobody signed in, or while
-// the fittcore cannot be asked.
-async function withSender(request«: Request», body«: Uint8Array»)«: Promise<string | null>» {
-  const cookie = request.headers.get("cookie") || "";
-  if (!cookie || !site() || Date.now() < closedUntil) return null;
+// shows each user the tickets that are theirs by it (DV, 25 Nov 2026). Where the window
+// is on, who sent a report is only ever what the company fittcore says: a sender the
+// browser names itself is taken out, and the route asks the company fittcore who the
+// user is, as 📋 does; never a name or email. A report from nobody signed in, or while
+// the fittcore cannot be asked, goes without one. null leaves the report as it came;
+// false is a report that is not a JSON object, which is refused.
+async function withSender(request«: Request», body«: Uint8Array»)«: Promise<string | null | false>» {
+  if (!site()) return null;
   let r«: unknown»;
   try {
     r = JSON.parse(new TextDecoder().decode(body));
   } catch {
-    return null;
+    return false;
   }
-  if (!r || typeof r !== "object" || Array.isArray(r)) return null;
-  const m = await who(cookie);
-  if (!m) return null;
+  if (!r || typeof r !== "object" || Array.isArray(r)) return false;
   const report = r« as Record<string, unknown>»;
-  report.app_user_ref = m.ref;
   const p = report.payload;
   const u = p && typeof p === "object" ? (p« as Record<string, unknown>»).app_user : undefined;
-  if (u && typeof u === "object" && !Array.isArray(u) && "ref" in u) (u« as Record<string, unknown>»).ref = m.ref;
-  return JSON.stringify(report);
+  const app = u && typeof u === "object" && !Array.isArray(u) ? u« as Record<string, unknown>» : null;
+  let changed = "app_user_ref" in report || Boolean(app && "ref" in app);
+  delete report.app_user_ref;
+  if (app) delete app.ref;
+  const cookie = request.headers.get("cookie") || "";
+  const m = cookie && Date.now() >= closedUntil ? await who(cookie) : null;
+  if (m) {
+    report.app_user_ref = m.ref;
+    if (app) app.ref = m.ref;
+    changed = true;
+  }
+  return changed ? JSON.stringify(report) : null;
 }
 
 // bytesOf is text as the bytes a report is sent as.
