@@ -77,12 +77,155 @@
     return path.join(" > ");
   }
 
-  function shortLabel(el) {
-    var t = el.nodeName.toLowerCase();
-    if (el.id) return t + "#" + el.id;
-    if (el.classList && el.classList.length) return t + "." + el.classList[0];
-    var txt = (el.textContent || "").trim().replace(/\s+/g, " ");
-    return txt ? t + ' "' + txt.slice(0, 24) + '"' : t;
+  // --- what the customer pointed at ----------------------------------------------
+  // NTC build 9 (23 Nov 2026): every report said "Page: /", because the app changes
+  // screens without changing its address, and pins said "div.relative", because
+  // Tailwind gives every element a class. The builder guessed which field and which
+  // menu the owner meant. A pin now names what a person sees on the screen: the
+  // button, field, menu or text by its words, the window or box it is in, and the
+  // screen. DV's change request carries the label to the builder as it is.
+  var LABEL_MAX = 300; // the AI's route takes a pin of at most 300 characters
+  var HEADINGS = "h1,h2,h3,h4,h5,h6,legend,[role=heading]";
+  // words is s in one line, cut to max characters.
+  function words(s, max) {
+    s = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    max = max || 40;
+    return s.length > max ? s.slice(0, max - 1) + "…" : s;
+  }
+  function attrOf(el, name) { return (el && el.getAttribute && el.getAttribute(name)) || ""; }
+  function tagOf(el) { return String((el && el.nodeName) || "").toLowerCase(); }
+  // within says whether node is anc or inside it.
+  function within(node, anc) {
+    for (var n = node; n; n = n.parentElement) if (n === anc) return true;
+    return false;
+  }
+  // inChrome says whether head is in the app's header, menu or footer, and el is not.
+  function inChrome(head, el) {
+    for (var n = head.parentElement; n; n = n.parentElement) {
+      if (/^(header|nav|aside|footer)$/.test(tagOf(n)) && !within(el, n)) return true;
+    }
+    return false;
+  }
+  function quoted(kind, name) { return name ? kind + ' "' + name + '"' : kind; }
+  // fieldName is what a form field is called on the screen.
+  function fieldName(el) {
+    var label = el.labels && el.labels.length ? words(el.labels[0].textContent) : "";
+    return label || words(attrOf(el, "aria-label")) || words(attrOf(el, "placeholder")) ||
+      words(attrOf(el, "title")) || words(attrOf(el, "name"));
+  }
+  function inMenu(el) {
+    for (var e = el, i = 0; e && i < 10; e = e.parentElement, i++) {
+      var role = attrOf(e, "role");
+      if (tagOf(e) === "nav" || tagOf(e) === "aside" || role === "navigation" || role === "menu" || role === "menubar") return true;
+    }
+    return false;
+  }
+  // whatIs says what el is, in Thai, by the words on it: ปุ่ม "บันทึก", ช่อง "สูง".
+  function whatIs(el) {
+    for (var e = el, i = 0; e && i < 6; e = e.parentElement, i++) {
+      var t = tagOf(e), role = attrOf(e, "role");
+      var name = words(attrOf(e, "aria-label")) || words(e.textContent) || words(attrOf(e, "title"));
+      if (t === "input" || t === "select" || t === "textarea") {
+        var type = e.type || attrOf(e, "type");
+        if (/^(button|submit|reset)$/.test(type)) return quoted("ปุ่ม", words(e.value || attrOf(e, "value")) || fieldName(e));
+        return quoted(/^(checkbox|radio)$/.test(type) ? "ตัวเลือก" : t === "select" ? "ช่องเลือก" : "ช่อง", fieldName(e));
+      }
+      if (t === "button" || role === "button" || t === "a" || role === "link" || role === "menuitem") {
+        return quoted(inMenu(e) || role === "menuitem" ? "เมนู" : t === "a" || role === "link" ? "ลิงก์" : "ปุ่ม", name);
+      }
+      if (role === "tab") return quoted("แท็บ", name);
+      if (t === "label") return quoted("ช่อง", name);
+      if (/^h[1-6]$/.test(t) || role === "heading") return quoted("หัวข้อ", name);
+      if (t === "th") return quoted("หัวตาราง", name);
+      if (t === "td") return quoted("ช่องในตาราง", name);
+      if (t === "img") return quoted("รูป", words(attrOf(e, "alt")));
+    }
+    var heading = el.querySelector && el.querySelector(HEADINGS);
+    if (heading && words(heading.textContent)) return quoted("ส่วน", words(heading.textContent));
+    var own = words(el.textContent, 60);
+    if (own) return quoted("ข้อความ", own);
+    var cls = attrOf(el, "class").trim().split(/\s+/)[0];
+    return tagOf(el) + (el.id ? "#" + el.id : cls ? "." + cls : "");
+  }
+  // whereIs is the box and the window el is in, by their headings, leaving out the
+  // screen's own heading: ใน "ขนาดกระจก" ในหน้าต่าง "แก้ไขรุ่นรถ".
+  function whereIs(el, screen) {
+    var box = "", win = "", boxDone = false;
+    for (var e = el.parentElement, i = 0; e && i < 12 && tagOf(e) !== "body"; e = e.parentElement, i++) {
+      var role = attrOf(e, "role");
+      if (tagOf(e) === "dialog" || role === "dialog" || role === "alertdialog" || attrOf(e, "aria-modal") === "true") {
+        var h = e.querySelector && e.querySelector(HEADINGS);
+        win = words(attrOf(e, "aria-label")) || (h ? words(h.textContent) : "");
+        win = win ? 'ในหน้าต่าง "' + win + '"' : "ในหน้าต่าง";
+        break;
+      }
+      // The box is the nearest one with a heading, inside the screen's main part: the
+      // first heading above it is the app's own header (NTC's "NTC Film Job").
+      if (!box && !boxDone && i < 5 && e.querySelector) {
+        var head = e.querySelector(HEADINGS);
+        var name = head ? words(head.textContent) : "";
+        if (name && name !== screen && !within(head, el) && !within(el, head) && !inChrome(head, el)) box = 'ใน "' + name + '"';
+      }
+      if (tagOf(e) === "main") boxDone = true;
+    }
+    if (box && win && win.indexOf(box.slice(3)) >= 0) box = "";
+    return [box, win].filter(Boolean).join(" ");
+  }
+  // screenName is the screen the customer is on, as the app shows it: the menu marked
+  // current, else the screen's main heading, else the tab's title.
+  function screenName(doc) {
+    var current = doc.querySelector('[aria-current="page"]');
+    var heading = doc.querySelector("main h1") || doc.querySelector("h1");
+    return words((current && words(current.textContent)) || (heading && words(heading.textContent)) || doc.title, 60);
+  }
+  function onScreen(screen) { return screen ? ' · หน้าจอ "' + words(screen, 60) + '"' : ""; }
+  // pinLabel is a pinned element's label: ช่อง "สูง" ใน "ขนาดกระจก" · หน้าจอ "รุ่นรถ".
+  function pinLabel(el, screen) {
+    var where = whereIs(el, screen);
+    return words(whatIs(el) + (where ? " " + where : "") + onScreen(screen), LABEL_MAX);
+  }
+  // regionWords is the text on the screen inside a crop, from items of { text, x, y,
+  // w, h } in the crop's coordinates: each whose middle is inside, once, in order.
+  function regionWords(items, box) {
+    var seen = {}, out = [];
+    items.forEach(function (it) {
+      var cx = it.x + it.w / 2, cy = it.y + it.h / 2;
+      var text = words(it.text, 200);
+      if (!text || seen[text] || cx < box.x || cx > box.x + box.w || cy < box.y || cy > box.y + box.h) return;
+      seen[text] = true;
+      out.push(text);
+    });
+    return words(out.join(" "), 120);
+  }
+  // regionLabel is a crop's label: พื้นที่ 670×643 · หน้าจอ "รุ่นรถ" · ข้อความในกรอบ "…".
+  function regionLabel(w, h, screen, inside) {
+    return words("พื้นที่ " + Math.round(w) + "×" + Math.round(h) + onScreen(screen) +
+      (inside ? ' · ข้อความในกรอบ "' + inside + '"' : ""), LABEL_MAX);
+  }
+  // noteWithScreen is the note of a report with nothing pinned on the page, with the
+  // screen it was sent from when the note does not name it and there is room.
+  function noteWithScreen(note, screen, pagePins) {
+    if (!note || !screen || pagePins > 0 || note.indexOf(screen) >= 0) return note;
+    var out = note + "\n(หน้าจอ: " + screen + ")";
+    return out.length <= NOTE_MAX ? out : note;
+  }
+  // --- end of what the customer pointed at -----------------------------------------
+
+  // textsOnScreen is every piece of text the page shows, with where it is on the
+  // screen, for regionWords. The widget's own window is in a closed root, outside it.
+  function textsOnScreen() {
+    var out = [];
+    try {
+      var walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      var range = document.createRange();
+      for (var n = walk.nextNode(), i = 0; n && i < 5000; n = walk.nextNode(), i++) {
+        if (!n.nodeValue || !n.nodeValue.trim()) continue;
+        range.selectNodeContents(n);
+        var r = range.getBoundingClientRect();
+        if (r.width && r.height) out.push({ text: n.nodeValue, x: r.left, y: r.top, w: r.width, h: r.height });
+      }
+    } catch (e) { /* a page that will not be read: the crop keeps its size and screen */ }
+    return out;
   }
 
   // Rasterize an already-loaded <img> to a (downscaled) data URI. An SVG loaded
@@ -411,7 +554,7 @@
     "<button class='cropbtn'>◻ ลากครอปพื้นที่</button>" +
     "<ul class='pins'></ul>" +
     "<div class='ftail'><label class='notelbl'>สิ่งที่อยากให้แก้</label>" +
-    "<div class='notewrap'><textarea placeholder='เช่น ย้ายปุ่มบันทึกไปไว้ใต้ตาราง'></textarea>" +
+    "<div class='notewrap'><textarea placeholder='เช่น ย้ายปุ่มบันทึกไปไว้ใต้ตาราง (บอกด้วยว่าหน้าไหน หรือกด 📍 ชี้จุด)'></textarea>" +
     "<button class='mic notemic' hidden title='พูดแทนพิมพ์' aria-label='พูดแทนพิมพ์'>🎤</button></div>" +
     "<button class='send'>ส่ง feedback</button></div>" +
     "<div class='status'></div>" +
@@ -1075,9 +1218,11 @@
   var ftail = root.querySelector(".ftail");
   var noteLbl = root.querySelector(".notelbl");
   var ai = { on: false, messages: [], busy: false, files: [] };
+  var nudged = false; // asked once where a short report is about
+  var fromDraft = false; // the note is the 💬 assistant's draft
   var attsEl = root.querySelector(".atts");
   var fileIn = root.querySelector(".filein");
-  var GREETING = "อยากให้แก้อะไรในหน้านี้ เล่าได้เลยครับ จะพิมพ์หรือกด 🎤 พูดก็ได้ ถ้าเป็นจุดบนหน้า กด 📍 ปักไว้ได้";
+  var GREETING = "อยากให้แก้อะไร เล่าได้เลยครับ บอกด้วยว่าอยู่ตรงไหน (กด 📍 ชี้บนหน้าได้) และอยากให้เป็นแบบไหน จะพิมพ์หรือกด 🎤 พูดก็ได้";
 
   function assistCall(body) {
     return fetch(TICKETS + (TICKETS.indexOf("?") >= 0 ? "&op=assist" : "?op=assist"), {
@@ -1120,6 +1265,7 @@
     pick("cat", "data-cat", d.category);
     pick("prio", "data-prio", d.priority);
     noteEl.value = d.text;
+    fromDraft = true;
     noteLbl.textContent = "คำขอแก้ที่จะส่ง (แก้ได้)";
     fhead.hidden = false;
     ftail.hidden = false;
@@ -1139,7 +1285,7 @@
       return assistCall({
         messages: ai.messages.slice(-20),
         context: {
-          page: location.pathname,
+          page: location.pathname + (screenName(document) ? " · หน้าจอ \"" + screenName(document) + "\"" : ""),
           pins: pins.map(function (p) { return [p.label, p.note].filter(Boolean).join(" — "); }),
         },
         files: chatFiles(),
@@ -1327,7 +1473,7 @@
     e.stopPropagation();
     addPin({
       selector: cssPath(el),
-      label: shortLabel(el),
+      label: pinLabel(el, screenName(document)),
       note: "",
       box: pageBox(el),
       region_shot: "",
@@ -1435,7 +1581,7 @@
     if (w < 8 || h < 8) return; // ignore tiny drags
     addPin({
       selector: "region",
-      label: "พื้นที่ " + Math.round(w) + "×" + Math.round(h),
+      label: regionLabel(w, h, screenName(document), regionWords(textsOnScreen(), { x: x, y: y, w: w, h: h })),
       note: "",
       box: {
         x: Math.round(x + window.scrollX),
@@ -1533,9 +1679,17 @@
   // --- submit -----------------------------------------------------------------
 
   sendBtn.addEventListener("click", function () {
-    var note = (noteEl.value || "").trim();
+    var note = noteWithScreen((noteEl.value || "").trim(), screenName(document), pins.length);
     if (!note && pins.length === 0) {
       setStatus("เพิ่มโน้ตหรือปักจุดก่อนนะ", "err");
+      return;
+    }
+    // A business owner's short note with nothing pinned ("เปลี่ยนเป็น กว้าง xยาว", NTC
+    // build 9) left the builder guessing where: the widget asks once, and a second
+    // press sends it as it is. A draft from the 💬 assistant has been asked about.
+    if (!nudged && !fromDraft && pins.length === 0 && ai.files.length === 0 && (noteEl.value || "").trim().length < 40) {
+      nudged = true;
+      setStatus("ช่วยบอกด้วยว่าตรงไหน กด 📍 ชี้จุดที่อยากให้แก้ ทีมจะได้แก้ถูกที่ ถ้าจะส่งเลย กดส่งอีกครั้งครับ", "");
       return;
     }
     sendBtn.disabled = true;
@@ -1577,7 +1731,7 @@
             throw new Error(refusal(res.status, text));
           });
         }
-        pins = []; shots = []; renderPins(); noteEl.value = "";
+        pins = []; shots = []; renderPins(); noteEl.value = ""; nudged = false; fromDraft = false;
         if (ai.on) startChat();
         if (TICKETS) {
           // The ticket waits in the company's fittcore until it is sent from 📋,
