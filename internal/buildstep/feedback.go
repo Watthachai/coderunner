@@ -598,13 +598,16 @@ async function isOpen() {
 
 // who is the app user behind this request as the company fittcore knows them (the
 // app logs its users in through it): null when it knows no such session, undefined
-// when it could not be asked.
+// when it could not be asked. The fittcore gets its own cookies alone, never the app's
+// (Film Job's ntc_session, an app's own better-auth login), and its own origin as
+// Origin, without which better-auth refuses a server's call (DV, 26 Nov 2026).
 async function who(cookie«: string») {
   const origin = site();
-  if (!cookie || !origin) return null;
+  const mine = fittcoreCookies(cookie);
+  if (!mine || !origin) return null;
   try {
     const res = await fetch(origin + "/api/auth/get-session", {
-      headers: { cookie, accept: "application/json" },
+      headers: { cookie: mine, accept: "application/json", origin },
       redirect: "manual",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -743,13 +746,15 @@ function startSweep() {
   if (timer.unref) timer.unref();
 }
 
-// call asks the company fittcore's widget API as this server: no Origin, no cookie,
-// and the token with the user it was issued to. null means the site does not offer
-// the window now.
-async function call(method«: string», path«: string», h«: Held | null», body«?: unknown», key«?: string») {
+// call asks the company fittcore's widget API as this server: never an Origin (the API
+// refuses any), no cookie but the fittcore's own when cookie names them (a challenge, which
+// the fittcore then approves from the session, DV 26 Nov 2026), and the token with the
+// user it was issued to. null means the site does not offer the window now.
+async function call(method«: string», path«: string», h«: Held | null», body«?: unknown», key«?: string», cookie«?: string») {
   const origin = site();
   if (!origin || Date.now() < closedUntil) return null;
   const headers«: Record<string, string>» = { accept: "application/json" };
+  if (cookie) headers.cookie = cookie;
   if (h && h.token) {
     headers.authorization = "Bearer " + h.token;
     headers["x-widget-user"] = h.ref;
@@ -892,7 +897,7 @@ async function ticketOp(op«: string», request«: Request») {
     if (typeof b.project !== "string" || !PROJECT.test(b.project)) return json(400, { error: "invalid_request" });
     const pending = h.challenge;
     if (pending && pending.expires > Date.now()) return json(200, { ready: false, pending: shown(pending) });
-    const res = await call("POST", "/auth/challenges", null, { project_id: b.project, app_user_ref: h.ref, client_name: CLIENT_NAME });
+    const res = await call("POST", "/auth/challenges", null, { project_id: b.project, app_user_ref: h.ref, client_name: CLIENT_NAME }, undefined, fittcoreCookies(h.cookie));
     if (!res) return notOpen();
     if (res.status !== 201 && res.status !== 200) return relay(res, null);
     const v = await res.json().catch(() => null);

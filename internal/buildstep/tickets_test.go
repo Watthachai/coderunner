@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,9 @@ const (
 )
 
 // siteCall is one request the company fittcore got from the app's server.
+// sessionCookie is the name of a fittcore's session cookie (DV, 25 Nov 2026).
+var sessionCookie = regexp.MustCompile(`^(__Secure-|__Host-)?paperclip-[A-Za-z0-9_-]+\.session_token$`)
+
 type siteCall struct{ method, target, auth, user, origin, cookie, key, body string }
 
 type fakeSite struct {
@@ -87,10 +91,10 @@ func newFakeSite(t *testing.T) *fakeSite {
 			_, _ = w.Write([]byte(body))
 		}
 		sid := ""
-		if c, err := r.Cookie("fc"); err == nil {
-			sid = c.Value
-		} else if c, err := r.Cookie("paperclip-default.session_token"); err == nil {
-			sid = c.Value // the name DV's fittcore (better-auth, prefix paperclip-<instance>) gives its session
+		for _, c := range r.Cookies() {
+			if sessionCookie.MatchString(c.Name) {
+				sid = c.Value // the name a fittcore (better-auth, prefix paperclip-<instance>) gives its session
+			}
 		}
 		switch r.URL.Path {
 		case "/api/auth/get-session":
@@ -302,7 +306,7 @@ func listAs(cookie string) step {
 func TestTicketWindowGivesTheTokenToTheServerNotTheBrowser(t *testing.T) {
 	eachLayout(t, func(t *testing.T, route string) {
 		site := newFakeSite(t)
-		a := runSteps(t, route, siteEnv(site), stateAs("fc=s1"), loginAs("fc=s1"), pollAs("fc=s1"), listAs("fc=s1"))
+		a := runSteps(t, route, siteEnv(site), stateAs("paperclip-default.session_token=s1"), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"), listAs("paperclip-default.session_token=s1"))
 		if a[0].Status != 200 || a[0].Body != `{"ready":false}` {
 			t.Errorf("state before login = %+v", a[0])
 		}
@@ -338,14 +342,20 @@ func TestTicketWindowGivesTheTokenToTheServerNotTheBrowser(t *testing.T) {
 		if calls[3].target != "/api/site/widget/v1/tickets?status=all&limit=50" || calls[3].auth != "Bearer fsw_u1" || calls[3].user != "u1" {
 			t.Errorf("list = %+v", calls[3])
 		}
-		for _, c := range calls {
-			if c.origin != "" || c.cookie != "" {
-				t.Errorf("a widget call carried Origin %q or a cookie %q: %+v", c.origin, c.cookie, c)
+		// No widget call carries an Origin; only the challenge carries the fittcore's own
+		// cookie, so the fittcore approves it from the session (DV, 26 Nov 2026).
+		for i, c := range calls {
+			want := ""
+			if i == 1 {
+				want = "paperclip-default.session_token=s1"
+			}
+			if c.origin != "" || c.cookie != want {
+				t.Errorf("widget call %d carried Origin %q and cookie %q, want no Origin and %q: %+v", i, c.origin, c.cookie, want, c)
 			}
 		}
 		for _, c := range site.got("/api/auth/get-session") {
-			if c.cookie != "fc=s1" {
-				t.Errorf("the user was looked up with cookie %q", c.cookie)
+			if c.cookie != "paperclip-default.session_token=s1" || c.origin != site.URL {
+				t.Errorf("the user was looked up with cookie %q, Origin %q", c.cookie, c.origin)
 			}
 		}
 	})
@@ -356,8 +366,8 @@ func TestTicketWindowGivesTheTokenToTheServerNotTheBrowser(t *testing.T) {
 func TestTicketWindowKeepsEachUsersTokenToTheirSession(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
-	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
-		stateAs("fc=s2"), listAs("fc=s2"), stateAs("fc=s3"), listAs("fc=s3"), listAs("fc=s1"))
+	a := runSteps(t, route, siteEnv(site), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"),
+		stateAs("paperclip-default.session_token=s2"), listAs("paperclip-default.session_token=s2"), stateAs("paperclip-default.session_token=s3"), listAs("paperclip-default.session_token=s3"), listAs("paperclip-default.session_token=s1"))
 	for _, i := range []int{2, 4} {
 		if a[i].Body != `{"ready":false}` {
 			t.Errorf("state %d for another session = %+v, want not ready", i, a[i])
@@ -384,7 +394,7 @@ func TestTicketWindowKeepsEachUsersTokenToTheirSession(t *testing.T) {
 func TestTicketWindowNeedsTheAppLogin(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
-	a := runSteps(t, route, siteEnv(site), stateAs(""), stateAs("fc=nobody"), loginAs("fc=nobody"), listAs(""))
+	a := runSteps(t, route, siteEnv(site), stateAs(""), stateAs("paperclip-default.session_token=nobody"), loginAs("paperclip-default.session_token=nobody"), listAs(""))
 	for i, x := range a {
 		if x.Status != 401 || x.Body != `{"error":"app_login"}` {
 			t.Errorf("answer %d without an app session = %+v", i, x)
@@ -403,7 +413,7 @@ func TestTicketWindowIsNotOpenWhenTheAppLogsInElsewhere(t *testing.T) {
 	site := newFakeSite(t)
 	for _, platform := range []string{"", "http://other-fittcore.test:3100", site.URL + "x"} {
 		a := runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": platform, "FITT_TICKET_WINDOW": "1"},
-			stateAs("fc=s1"), loginAs("fc=s1"), openAt())
+			stateAs("paperclip-default.session_token=s1"), loginAs("paperclip-default.session_token=s1"), openAt())
 		for i, x := range a {
 			if x.Status != 503 || x.Body != `{"error":"not_open"}` {
 				t.Errorf("PLATFORM_FITTCORE_ORIGIN=%q: answer %d = %+v, want not_open", platform, i, x)
@@ -420,8 +430,8 @@ func TestTicketWindowPollsAtFittcoresPace(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
 	site.sessions["slow"] = "slow"
-	a := runSteps(t, route, siteEnv(site), loginAs("fc=slow"), pollAs("fc=slow"), pollAs("fc=slow"),
-		step{Method: "POST", Target: "/api/fitt-feedback?op=poll", Cookie: "fc=slow", Advance: 3100})
+	a := runSteps(t, route, siteEnv(site), loginAs("paperclip-default.session_token=slow"), pollAs("paperclip-default.session_token=slow"), pollAs("paperclip-default.session_token=slow"),
+		step{Method: "POST", Target: "/api/fitt-feedback?op=poll", Cookie: "paperclip-default.session_token=slow", Advance: 3100})
 	if !strings.Contains(a[1].Body, `"pending"`) || !strings.Contains(a[2].Body, `"pending"`) || !strings.Contains(a[3].Body, `"ready":true`) {
 		t.Errorf("polls = %+v", a[1:])
 	}
@@ -434,9 +444,9 @@ func TestTicketWindowSendsOnePressWithItsKey(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
 	submit := func(body string) step {
-		return step{Method: "POST", Target: "/api/fitt-feedback?op=submit", Cookie: "fc=s1", Body: body}
+		return step{Method: "POST", Target: "/api/fitt-feedback?op=submit", Cookie: "paperclip-default.session_token=s1", Body: body}
 	}
-	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+	a := runSteps(t, route, siteEnv(site), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"),
 		submit(`{"ticket_ids":["`+tkTicket+`","`+tkOther+`"],"key":"`+tkKey+`"}`),
 		submit(`{"ticket_ids":["`+tkTicket+`","`+tkTicket+`"],"key":"`+tkKey+`"}`),
 		submit(`{"ticket_ids":[],"key":"`+tkKey+`"}`),
@@ -456,7 +466,7 @@ func TestTicketWindowSendsOnePressWithItsKey(t *testing.T) {
 	for i := range many {
 		many[i] = `"t` + string(rune('a'+i%26)) + string(rune('a'+i/26)) + `"`
 	}
-	if b := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+	if b := runSteps(t, route, siteEnv(site), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"),
 		submit(`{"ticket_ids":[`+strings.Join(many, ",")+`],"key":"`+tkKey+`"}`)); b[2].Status != 400 {
 		t.Errorf("51 tickets = %+v, want 400", b[2])
 	}
@@ -470,8 +480,10 @@ func TestTicketWindowSendsOnePressWithItsKey(t *testing.T) {
 func TestTicketWindowShowsATicketsPictures(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
-	img := func(q string) step { return step{Method: "GET", Target: "/api/fitt-feedback?op=" + q, Cookie: "fc=s1"} }
-	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+	img := func(q string) step {
+		return step{Method: "GET", Target: "/api/fitt-feedback?op=" + q, Cookie: "paperclip-default.session_token=s1"}
+	}
+	a := runSteps(t, route, siteEnv(site), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"),
 		img("images&id="+tkTicket), img("image&id="+tkTicket+"&image=pin-1"), img("image&id="+tkTicket+"&image=page"),
 		img("image&id=../x&image=pin-1"), img("image&id="+tkTicket))
 	if a[2].Status != 200 || !strings.Contains(a[2].Body, `"image_id":"pin-1"`) {
@@ -494,8 +506,8 @@ func TestTicketWindowIsNotOpenWhereTheSiteLacksIt(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
 	site.notEnabled = true
-	a := runSteps(t, route, siteEnv(site), stateAs("fc=s1"), stateAs("fc=s1"), loginAs("fc=s1"),
-		step{Method: "GET", Target: "/api/fitt-feedback?op=state", Cookie: "fc=s1", Advance: 5*60*1000 + 1000})
+	a := runSteps(t, route, siteEnv(site), stateAs("paperclip-default.session_token=s1"), stateAs("paperclip-default.session_token=s1"), loginAs("paperclip-default.session_token=s1"),
+		step{Method: "GET", Target: "/api/fitt-feedback?op=state", Cookie: "paperclip-default.session_token=s1", Advance: 5*60*1000 + 1000})
 	for i, x := range a {
 		if x.Status != 503 || x.Body != `{"error":"not_open"}` {
 			t.Errorf("answer %d = %+v, want not_open", i, x)
@@ -508,7 +520,7 @@ func TestTicketWindowIsNotOpenWhereTheSiteLacksIt(t *testing.T) {
 	down := httptest.NewServer(http.NotFoundHandler())
 	down.Close()
 	for _, env := range []string{"", down.URL + "/api/site/feedback"} {
-		if a := runSteps(t, route, env, stateAs("fc=s1")); a[0].Status != 503 {
+		if a := runSteps(t, route, env, stateAs("paperclip-default.session_token=s1")); a[0].Status != 503 {
 			t.Errorf("FITT_FEEDBACK_URL=%q: state = %+v, want not_open", env, a[0])
 		}
 	}
@@ -522,7 +534,7 @@ func TestTicketWindowIsOffUnlessTheAppTurnsItOn(t *testing.T) {
 	site := newFakeSite(t)
 	for _, on := range []string{"", "0", "true", "yes", " 1"} {
 		a := runStepsEnv(t, route, map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": site.URL, "FITT_TICKET_WINDOW": on},
-			openAt(), stateAs("fc=s1"), loginAs("fc=s1"))
+			openAt(), stateAs("paperclip-default.session_token=s1"), loginAs("paperclip-default.session_token=s1"))
 		for i, x := range a {
 			if x.Status != 503 || x.Body != `{"error":"not_open"}` {
 				t.Errorf("FITT_TICKET_WINDOW=%q: answer %d = %+v, want not_open", on, i, x)
@@ -571,7 +583,7 @@ func TestTicketWindowIsNotOpenWhereFittcoreHasNoWidgetAPI(t *testing.T) {
 			route := ticketRoute(t)
 			site := newFakeSite(t)
 			set(site)
-			a := runSteps(t, route, siteEnv(site), openAt(), stateAs("fc=s1"), loginAs("fc=s1"))
+			a := runSteps(t, route, siteEnv(site), openAt(), stateAs("paperclip-default.session_token=s1"), loginAs("paperclip-default.session_token=s1"))
 			for i, x := range a {
 				if x.Status != 503 || x.Body != `{"error":"not_open"}` {
 					t.Errorf("answer %d = %+v, want not_open", i, x)
@@ -588,9 +600,9 @@ func TestTicketWindowIsNotOpenWhereFittcoreHasNoWidgetAPI(t *testing.T) {
 func TestTicketWindowSaysAPictureIsNotThere(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
-	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
-		step{Method: "GET", Target: "/api/fitt-feedback?op=images&id=" + tkOther, Cookie: "fc=s1"},
-		step{Method: "GET", Target: "/api/fitt-feedback?op=list", Cookie: "fc=s1"})
+	a := runSteps(t, route, siteEnv(site), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"),
+		step{Method: "GET", Target: "/api/fitt-feedback?op=images&id=" + tkOther, Cookie: "paperclip-default.session_token=s1"},
+		step{Method: "GET", Target: "/api/fitt-feedback?op=list", Cookie: "paperclip-default.session_token=s1"})
 	if a[2].Status != 404 || !strings.Contains(a[2].Body, "not_found") {
 		t.Errorf("pictures of a ticket that is not there: %+v, want 404 not_found", a[2])
 	}
@@ -602,7 +614,7 @@ func TestTicketWindowSaysAPictureIsNotThere(t *testing.T) {
 func TestTicketWindowWithdrawsTheTokenWhenTheSessionEnds(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
-	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
+	a := runSteps(t, route, siteEnv(site), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"),
 		step{Sweep: true},
 		step{Poke: site.URL + "/test/logout?sid=s1"},
 		step{Sweep: true})
@@ -615,8 +627,8 @@ func TestTicketWindowWithdrawsTheTokenWhenTheSessionEnds(t *testing.T) {
 	}
 
 	site2 := newFakeSite(t)
-	runSteps(t, route, siteEnv(site2), loginAs("fc=s1"), pollAs("fc=s1"),
-		step{Method: "POST", Target: "/api/fitt-feedback?op=logout", Cookie: "fc=s1"}, listAs("fc=s1"))
+	runSteps(t, route, siteEnv(site2), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"),
+		step{Method: "POST", Target: "/api/fitt-feedback?op=logout", Cookie: "paperclip-default.session_token=s1"}, listAs("paperclip-default.session_token=s1"))
 	if d := site2.got("/api/site/widget/v1/auth/token"); len(d) != 1 || d[0].method != "DELETE" {
 		t.Errorf("the window's own logout sent %+v", d)
 	}
@@ -625,8 +637,8 @@ func TestTicketWindowWithdrawsTheTokenWhenTheSessionEnds(t *testing.T) {
 func TestTicketWindowForgetsATokenFittcoreRefuses(t *testing.T) {
 	route := ticketRoute(t)
 	site := newFakeSite(t)
-	a := runSteps(t, route, siteEnv(site), loginAs("fc=s1"), pollAs("fc=s1"),
-		step{Poke: site.URL + "/test/revoke?user=u1"}, listAs("fc=s1"), stateAs("fc=s1"))
+	a := runSteps(t, route, siteEnv(site), loginAs("paperclip-default.session_token=s1"), pollAs("paperclip-default.session_token=s1"),
+		step{Poke: site.URL + "/test/revoke?user=u1"}, listAs("paperclip-default.session_token=s1"), stateAs("paperclip-default.session_token=s1"))
 	if a[3].Status != 401 || !strings.Contains(a[3].Body, "invalid_token") {
 		t.Errorf("list with a refused token = %+v", a[3])
 	}
@@ -649,7 +661,7 @@ func TestTicketWindowDoesNotFollowRedirects(t *testing.T) {
 		http.Redirect(w, r, other.URL+"/steal", http.StatusTemporaryRedirect)
 	}))
 	defer redirecting.Close()
-	a := runSteps(t, route, redirecting.URL+"/api/site/feedback", loginAs("fc=s1"))
+	a := runSteps(t, route, redirecting.URL+"/api/site/feedback", loginAs("paperclip-default.session_token=s1"))
 	if a[0].Status != 502 {
 		t.Errorf("login against a redirecting site = %+v, want 502", a[0])
 	}
@@ -823,8 +835,8 @@ func TestAReportSaysWhoSentItWhereTheWindowIsOn(t *testing.T) {
 		site := newFakeSite(t)
 		plain := `{"note":"ปุ่มบันทึกกดไม่ได้","page_url":"/","category":"bug","priority":"med","reporter":"","payload":{"pins":[]}}`
 		withApp := `{"note":"แก้สี","app_user_ref":"someone-else","payload":{"pins":[],"app_user":{"ref":"someone-else"}}}`
-		a := runSteps(t, route, siteEnv(site), reportAs("fc=s1", plain), reportAs("fc=s2", withApp), reportAs("", plain), reportAs("fc=gone", plain),
-			reportAs("", withApp), reportAs("fc=gone", withApp), reportAs("fc=s1", `["not","a","report"]`), reportAs("fc=s1", `{"note":`))
+		a := runSteps(t, route, siteEnv(site), reportAs("paperclip-default.session_token=s1", plain), reportAs("paperclip-default.session_token=s2", withApp), reportAs("", plain), reportAs("paperclip-default.session_token=gone", plain),
+			reportAs("", withApp), reportAs("paperclip-default.session_token=gone", withApp), reportAs("paperclip-default.session_token=s1", `["not","a","report"]`), reportAs("paperclip-default.session_token=s1", `{"note":`))
 		for i, x := range a[:6] {
 			if x.Status != 204 {
 				t.Fatalf("report %d answered %+v", i, x)
@@ -873,7 +885,7 @@ func TestAReportSaysWhoSentItWhereTheWindowIsOn(t *testing.T) {
 	t.Run("window off", func(t *testing.T) {
 		site := newFakeSite(t)
 		plain := `{"note":"ปุ่มบันทึกกดไม่ได้","reporter":"boss@aec.test","payload":{"pins":[]}}`
-		a := runStepsEnv(t, ticketRoute(t), map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": site.URL}, reportAs("fc=s1", plain))
+		a := runStepsEnv(t, ticketRoute(t), map[string]string{"FITT_FEEDBACK_URL": siteEnv(site), "PLATFORM_FITTCORE_ORIGIN": site.URL}, reportAs("paperclip-default.session_token=s1", plain))
 		if a[0].Status != 204 {
 			t.Fatalf("answered %+v", a[0])
 		}
@@ -900,8 +912,8 @@ func TestAReportNamesItsSenderByEmailWhereTheWindowIsOn(t *testing.T) {
 		site.emails = map[string]string{"u4": strings.Repeat("a", 392) + "@aec.test", "u5": ""}
 		spoof := `{"note":"แก้สี","reporter":"boss@aec.test","payload":{"pins":[]}}`
 		bare := `{"note":"แก้สี","payload":{"pins":[]}}`
-		a := runSteps(t, route, siteEnv(site), reportAs("fc=s1", spoof), reportAs("fc=s2", bare), reportAs("", spoof),
-			reportAs("fc=gone", bare), reportAs("fc=s4", spoof), reportAs("fc=s5", spoof))
+		a := runSteps(t, route, siteEnv(site), reportAs("paperclip-default.session_token=s1", spoof), reportAs("paperclip-default.session_token=s2", bare), reportAs("", spoof),
+			reportAs("paperclip-default.session_token=gone", bare), reportAs("paperclip-default.session_token=s4", spoof), reportAs("paperclip-default.session_token=s5", spoof))
 		for i, x := range a {
 			if x.Status != 204 {
 				t.Fatalf("report %d answered %+v", i, x)
@@ -945,7 +957,7 @@ func TestAReportCarriesOnlyTheSignedInUsersFittcoreCookie(t *testing.T) {
 		plain := `{"note":"แก้สี","reporter":"","payload":{"pins":[]}}`
 		a := runSteps(t, route, siteEnv(site), reportAs(jar, plain), reportAs("app_session=x; paperclip-default.session_token=gone", plain),
 			reportAs("app_session=x; theme=dark", plain),
-			reportAs("fc=s2; __Secure-paperclip-testsite.session_token=s2; paperclip-default.other=1; paperclip-.session_token=z; paperclip-a.b.session_token=y", plain))
+			reportAs("app=x; __Secure-paperclip-testsite.session_token=s2; paperclip-default.other=1; paperclip-.session_token=z; paperclip-a.b.session_token=y", plain))
 		for i, x := range a {
 			if x.Status != 204 {
 				t.Fatalf("report %d answered %+v", i, x)
@@ -975,6 +987,27 @@ func TestAReportCarriesOnlyTheSignedInUsersFittcoreCookie(t *testing.T) {
 		}
 		if sent := site.got("/api/site/feedback"); len(sent) != 1 || sent[0].cookie != "" {
 			t.Errorf("the site got %+v", sent)
+		}
+	})
+}
+
+// The fittcore is asked who the user is with its own cookies alone and with its own
+// origin as Origin: better-auth refuses a server's call without one, and the app's own
+// cookies (Film Job's ntc_session, an app's own better-auth login) never leave the app
+// (DV, 26 Nov 2026). Without a fittcore cookie nobody is asked at all.
+func TestGetSessionGetsOnlyTheFittcoresCookiesAndItsOrigin(t *testing.T) {
+	jar := "app_session=x; ntc_session=filmjob; paperclip-default.session_token=s1; better-auth.session_token=the-apps-own; paperclip-default.session_data=cache"
+	eachLayout(t, func(t *testing.T, route string) {
+		site := newFakeSite(t)
+		runSteps(t, route, siteEnv(site), stateAs(jar), reportAs(jar, `{"text":"แก้ปุ่ม"}`), stateAs("ntc_session=filmjob"), reportAs("ntc_session=filmjob; better-auth.session_token=y", `{"text":"แก้ปุ่ม"}`))
+		calls := site.got("/api/auth/get-session")
+		if len(calls) != 2 {
+			t.Fatalf("get-session was asked %d times, want 2 (never without a fittcore cookie): %+v", len(calls), calls)
+		}
+		for _, c := range calls {
+			if c.cookie != "paperclip-default.session_token=s1; paperclip-default.session_data=cache" || c.origin != site.URL {
+				t.Errorf("get-session got cookie %q, Origin %q", c.cookie, c.origin)
+			}
 		}
 	})
 }
