@@ -342,8 +342,15 @@ function fromElsewhere(request«: Request») {
   return !own.some((h) => h && h.split(",")[0].trim() === from);
 }
 
+// A post must also carry the widget's mark, X-Fitt-Feedback: 1. No page elsewhere can add
+// it (the browser would first ask the route, a CORS preflight, and the route never agrees),
+// so a browser that says nothing of where it posts from is refused too.
+function unmarked(request«: Request») {
+  return request.headers.get("x-fitt-feedback") !== "1";
+}
+
 export async function POST(request«: Request»)«: Promise<Response>» {
-  if (fromElsewhere(request)) return new Response("not from this app's own page", { status: 403 });
+  if (fromElsewhere(request) || unmarked(request)) return new Response("not from this app's own page", { status: 403 });
   if (new URL(request.url).searchParams.get("op") === "assist") return assist(request);
   // ticket ops
   let body = await readBody(request, MAX_BYTES);
@@ -853,6 +860,7 @@ async function me(request«: Request») {
 }
 
 export async function GET(request«: Request»)«: Promise<Response>» {
+  if (fromElsewhere(request)) return new Response("not from this app's own page", { status: 403 });
   const q = new URL(request.url).searchParams;
   const op = q.get("op");
   // open is what the widget asks when a page loads: whether to show 📋 at all.

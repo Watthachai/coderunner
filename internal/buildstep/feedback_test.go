@@ -378,7 +378,7 @@ func postToFeedbackRoute(t *testing.T, route, env, body string) string {
 func postToFeedbackRouteLogged(t *testing.T, route, env, body string) (string, []string) {
 	t.Helper()
 	script := `const { POST } = await import(process.argv[1]);
-const res = await POST(new Request("http://app.test/api/fitt-feedback", { method: "POST", body: ` + body + ` }));
+const res = await POST(new Request("http://app.test/api/fitt-feedback", { method: "POST", headers: { "x-fitt-feedback": "1" }, body: ` + body + ` }));
 console.log(res.status, await res.text());`
 	cmd := exec.Command("node", "--input-type=module", "-e", script, route)
 	cmd.Env = append(os.Environ(), "FITT_FEEDBACK_URL="+env)

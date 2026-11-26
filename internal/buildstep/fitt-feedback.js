@@ -28,6 +28,17 @@
   // The 📋 ticket window, through the app's own route (a Next app's /api/fitt-feedback);
   // a static page has no server to call fittcore for it, so it goes without.
   var TICKETS = cfg.tickets || "";
+  // own is whether url is this app's own route, which takes a post only with the mark
+  // X-Fitt-Feedback (no page elsewhere can add it); an ingest address elsewhere (an app
+  // that is not Next) never agreed to the header, so it goes unmarked.
+  function own(url) {
+    try { return new URL(url, location.href).origin === location.origin; } catch (e) { return false; }
+  }
+  function jsonHeaders(url) {
+    var h = { "Content-Type": "application/json" };
+    if (own(url)) h["X-Fitt-Feedback"] = "1";
+    return h;
+  }
   if (!INGEST) {
     console.warn("[fitt-feedback] no data-ingest URL — widget disabled");
     return;
@@ -673,7 +684,7 @@
     Promise.all(batch.map(function (er) {
       return fetch(INGEST, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonHeaders(INGEST),
         body: JSON.stringify({
           project_id: PROJECT, category: "error", priority: "high",
           note: er.message, page_url: location.href, reporter: "",
@@ -746,8 +757,8 @@
   function ticketCall(method, op, params, body) {
     var url = TICKETS + (TICKETS.indexOf("?") >= 0 ? "&" : "?") + "op=" + op;
     for (var k in params) if (params[k] != null && params[k] !== "") url += "&" + k + "=" + encodeURIComponent(params[k]);
-    var init = { method: method, credentials: "same-origin" };
-    if (body) { init.headers = { "Content-Type": "application/json" }; init.body = JSON.stringify(body); }
+    var init = { method: method, credentials: "same-origin", headers: own(TICKETS) ? { "X-Fitt-Feedback": "1" } : {} };
+    if (body) { init.headers = jsonHeaders(TICKETS); init.body = JSON.stringify(body); }
     return fetch(url, init).then(function (res) {
       return res.text().then(function (text) {
         var data = null;
@@ -1236,7 +1247,7 @@
   function assistCall(body) {
     return fetch(TICKETS + (TICKETS.indexOf("?") >= 0 ? "&op=assist" : "?op=assist"), {
       method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      headers: jsonHeaders(TICKETS), body: JSON.stringify(body),
     }).then(function (res) {
       return res.json().then(function (data) { return { status: res.status, data: data || {} }; },
         function () { return { status: res.status, data: {} }; });
@@ -1730,7 +1741,7 @@
         };
         return fetch(INGEST, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: jsonHeaders(INGEST),
           body: JSON.stringify(body),
         });
       })

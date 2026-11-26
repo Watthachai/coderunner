@@ -235,7 +235,9 @@ for (const s of JSON.parse(process.argv[2])) {
   offset += s.advance || 0;
   if (s.sweep) { if (tick) await tick(); out.push({ status: 0, body: "", type: "", nosniff: "" }); continue; }
   if (s.poke) { await fetch(s.poke, { method: "POST" }); out.push({ status: 0, body: "", type: "", nosniff: "" }); continue; }
-  const headers = { ...(s.headers || {}), ...(s.cookie ? { cookie: s.cookie } : {}) };
+  // the widget marks every call to its route; a step's headers may take the mark away ("")
+  const headers = { "x-fitt-feedback": "1", ...(s.headers || {}), ...(s.cookie ? { cookie: s.cookie } : {}) };
+  for (const k of Object.keys(headers)) if (headers[k] === "") delete headers[k];
   const sent = s.pad ? (s.body || "").split("@@PAD@@").join("A".repeat(s.pad)) : (s.body || "");
   const req = new Request("http://app.test" + s.target, { method: s.method, headers, body: s.method === "POST" ? sent : undefined });
   const res = await mod[s.method](req);
@@ -1044,12 +1046,28 @@ func TestOnlyTheAppsOwnPagesMayPost(t *testing.T) {
 		t.Errorf("posts from elsewhere reached the fittcore %d times", n)
 	}
 
+	// A post without the widget's mark is refused too, whatever it says of itself: no page
+	// elsewhere can add the mark, since the browser would first ask the route (a CORS
+	// preflight), which never agrees; and a get from elsewhere is refused as well.
+	site2 := newFakeSite(t)
+	unmarked := map[string]string{"x-fitt-feedback": ""}
+	c := runSteps(t, route, siteEnv(site2), as(loginAs(who), unmarked), as(reportAs(who, `{"text":"แก้ปุ่ม"}`), unmarked),
+		as(stateAs(who), map[string]string{"sec-fetch-site": "same-site"}), as(listAs(who), map[string]string{"origin": "http://evil.test"}))
+	for i, x := range c {
+		if x.Status != 403 {
+			t.Errorf("unmarked post or get from elsewhere %d: answered %d %s", i, x.Status, x.Body)
+		}
+	}
+	if n := len(site2.widgetCalls()) + len(site2.got("/api/site/feedback")) + len(site2.got("/api/auth/get-session")); n != 0 {
+		t.Errorf("they reached the fittcore %d times", n)
+	}
+
 	// From the app's own page, or with no word on where it comes from, it goes through.
 	for _, h := range []map[string]string{{"sec-fetch-site": "same-origin", "origin": "http://app.test"}, {"origin": "http://app.test"}, nil} {
 		site := newFakeSite(t)
-		b := runSteps(t, route, siteEnv(site), as(loginAs(who), h), as(reportAs(who, `{"text":"แก้ปุ่ม"}`), h))
-		if b[0].Status != 200 || b[1].Status >= 300 {
-			t.Errorf("from %v: login %d %s, report %d %s", h, b[0].Status, b[0].Body, b[1].Status, b[1].Body)
+		b := runSteps(t, route, siteEnv(site), as(loginAs(who), h), as(reportAs(who, `{"text":"แก้ปุ่ม"}`), h), as(stateAs(who), h))
+		if b[0].Status != 200 || b[1].Status >= 300 || b[2].Status != 200 {
+			t.Errorf("from %v: login %d %s, report %d %s, state %d %s", h, b[0].Status, b[0].Body, b[1].Status, b[1].Body, b[2].Status, b[2].Body)
 		}
 	}
 }

@@ -334,3 +334,17 @@ func TestTheAssistantSaysItDoesNotKnowRatherThanGuess(t *testing.T) {
 		}
 	}
 }
+
+// The widget marks each call to the app's own route with X-Fitt-Feedback, which the route
+// requires of a post; a call to an ingest address elsewhere (apps that are not Next) goes
+// unmarked, since that server never agreed to the header.
+func TestTheWidgetMarksOnlyCallsToItsOwnRoute(t *testing.T) {
+	if strings.Count(feedbackWidgetJS, "headers: jsonHeaders(INGEST)") != 2 {
+		t.Error("not every report to INGEST goes through jsonHeaders")
+	}
+	for _, want := range []string{`"X-Fitt-Feedback"`, "function own(", "headers: jsonHeaders(INGEST)", "headers: jsonHeaders(TICKETS)", "own(TICKETS) ? { \"X-Fitt-Feedback\": \"1\" }"} {
+		if !strings.Contains(feedbackWidgetJS, want) {
+			t.Errorf("the widget lacks %q", want)
+		}
+	}
+}
