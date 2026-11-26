@@ -72,3 +72,34 @@ func closedAddr(t *testing.T) string {
 	l.Close()
 	return a
 }
+
+// A network that opens after a while is logged as not open yet, then open.
+func TestWarmKeepsTryingUntilTheNetworkOpens(t *testing.T) {
+	addr := closedAddr(t)
+	var logs bytes.Buffer
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return
+		}
+		go func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+				c.Close()
+			}
+		}()
+		t.Cleanup(func() { l.Close() })
+	}()
+	if !Warm(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)), []string{addr}, 50, 20*time.Millisecond) {
+		t.Fatalf("not open: %s", logs.String())
+	}
+	for _, want := range []string{"local network not open yet", "local network open", "after="} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log lacks %q: %s", want, logs.String())
+		}
+	}
+}

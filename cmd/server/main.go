@@ -199,9 +199,10 @@ func run() error {
 
 	// /feedback-ai is the 💬 assistant's AI, which apps' routes call server to server
 	// with their own key (internal/aiassist); everything else is the API.
-	// macOS fails the server's first connection to the local network while it checks its
-	// permission (internal/lan): make it now, not with the AI Router's or DV's first call.
-	go lan.Warm(rootCtx, logger, lan.Hosts(cfg.AIRouterURL, cfg.FTCDVCallbackURL), 10, time.Second)
+	// macOS fails the server's first connections to the local network while it checks its
+	// permission (internal/lan): make them now, for up to 30 minutes, not with the AI
+	// Router's or DV's first call.
+	go lan.Warm(rootCtx, logger, lan.Hosts(cfg.AIRouterURL, cfg.FTCDVCallbackURL), 60, 30*time.Second)
 
 	mux := http.NewServeMux()
 	mux.Handle("/feedback-ai", aiassist.Handler(aiassist.Config{

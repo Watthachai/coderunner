@@ -39,15 +39,19 @@ func Warm(ctx context.Context, logger *slog.Logger, addrs []string, tries int, w
 	}
 	var last error
 	d := net.Dialer{Timeout: 3 * time.Second}
+	start := time.Now()
 	for i := 1; i <= tries; i++ {
 		for _, a := range addrs {
 			c, err := d.DialContext(ctx, "tcp", a)
 			if err == nil {
 				c.Close()
-				logger.Info("local network open", "host", a, "try", i)
+				logger.Info("local network open", "host", a, "try", i, "after", time.Since(start).Round(time.Second).String())
 				return true
 			}
 			last = err
+		}
+		if i == 1 && tries > 1 {
+			logger.Warn("local network not open yet; trying again", "hosts", addrs, "every", wait.String(), "err", last.Error())
 		}
 		select {
 		case <-ctx.Done():
