@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/Watthachai/fitt-coderunner/internal/domain"
 	"github.com/Watthachai/fitt-coderunner/internal/feedback"
 	"github.com/Watthachai/fitt-coderunner/internal/jobs"
+	"github.com/Watthachai/fitt-coderunner/internal/lan"
 	"github.com/Watthachai/fitt-coderunner/internal/store"
 )
 
@@ -197,6 +199,10 @@ func run() error {
 
 	// /feedback-ai is the 💬 assistant's AI, which apps' routes call server to server
 	// with their own key (internal/aiassist); everything else is the API.
+	// macOS fails the server's first connection to the local network while it checks its
+	// permission (internal/lan): make it now, not with the AI Router's or DV's first call.
+	go lan.Warm(rootCtx, logger, lan.Hosts(cfg.AIRouterURL, cfg.FTCDVCallbackURL), 10, time.Second)
+
 	mux := http.NewServeMux()
 	mux.Handle("/feedback-ai", aiassist.Handler(aiassist.Config{
 		GeminiKeyFile: cfg.GeminiKeyFile,

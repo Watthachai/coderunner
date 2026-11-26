@@ -248,3 +248,19 @@ func TestAnAnswerInACodeFenceIsTaken(t *testing.T) {
 		t.Errorf("answered %d %s", w.Code, w.Body)
 	}
 }
+
+// A router CRN cannot reach is a 502, and the log says why (26 Nov 2026: macOS refused the
+// server's first connection to the local network, which "unreachable" alone did not show).
+func TestAnUnreachableRouterIsLoggedWithTheReason(t *testing.T) {
+	r := newFakeRouter(t)
+	url := r.URL
+	r.Close()
+	var logs bytes.Buffer
+	w := call(routerHandler(t, url, true, &logs), appKey, appCall)
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("answered %d %s", w.Code, w.Body)
+	}
+	if !strings.Contains(logs.String(), "ai router unreachable: dial tcp") || !strings.Contains(logs.String(), "connection refused") {
+		t.Errorf("logged %q", logs.String())
+	}
+}

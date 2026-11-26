@@ -24,6 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -439,7 +440,7 @@ func (c Config) ask(ctx context.Context, key string, body map[string]any) (strin
 	req.Header.Set("x-goog-api-key", key)
 	res, err := c.Client.Do(req)
 	if err != nil {
-		return "", errors.New("gemini unreachable")
+		return "", fmt.Errorf("gemini unreachable: %s", reason(err))
 	}
 	defer res.Body.Close()
 	out, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
@@ -494,7 +495,7 @@ func (c Config) askRouter(ctx context.Context, key string, conv conversation) (s
 	req.Header.Set("authorization", "Bearer "+key)
 	res, err := c.Client.Do(req)
 	if err != nil {
-		return "", errors.New("ai router unreachable")
+		return "", fmt.Errorf("ai router unreachable: %s", reason(err))
 	}
 	defer res.Body.Close()
 	out, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
@@ -523,6 +524,16 @@ func (c Config) askRouter(ctx context.Context, key string, conv conversation) (s
 		return "", fmt.Errorf("ai router gave no text (finish: %s)", finish)
 	}
 	return o.Choices[0].Message.Content, nil
+}
+
+// reason is why a call failed without its address (which holds no key, but is long), such
+// as "dial tcp 172.168.1.208:4000: connect: no route to host".
+func reason(err error) string {
+	var u *url.Error
+	if errors.As(err, &u) {
+		err = u.Err
+	}
+	return truncate(err.Error(), 200)
 }
 
 // checkAnswer holds the model's JSON to what the route accepts.
