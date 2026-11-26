@@ -321,7 +321,29 @@ function logReport(size«: ReturnType<typeof sizeOf>», receiver«: number | str
   console.info("[fitt-feedback] " + JSON.stringify({ ...size, receiver }));
 }
 
+// fromElsewhere is a request a browser sent from a page that is not the app's own: one
+// on another site, or another app on the same host, which cookies treat as one site.
+// Such a page could otherwise send reports, link 📋 (which the fittcore approves from
+// the session) or file tickets in the signed-in user's name. Browsers say where a
+// request comes from in Sec-Fetch-Site, older ones in Origin; a caller that says neither
+// is no browser and carries nobody's cookies.
+function fromElsewhere(request«: Request») {
+  const site = request.headers.get("sec-fetch-site");
+  if (site) return site !== "same-origin" && site !== "none";
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  let from = "";
+  try {
+    from = new URL(origin).host;
+  } catch {
+    return true;
+  }
+  const own = [request.headers.get("x-forwarded-host"), request.headers.get("host"), new URL(request.url).host];
+  return !own.some((h) => h && h.split(",")[0].trim() === from);
+}
+
 export async function POST(request«: Request»)«: Promise<Response>» {
+  if (fromElsewhere(request)) return new Response("not from this app's own page", { status: 403 });
   if (new URL(request.url).searchParams.get("op") === "assist") return assist(request);
   // ticket ops
   let body = await readBody(request, MAX_BYTES);

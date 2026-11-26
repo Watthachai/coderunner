@@ -195,14 +195,15 @@ func newFakeSite(t *testing.T) *fakeSite {
 // step is one thing the browser (or the test) does to the route, in one server
 // process, so what the route keeps between requests is kept.
 type step struct {
-	Method  string `json:"method,omitempty"`
-	Target  string `json:"target,omitempty"`
-	Cookie  string `json:"cookie,omitempty"`
-	Body    string `json:"body,omitempty"`
-	Advance int    `json:"advance,omitempty"` // ms the clock moves first
-	Sweep   bool   `json:"sweep,omitempty"`   // run the route's periodic sweep
-	Poke    string `json:"poke,omitempty"`    // POST this URL (the fake's controls)
-	Pad     int    `json:"pad,omitempty"`     // each "@@PAD@@" in Body becomes this many "A"s, in node
+	Method  string            `json:"method,omitempty"`
+	Target  string            `json:"target,omitempty"`
+	Cookie  string            `json:"cookie,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"` // what a browser adds, such as Sec-Fetch-Site
+	Body    string            `json:"body,omitempty"`
+	Advance int               `json:"advance,omitempty"` // ms the clock moves first
+	Sweep   bool              `json:"sweep,omitempty"`   // run the route's periodic sweep
+	Poke    string            `json:"poke,omitempty"`    // POST this URL (the fake's controls)
+	Pad     int               `json:"pad,omitempty"`     // each "@@PAD@@" in Body becomes this many "A"s, in node
 }
 
 type answer struct {
@@ -234,7 +235,7 @@ for (const s of JSON.parse(process.argv[2])) {
   offset += s.advance || 0;
   if (s.sweep) { if (tick) await tick(); out.push({ status: 0, body: "", type: "", nosniff: "" }); continue; }
   if (s.poke) { await fetch(s.poke, { method: "POST" }); out.push({ status: 0, body: "", type: "", nosniff: "" }); continue; }
-  const headers = s.cookie ? { cookie: s.cookie } : {};
+  const headers = { ...(s.headers || {}), ...(s.cookie ? { cookie: s.cookie } : {}) };
   const sent = s.pad ? (s.body || "").split("@@PAD@@").join("A".repeat(s.pad)) : (s.body || "");
   const req = new Request("http://app.test" + s.target, { method: s.method, headers, body: s.method === "POST" ? sent : undefined });
   const res = await mod[s.method](req);
@@ -1010,4 +1011,45 @@ func TestGetSessionGetsOnlyTheFittcoresCookiesAndItsOrigin(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Only the app's own pages may post to the route: a page elsewhere, even another app on the
+// same host (one site, as cookies see it), would otherwise send reports, link 📋 (which the
+// fittcore now approves from the session) or file tickets in the signed-in user's name.
+// The browser says where a request comes from (Sec-Fetch-Site, or Origin in older ones);
+// a caller that says neither is no browser and carries nobody's cookies.
+func TestOnlyTheAppsOwnPagesMayPost(t *testing.T) {
+	route := ticketRoute(t)
+	site := newFakeSite(t)
+	who := "paperclip-default.session_token=s1"
+	as := func(st step, h map[string]string) step { st.Headers = h; return st }
+	elsewhere := []map[string]string{
+		{"sec-fetch-site": "same-site", "origin": "http://app.test:9999"},
+		{"sec-fetch-site": "cross-site", "origin": "http://evil.test"},
+		{"origin": "http://evil.test"},
+		{"origin": "null"},
+	}
+	var steps []step
+	for _, h := range elsewhere {
+		steps = append(steps, as(loginAs(who), h), as(reportAs(who, `{"text":"แก้ปุ่ม"}`), h),
+			as(step{Method: "POST", Target: "/api/fitt-feedback?op=assist", Cookie: who, Body: `{"messages":[]}`}, h))
+	}
+	a := runSteps(t, route, siteEnv(site), steps...)
+	for i, x := range a {
+		if x.Status != 403 {
+			t.Errorf("post %d from elsewhere (%v): answered %d %s", i, elsewhere[i/3], x.Status, x.Body)
+		}
+	}
+	if n := len(site.widgetCalls()) + len(site.got("/api/site/feedback")) + len(site.got("/api/auth/get-session")); n != 0 {
+		t.Errorf("posts from elsewhere reached the fittcore %d times", n)
+	}
+
+	// From the app's own page, or with no word on where it comes from, it goes through.
+	for _, h := range []map[string]string{{"sec-fetch-site": "same-origin", "origin": "http://app.test"}, {"origin": "http://app.test"}, nil} {
+		site := newFakeSite(t)
+		b := runSteps(t, route, siteEnv(site), as(loginAs(who), h), as(reportAs(who, `{"text":"แก้ปุ่ม"}`), h))
+		if b[0].Status != 200 || b[1].Status >= 300 {
+			t.Errorf("from %v: login %d %s, report %d %s", h, b[0].Status, b[0].Body, b[1].Status, b[1].Body)
+		}
+	}
 }
