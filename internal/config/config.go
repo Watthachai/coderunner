@@ -181,6 +181,12 @@ type Config struct {
 	FeedbackAIKeyDir  string
 	GeminiModel       string
 	GeminiEndpoint    string
+	// The AI Router (the office's OpenAI-style /chat/completions, 26 Nov 2026): when its
+	// address is set CRN asks it instead of Gemini. Defaults "" (Gemini), fittcore-auto-crn
+	// and $HOME/crn-secrets/ai-router-key.
+	AIRouterURL     string
+	AIRouterModel   string
+	AIRouterKeyFile string
 
 	// PushHelper is the command through which every build pushes by itself: the push
 	// helper (cmd/crn-push) that alone reads the registry login, such as
@@ -305,6 +311,9 @@ func Load() (*Config, error) {
 		FeedbackAIKeyDir:   getEnv("CRN_FEEDBACK_AI_KEY_DIR", filepath.Join(os.Getenv("HOME"), "crn-secrets", "feedback-ai-keys")),
 		GeminiModel:        getEnv("CRN_GEMINI_MODEL", "gemini-3.1-flash-lite"),
 		GeminiEndpoint:     getEnv("CRN_GEMINI_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta"),
+		AIRouterURL:        getEnv("CRN_AI_ROUTER_URL", ""),
+		AIRouterModel:      getEnv("CRN_AI_ROUTER_MODEL", "fittcore-auto-crn"),
+		AIRouterKeyFile:    getEnv("CRN_AI_ROUTER_KEY_FILE", filepath.Join(os.Getenv("HOME"), "crn-secrets", "ai-router-key")),
 		PushHelper:         strings.Fields(os.Getenv("CRN_PUSH_HELPER")),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),

@@ -204,6 +204,9 @@ func run() error {
 		AppKeyDir:     cfg.FeedbackAIKeyDir,
 		Model:         cfg.GeminiModel,
 		Endpoint:      cfg.GeminiEndpoint,
+		RouterURL:     cfg.AIRouterURL,
+		RouterModel:   cfg.AIRouterModel,
+		RouterKeyFile: cfg.AIRouterKeyFile,
 		Logger:        logger,
 	}))
 	mux.Handle("/", handler)

@@ -149,7 +149,7 @@ func TestGeminiGetsTheConversationTheContextAndTheFiles(t *testing.T) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		t.Fatal(err)
 	}
-	if len(req.SystemInstruction.Parts) != 1 || req.SystemInstruction.Parts[0].Text != "Write every reply in Thai." {
+	if len(req.SystemInstruction.Parts) != 1 || !strings.HasPrefix(req.SystemInstruction.Parts[0].Text, "Write every reply in Thai.\n") {
 		t.Errorf("system instruction %+v", req.SystemInstruction)
 	}
 	if len(req.Contents) != 3 || req.Contents[0].Role != "user" || req.Contents[1].Role != "model" || req.Contents[2].Role != "user" {
@@ -450,5 +450,45 @@ func TestEachSiteHasItsOwnKey(t *testing.T) {
 	}
 	if code := answered("audit-key"); code != http.StatusServiceUnavailable {
 		t.Errorf("no key left: answered %d", code)
+	}
+}
+
+// The AI knows the app only by what the customer shows and says, so it never tells them
+// how the system works behind the screen (NTC, 25 Nov 2026: it said a test code would come
+// by email, which Film Job never does). CRN adds that rule after every app's instructions,
+// so apps built before it keep it too.
+func TestTheAIIsToldNeverToGuessHowTheAppWorks(t *testing.T) {
+	g := newFakeGemini(t)
+	if w := call(handlerFor(t, g.URL, true), appKey, appCall); w.Code != 200 {
+		t.Fatalf("answered %d %s", w.Code, w.Body)
+	}
+	body := <-g.got
+	raw, _ := json.Marshal(body["systemInstruction"])
+	var si struct{ Parts []struct{ Text string } }
+	_ = json.Unmarshal(raw, &si)
+	if len(si.Parts) != 1 {
+		t.Fatalf("system instruction %s", raw)
+	}
+	text := si.Parts[0].Text
+	app := strings.Index(text, "Write every reply in Thai.")
+	rule := strings.Index(text, "Never guess how the app works")
+	if app != 0 || rule < 0 {
+		t.Fatalf("want the app's instructions, then CRN's rule: %q", text)
+	}
+	for _, want := range []string{"ไม่ทราบ", "as a request"} {
+		if !strings.Contains(text[rule:], want) {
+			t.Errorf("rule lacks %q: %q", want, text[rule:])
+		}
+	}
+
+	// An app that sends no instructions still gets the rule.
+	g2 := newFakeGemini(t)
+	bare := strings.Replace(appCall, `"instructions": "Write every reply in Thai.",`, "", 1)
+	if w := call(handlerFor(t, g2.URL, true), appKey, bare); w.Code != 200 {
+		t.Fatalf("answered %d %s", w.Code, w.Body)
+	}
+	raw, _ = json.Marshal((<-g2.got)["systemInstruction"])
+	if !strings.Contains(string(raw), "Never guess how the app works") {
+		t.Errorf("no instructions, no rule: %s", raw)
 	}
 }

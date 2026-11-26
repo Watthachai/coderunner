@@ -19,6 +19,11 @@ CRN มีตัวเชื่อมให้แล้วที่ `/feedback-a
   - สร้าง key ของไซต์ใหม่: `umask 077; mkdir -p ~/crn-secrets/feedback-ai-keys; openssl rand -hex 32 > ~/crn-secrets/feedback-ai-keys/ntc` (ไม่ต้องพิมพ์ key ออกจอ)
 - ถ้ายังไม่มี key ของ Gemini หรือไม่มี key ของแอปเลยสักตัว ตอบ 503 และไม่ถาม Gemini ส่วน key ของแอปที่ผิดหรือถอนแล้วจะได้ 401
 - log มีแค่สถานะ ชื่อไซต์ เวลา จำนวนข้อความและจำนวนไฟล์ ไม่มี key และไม่มีสิ่งที่ลูกค้าเขียนหรือแนบ
+- ถาม AI Router แทน Gemini ได้ (26 พ.ย. 2026): AI Router ของออฟฟิศเป็น `/chat/completions` แบบ OpenAI ตั้งใน `.env` ของ CRN แล้ว restart
+  - `CRN_AI_ROUTER_URL=http://172.168.1.208:4000/v1` (ไม่ตั้ง = ถาม Gemini เหมือนเดิม), `CRN_AI_ROUTER_MODEL` (ค่าเริ่ม `fittcore-auto-crn`)
+  - key ของ router อยู่ที่ `~/crn-secrets/ai-router-key` (`CRN_AI_ROUTER_KEY_FILE`) ใส่ด้วย `read -s` ไม่พิมพ์ออกจอ ส่งเป็น `Authorization: Bearer`
+  - รูปส่งเป็น `image_url` (data URL), PDF เป็น `file` (`file_data`), ไฟล์ข้อความเป็นข้อความ, Excel กับ Word แปลงเป็นข้อความเหมือนเดิม, คำตอบขอเป็น `response_format: json_schema` และไม่ส่ง `max_tokens` ให้ router เลือกเอง
+  - router ตอบ 401/403 log แค่เลขสถานะ ไม่เก็บข้อความของ router เพราะอาจมีบางส่วนของ key
 
 ## สิ่งที่ตัวเชื่อม AI ต้องรับ
 
@@ -48,6 +53,7 @@ CRN มีตัวเชื่อมให้แล้วที่ `/feedback-a
   - สำหรับ Gemini ใส่แต่ละไฟล์เป็น `inlineData` (`mimeType` = `type`, `data` = `data`) ในข้อความของลูกค้าข้อความล่าสุด
 
 - `instructions` เป็นคำสั่งของ CRN ให้ส่งต่อให้โมเดลเป็น system instruction ตามที่ได้รับ ไม่ต้องแต่งเพิ่ม
+  - ตั้งแต่ 26 พ.ย. 2026 ตัวเชื่อมของ CRN ต่อท้าย `instructions` ด้วยกฎของ CRN เอง: ห้ามเดาว่าระบบทำงานอย่างไร (ส่งอะไร ไปที่ไหน เมื่อไร) ถ้าหน้าจอ จุดที่ปัก หรือไฟล์ไม่ได้บอก ให้ตอบว่าไม่ทราบแล้วชวนลูกค้าเขียนเป็นคำขอ แอปที่ build ก่อนหน้านี้จึงได้กฎนี้ด้วยโดยไม่ต้อง build ใหม่ (ที่ NTC แชตเคยตอบว่ารหัสทดสอบจะส่งทางอีเมล ซึ่ง Film Job ไม่มี) ตัวเชื่อมอื่นต้องต่อท้ายแบบเดียวกัน
 - `schema` คือรูปแบบคำตอบ สำหรับ Gemini ใส่เป็น `responseSchema` พร้อม `responseMimeType: "application/json"`
 - `messages` มีได้สูงสุด 20 ข้อความ ข้อความละไม่เกิน 2,000 ตัวอักษร `role` เป็น `user` (ลูกค้า) หรือ `assistant` (ผู้ช่วย) เท่านั้น สำหรับ Gemini ให้แปลง `assistant` เป็น `model`
 

@@ -319,3 +319,18 @@ func TestAssistPassesExcelAndWordToTheAI(t *testing.T) {
 		}
 	}
 }
+
+// The route told the AI to answer how-to questions itself, and at NTC it made up how Film
+// Job works (25 Nov 2026). It now answers only from what the customer shows, and otherwise
+// says it does not know and offers to write a request; CRN's /feedback-ai adds the same rule.
+func TestTheAssistantSaysItDoesNotKnowRatherThanGuess(t *testing.T) {
+	_, route := feedbackRoute("app", ".tsx", "http://x.test/feedback")
+	if strings.Contains(route, "only asks how to use the app, answer briefly") {
+		t.Error("the route still tells the AI to answer how-to questions itself")
+	}
+	for _, want := range []string{"Never guess how the app works", "ไม่ทราบ", "as a request"} {
+		if !strings.Contains(route, want) {
+			t.Errorf("the route's instructions lack %q", want)
+		}
+	}
+}

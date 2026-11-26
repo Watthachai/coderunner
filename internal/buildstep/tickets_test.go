@@ -929,7 +929,6 @@ func TestAReportNamesItsSenderByEmailWhereTheWindowIsOn(t *testing.T) {
 	})
 }
 
-
 // The company fittcore that 📋 and the report go to asks for itself who sent a 💬 report
 // and trusts no sender a report names (DV, 25 Nov 2026: OKR sends its reports straight to
 // DV's fittcore). Where the window is on and the fittcore knows the signed-in user, the
