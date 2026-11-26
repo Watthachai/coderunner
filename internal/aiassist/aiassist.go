@@ -340,8 +340,12 @@ func geminiBody(conv conversation) map[string]any {
 
 // routerBody is the conversation as an OpenAI-style /chat/completions body: pictures as
 // image_url, a PDF as a file, a text file as its text. No max_tokens: the router picks.
+// The router's model does not hold to response_format (26 Nov 2026: it answered JSON with
+// keys of its own), so the system text spells out the schema as well.
 func routerBody(model string, conv conversation) map[string]any {
-	messages := []map[string]any{{"role": "system", "content": conv.System}}
+	schema, _ := json.Marshal(conv.Schema)
+	system := conv.System + "\nAnswer with one JSON object and nothing else, no code fence, that fits this JSON Schema: " + string(schema)
+	messages := []map[string]any{{"role": "system", "content": system}}
 	for _, t := range conv.Turns {
 		if t.Role == "assistant" {
 			var texts []string

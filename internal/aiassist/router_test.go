@@ -155,6 +155,11 @@ func TestCRNAsksTheAIRouterWhenItIsSetToIt(t *testing.T) {
 	if !strings.HasPrefix(system, "Write every reply in Thai.\n") || !strings.Contains(system, "Never guess how the app works") {
 		t.Errorf("system %q", system)
 	}
+	// The router's model does not hold to response_format (26 Nov 2026: it answered with
+	// keys of its own), so the system text spells out the JSON Schema too.
+	if !strings.Contains(system, "Answer with one JSON object and nothing else") || !strings.Contains(system, `"draft":{"properties":{"text":{"type":"string"}},"required":["text"],"type":["object","null"]}`) {
+		t.Errorf("system text lacks the answer's schema: %q", system)
+	}
 	if assistant != "ใต้ตารางรายการ หรือมุมขวาล่างครับ" {
 		t.Errorf("assistant %q", assistant)
 	}
