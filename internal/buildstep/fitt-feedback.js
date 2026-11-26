@@ -448,7 +448,7 @@
     ".status{font-size:12px;text-align:center;margin-top:8px;color:#777;min-height:16px}" +
     ".status.ok{color:" + GREEN + "}.status.err{color:#ff4b4b}" +
     // 💬 assistant chat and 🎤 (23 Nov 2026).
-    ".chat[hidden],.fhead[hidden],.ftail[hidden],.mic[hidden]{display:none}" +
+    ".chat[hidden],.fhead[hidden],.ftail[hidden],.mic[hidden],.back[hidden]{display:none}" +
     ".log{display:flex;flex-direction:column;gap:6px;max-height:240px;overflow:auto;margin-bottom:8px;padding-right:8px}" +
     ".msg{padding:7px 10px;border-radius:12px;font-size:13px;line-height:1.5;max-width:88%;white-space:pre-wrap;overflow-wrap:anywhere}" +
     ".msg.me{background:#e8f4ff;align-self:flex-end}.msg.bot{background:#f2f2f2;align-self:flex-start}" +
@@ -457,7 +457,7 @@
     ".askin{flex:1;min-width:0;border:2px solid #e5e5e5;border-radius:10px;padding:8px;font-size:13px;font-family:inherit;color:#3c3c3c}" +
     ".askgo,.mic{flex:none;width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;font-size:15px;display:grid;place-items:center}" +
     ".askgo{background:" + GREEN + ";color:#fff}.askgo:disabled{opacity:.5;cursor:default}" +
-    ".mic{background:#f2f2f2}.mic.on{background:#ff4b4b;color:#fff;animation:fittpulse 1s infinite}" +
+    ".mic{background:#f2f2f2}.mic.on{background:#ff4b4b;color:#fff;animation:fittpulse 1s infinite}.mic.off{opacity:.45}" +
     "@keyframes fittpulse{50%{box-shadow:0 0 0 6px rgba(255,75,75,.2)}}" +
     ".atts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}.atts:empty{display:none}" +
     ".att{display:flex;align-items:center;gap:4px;max-width:100%;border:1px solid #e5e5e5;border-radius:999px;padding:2px 4px 2px 8px;font-size:11px;color:#555}" +
@@ -466,6 +466,7 @@
     ".att button{border:none;background:none;color:#ff4b4b;cursor:pointer;font-weight:800;padding:0 4px}" +
     ".clip{flex:none;width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;font-size:15px;display:grid;place-items:center;background:#f2f2f2}" +
     ".self{display:block;margin:0 0 10px auto;border:none;background:none;padding:0;color:#0b7fb5;font-weight:700;cursor:pointer;font-size:12px;text-decoration:underline}" +
+    ".back{display:block;margin:0 0 10px;border:none;background:none;padding:0;color:#0b7fb5;font-weight:700;cursor:pointer;font-size:12px;text-decoration:underline}" +
     ".notewrap{position:relative}.notewrap textarea{padding-right:42px}.notewrap .mic{position:absolute;right:6px;bottom:10px}" +
     // 🐞 error surface — a second FAB that only appears when errors are detected.
     ".efab{position:fixed;right:84px;bottom:20px;z-index:2147483647;width:56px;height:56px;border-radius:50%;" +
@@ -562,6 +563,7 @@
     "<button class='mic askmic' hidden title='พูดแทนพิมพ์' aria-label='พูดแทนพิมพ์'>🎤</button>" +
     "<button class='askgo' title='ส่งข้อความ' aria-label='ส่งข้อความ'>➤</button></div>" +
     "<button class='self'>เขียนคำขอเอง</button></div>" +
+    "<button class='back' hidden>← กลับไปคุยกับ AI</button>" +
     "<div class='fhead'><label>ประเภท</label><div class='row cat'>" +
     "<button class='chip' data-cat='bug'>🐞 bug</button>" +
     "<button class='chip on' data-cat='feature'>✨ feature</button>" +
@@ -1199,9 +1201,41 @@
   // --- 🎤 speech to text --------------------------------------------------------
   // The browser's own speech recognition, in Thai; where it has none, no 🎤 shows.
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var MIC_NEEDS_HTTPS = "ไมค์ใช้ได้เมื่อเปิดผ่าน https";
+  var MIC_FLAG = "chrome://flags/#unsafely-treat-insecure-origin-as-secure";
+  // copyText puts text on the clipboard the old way, which an http page still may.
+  function copyText(text) {
+    try {
+      var t = document.createElement("textarea");
+      t.value = text;
+      t.setAttribute("readonly", "");
+      t.style.position = "fixed";
+      t.style.opacity = "0";
+      document.body.appendChild(t);
+      t.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(t);
+      return ok;
+    } catch (e) { return false; }
+  }
   function wireMic(btn, field) {
     if (!SR) return;
     btn.hidden = false;
+    // A browser gives a page the microphone only over https or on localhost: on an http
+    // page the 🎤 says so, rather than listen to nothing (DV, 27 Nov 2026), and how to have
+    // it anyway in Chrome: the flag that treats this page's origin as secure (copied, since
+    // a page cannot link to chrome://). With the flag on, the page is secure and it listens.
+    if (!window.isSecureContext) {
+      btn.classList.add("off");
+      btn.title = MIC_NEEDS_HTTPS;
+      btn.setAttribute("aria-label", MIC_NEEDS_HTTPS);
+      btn.addEventListener("click", function () {
+        var copied = copyText(MIC_FLAG);
+        setStatus(MIC_NEEDS_HTTPS + " · ใน Chrome เปิด " + MIC_FLAG + (copied ? " (คัดลอกให้แล้ว วางในช่องที่อยู่)" : "") +
+          " ใส่ " + location.origin + " เลือก Enabled แล้วกด Relaunch", "err");
+      });
+      return;
+    }
     var rec = null;
     btn.addEventListener("click", function () {
       if (rec) { rec.stop(); return; }
@@ -1237,6 +1271,7 @@
   var fhead = root.querySelector(".fhead");
   var ftail = root.querySelector(".ftail");
   var noteLbl = root.querySelector(".notelbl");
+  var back = root.querySelector(".back");
   var ai = { on: false, messages: [], busy: false, files: [] };
   var nudged = false; // asked once where a short report is about
   var fromDraft = false; // the note is the 💬 assistant's draft
@@ -1263,6 +1298,7 @@
   }
   function chatMode(on) {
     chatEl.hidden = !on;
+    back.hidden = true;
     fhead.hidden = on;
     ftail.hidden = on;
     noteLbl.textContent = "สิ่งที่อยากให้แก้";
@@ -1434,8 +1470,21 @@
     chatEl.hidden = true;
     fhead.hidden = false;
     ftail.hidden = false;
+    back.hidden = !ai.on;
     noteEl.focus();
   });
+  // Back to the AI from the form (DV, 27 Nov 2026): the chat and whatever was typed in the
+  // form stay as they were; the form shows under the chat only if it holds the AI's draft.
+  function toChat() {
+    chatEl.hidden = false;
+    back.hidden = true;
+    if (!fromDraft) {
+      fhead.hidden = true;
+      ftail.hidden = true;
+    }
+    askIn.focus();
+  }
+  back.addEventListener("click", toChat);
   wireMic(root.querySelector(".askmic"), askIn);
   wireMic(root.querySelector(".notemic"), noteEl);
   // Only a Next app's own route can have the assistant; it says whether it does.

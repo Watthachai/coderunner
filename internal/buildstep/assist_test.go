@@ -348,3 +348,38 @@ func TestTheWidgetMarksOnlyCallsToItsOwnRoute(t *testing.T) {
 		}
 	}
 }
+
+// "เขียนคำขอเอง" led to the form with no way back to the AI (DV, OKR UAT 27 Nov 2026). The
+// form now has "กลับไปคุยกับ AI" where the app has the assistant, and going back and forth
+// keeps what was typed in either: only a sent report starts the chat over.
+func TestTheFormLeadsBackToTheAI(t *testing.T) {
+	for _, want := range []string{"<button class='back' hidden>", "กลับไปคุยกับ AI", "back.hidden = !ai.on", "function toChat("} {
+		if !strings.Contains(feedbackWidgetJS, want) {
+			t.Errorf("the widget lacks %q", want)
+		}
+	}
+	i := strings.Index(feedbackWidgetJS, "function toChat(")
+	if i < 0 {
+		t.Fatal("the widget has no toChat")
+	}
+	body := feedbackWidgetJS[i : i+strings.Index(feedbackWidgetJS[i:], "\n  }\n")]
+	for _, clears := range []string{"startChat(", "askIn.value =", "noteEl.value =", "logEl.textContent", "ai.messages ="} {
+		if strings.Contains(body, clears) {
+			t.Errorf("going back to the chat clears what was typed: %q in %s", clears, body)
+		}
+	}
+}
+
+// Browsers give the 🎤 a microphone only on https or localhost; on an http page it was
+// silent (DV, 27 Nov 2026). There it now says why, and how to have it anyway in Chrome:
+// the flag that treats this page's own origin as secure (copied, since a page cannot link
+// to chrome://), with the origin to put in. With the flag on, the page is secure and the
+// 🎤 listens as anywhere.
+func TestTheMicSaysItNeedsHTTPS(t *testing.T) {
+	for _, want := range []string{"window.isSecureContext", "ไมค์ใช้ได้เมื่อเปิดผ่าน https",
+		"chrome://flags/#unsafely-treat-insecure-origin-as-secure", "location.origin", `execCommand("copy")`} {
+		if !strings.Contains(feedbackWidgetJS, want) {
+			t.Errorf("the widget lacks %q", want)
+		}
+	}
+}
