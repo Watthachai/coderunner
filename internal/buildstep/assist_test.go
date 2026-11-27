@@ -383,3 +383,26 @@ func TestTheMicSaysItNeedsHTTPS(t *testing.T) {
 		}
 	}
 }
+
+// DV's fittcore (OKR, 27 Nov 2026) lists every ticket of the app's company in 📋, each with
+// sender_name (the account's name or e-mail, null once the account is gone) and
+// sender_is_me. A customer site's fittcore sends neither, and the window reads as before:
+// no "unknown sender" anywhere.
+func TestTheTicketWindowSaysWhoSentEachTicket(t *testing.T) {
+	for _, want := range []string{"function senderOf(f)", `f.sender_is_me === true`, `typeof f.sender_is_me === "boolean"`,
+		"ผู้ส่งที่ไม่มีบัญชีแล้ว", `" · โดย " + esc(who)`, `"<p class='tpins'>ส่งโดย " + esc(who)`, `" — " + esc(who)`,
+		`"ticket ของแอปนี้"`, `thead.textContent = "📋 " + title`, "f.sender_is_me === false", "data-mine", "เฉพาะของฉัน"} {
+		if !strings.Contains(feedbackWidgetJS, want) {
+			t.Errorf("the widget lacks %q", want)
+		}
+	}
+	if strings.Contains(feedbackWidgetJS, "ไม่ทราบชื่อ") {
+		t.Error("the widget names an unknown sender")
+	}
+	// Every name on the page goes through esc(): it is text the user set.
+	for _, raw := range []string{"+ who +", "+ who)", "+ f.sender_name"} {
+		if strings.Contains(feedbackWidgetJS, raw) {
+			t.Errorf("a sender's name reaches the page unescaped: %q", raw)
+		}
+	}
+}

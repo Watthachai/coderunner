@@ -747,12 +747,14 @@
   var tfoot = root.querySelector(".tfoot");
   var tclose = root.querySelector(".tclose");
   var ttabs = root.querySelectorAll(".ttab");
+  var tmodal = root.querySelector(".tmodal");
+  var thead = root.querySelector(".ttop h3");
   var TCAT = { bug: "🐞 bug", feature: "✨ feature", style: "🎨 style", error: "⚠️ error" };
   // Only the pill's colour comes from the status code; its words are status_label.
   var TPILL = { pending_send: "wait", withheld: "wont", sending: "doing", send_delayed: "doing", send_failed: "bad",
     received: "wait", in_progress: "doing", in_review: "check", fixed: "done", on_uat: "done", closed: "wont" };
   var tk = { view: "", tab: "new", items: [], source: null, cursor: null, loading: false, error: "", flash: "",
-    sel: {}, open: {}, images: {}, confirm: null, busy: false, pending: null, note: "", name: "", polling: 0 };
+    sel: {}, open: {}, images: {}, confirm: null, busy: false, pending: null, note: "", name: "", polling: 0, mine: false };
 
   // ticketCall calls one op of the app's route; it answers { status, data } and
   // status 0 when the network failed.
@@ -872,6 +874,18 @@
       (f.created_at ? "<span>" + esc(when(f.created_at)) + "</span>" : "");
   }
   function text(f) { return String(f.text || "").trim() || "(ไม่มีข้อความ)"; }
+  // Who sent a ticket. DV's fittcore lists every ticket of the app's company (27 Nov 2026)
+  // with sender_name (the account's name, or its e-mail; null once the account is gone) and
+  // sender_is_me. A customer site's fittcore sends neither: then "" and the window reads as
+  // it always did. The name is text the user set: it goes on the page through esc() only.
+  function senderOf(f) {
+    if (f.sender_is_me === true) return "คุณ";
+    if (typeof f.sender_name === "string" && f.sender_name.trim()) return f.sender_name.trim().slice(0, 120);
+    if (typeof f.sender_is_me === "boolean") return "ผู้ส่งที่ไม่มีบัญชีแล้ว";
+    return "";
+  }
+  // shared: the list holds someone else's tickets, so the window is the app's, not mine.
+  function shared() { return tk.items.some(function (f) { return f.sender_is_me === false; }); }
   // A ticket's pictures, fetched when the user asks, through the route.
   function imagesHTML(f) {
     var got = tk.images[f.id];
@@ -901,6 +915,9 @@
     tbadge.textContent = String(n);
     tbadge.hidden = n === 0;
     if (tscrim.hidden) return;
+    var title = ready && shared() ? "ticket ของแอปนี้" : "ticket ของฉัน";
+    thead.textContent = "📋 " + title;
+    tmodal.setAttribute("aria-label", title);
     ttabs.forEach(function (b) {
       var current = b.getAttribute("data-tab") === tk.tab;
       b.classList.toggle("on", current);
@@ -1037,21 +1054,31 @@
   }
 
   function renderOthers() {
-    var list = others();
+    var all = others();
+    // With other people's tickets in the list, "เฉพาะของฉัน" keeps only the user's own.
+    var canFilter = shared();
+    var list = canFilter && tk.mine ? all.filter(function (f) { return f.sender_is_me === true; }) : all;
     var h = tk.flash ? "<p class='tflash' role='status'>" + esc(tk.flash) + "</p>" : "";
+    if (canFilter) {
+      h += "<div class='tlisthead'><label class='tselall'><input type='checkbox' data-mine" + (tk.mine ? " checked" : "") +
+        "> เฉพาะของฉัน</label><span>" + list.length + " จาก " + all.length + " รายการ</span></div>";
+    }
     if (!list.length) {
-      tbody.innerHTML = h + "<div class='tempty'><b>ยังไม่มี ticket ที่ส่งไป</b>ticket ที่ส่งไปฐานกลางแล้วจะขึ้นที่นี่ พร้อมสถานะ</div>" + more();
+      tbody.innerHTML = h + (all.length ? "<div class='tempty'><b>คุณยังไม่ได้ส่ง ticket</b>ticket ที่คุณส่งไปฐานกลางแล้วจะขึ้นที่นี่ พร้อมสถานะ</div>"
+        : "<div class='tempty'><b>ยังไม่มี ticket ที่ส่งไป</b>ticket ที่ส่งไปฐานกลางแล้วจะขึ้นที่นี่ พร้อมสถานะ</div>") + more();
       return;
     }
     list.forEach(function (f) {
       var open = !!tk.open[f.id];
+      var who = senderOf(f);
       h += "<button class='trow' data-open='" + escq(f.id) + "' aria-expanded='" + open + "'><span class='ttitle'>" + esc(text(f)) +
         "<small>" + (TCAT[f.category] || esc(f.category || "")) + (f.page ? " · " + esc(f.page) : "") +
-        (f.sent_at ? " · ส่งเมื่อ " + esc(when(f.sent_at)) : "") + "</small></span>" + pill(f) + "</button>";
+        (f.sent_at ? " · ส่งเมื่อ " + esc(when(f.sent_at)) : "") + (who ? " · โดย " + esc(who) : "") + "</small></span>" + pill(f) + "</button>";
       if (open) {
         h += "<div class='tdetail'><p>" + esc(text(f)) + "</p>" +
           (f.status === "closed" && f.customer_reason ? "<p class='treply'><b>จาก DV</b> " + esc(f.customer_reason) + "</p>" : "") +
-          "<p class='tpins'>เขียนเมื่อ " + esc(when(f.created_at)) + "</p>" + imagesHTML(f) + "</div>";
+          "<p class='tpins'>เขียนเมื่อ " + esc(when(f.created_at)) + "</p>" +
+          (who ? "<p class='tpins'>ส่งโดย " + esc(who) + "</p>" : "") + imagesHTML(f) + "</div>";
       }
     });
     tbody.innerHTML = h + more();
@@ -1074,7 +1101,10 @@
     var h = "<ol class='ttl'>";
     order.forEach(function (n, i) {
       h += "<li class='tver'><span class='tvtag" + (i ? " old" : "") + "'>#" + esc(n) + "</span><div><h4>build #" + esc(n) + "</h4><ul>";
-      builds[n].forEach(function (f) { h += "<li>" + esc(text(f)) + " " + pill(f) + "</li>"; });
+      builds[n].forEach(function (f) {
+        var who = senderOf(f);
+        h += "<li>" + esc(text(f)) + " " + pill(f) + (who ? " — " + esc(who) : "") + "</li>";
+      });
       h += "</ul></div></li>";
     });
     tbody.innerHTML = h + "</ol>" + more();
@@ -1138,11 +1168,13 @@
     });
     tbody.addEventListener("change", function (e) {
       var el = e.target;
-      if (el.hasAttribute("data-all")) waiting().forEach(function (f) { tk.sel[f.id] = el.checked; });
+      if (el.hasAttribute("data-mine")) tk.mine = el.checked;
+      else if (el.hasAttribute("data-all")) waiting().forEach(function (f) { tk.sel[f.id] = el.checked; });
       else if (el.getAttribute("data-pick")) tk.sel[el.getAttribute("data-pick")] = el.checked;
       else return;
       renderTickets();
-      var again = el.hasAttribute("data-all") ? tbody.querySelector("[data-all]")
+      var again = el.hasAttribute("data-mine") ? tbody.querySelector("[data-mine]")
+        : el.hasAttribute("data-all") ? tbody.querySelector("[data-all]")
         : tbody.querySelector("[data-pick='" + el.getAttribute("data-pick") + "']");
       if (again) again.focus();
     });
