@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { acceptCandidate, createScanner, forbiddenEntry, parseForbidden, scanBlob, scanTree, widgetTagProblem, PLACEHOLDERS } from '../internal/buildstep/accept-candidate.mjs';
+import { acceptCandidate, createScanner, forbiddenEntry, parseForbidden, scanBlob, scanTree, widgetTagProblem, ROUTE_PROBE, PLACEHOLDERS } from '../internal/buildstep/accept-candidate.mjs';
 
 const entries = (...values) => values.map((v, i) => ({ label: `value #${i + 1}`, ...parseForbidden(forbiddenEntry(v))[0] }));
 
@@ -240,4 +240,11 @@ test('without a forbidden list the candidate fails closed', async () => {
   assert.equal(r.status, 'failed');
   assert.match(r.error, /no values/);
   assert.deepEqual(steps, ['platform']);
+});
+
+test('the route probe carries the widget\'s mark, as the widget\'s own posts do', () => {
+  // Since 431eafb the route refuses a post without X-Fitt-Feedback: 1 (403); NTC Film Job #11 failed on it.
+  assert.equal(ROUTE_PROBE.method, 'POST');
+  assert.equal(new Headers(ROUTE_PROBE.headers).get('x-fitt-feedback'), '1');
+  assert.equal(new Headers(ROUTE_PROBE.headers).get('origin'), null, 'no Origin: the route takes it as a same-origin call');
 });

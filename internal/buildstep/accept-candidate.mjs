@@ -198,12 +198,15 @@ export function widgetTagProblem(html, project) {
   if (attr('data-ingest') !== '/api/fitt-feedback') return 'The widget must post to its own route on the same origin';
   return null;
 }
+// The route takes a post only with the widget's mark (X-Fitt-Feedback: 1, see feedback.go),
+// so the probe carries it as the widget's own posts do.
+export const ROUTE_PROBE = { method: 'POST', headers: { 'content-type': 'application/json', 'x-fitt-feedback': '1' }, body: '{}' };
 export async function checkWidget({ baseUrl, cwd, project, expected, check }) {
   const get = (p, init) => fetch(`${baseUrl}${p}`, { redirect: 'follow', signal: AbortSignal.timeout(60_000), ...init });
   const page = await get('/login');
   const html = await page.text();
   const script = await get('/fitt-feedback.js');
-  const route = await get('/api/fitt-feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const route = await get('/api/fitt-feedback', ROUTE_PROBE);
   const found = { login_status: page.status, script_status: script.status, route_status: route.status };
   if (expected) {
     check('login page answers', page.status === 200, `/login answered ${page.status}`);
