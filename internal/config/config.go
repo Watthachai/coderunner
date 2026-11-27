@@ -187,6 +187,9 @@ type Config struct {
 	AIRouterURL     string
 	AIRouterModel   string
 	AIRouterKeyFile string
+	// AIRouterSites (CRN_AI_ROUTER_SITES, comma-separated, e.g. "ntc") are the sites whose
+	// apps ask the router; the rest ask Gemini. Empty: no one asks it.
+	AIRouterSites []string
 
 	// PushHelper is the command through which every build pushes by itself: the push
 	// helper (cmd/crn-push) that alone reads the registry login, such as
@@ -314,6 +317,7 @@ func Load() (*Config, error) {
 		AIRouterURL:        getEnv("CRN_AI_ROUTER_URL", ""),
 		AIRouterModel:      getEnv("CRN_AI_ROUTER_MODEL", "fittcore-auto-crn"),
 		AIRouterKeyFile:    getEnv("CRN_AI_ROUTER_KEY_FILE", filepath.Join(os.Getenv("HOME"), "crn-secrets", "ai-router-key")),
+		AIRouterSites:      splitList(os.Getenv("CRN_AI_ROUTER_SITES")),
 		PushHelper:         strings.Fields(os.Getenv("CRN_PUSH_HELPER")),
 		LogLevel:           getEnv("CRN_LOG_LEVEL", "info"),
 		Environment:        getEnv("CRN_ENV", "development"),
@@ -602,4 +606,15 @@ func getEnvBool(key string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+// splitList is a comma-separated list, without blanks.
+func splitList(s string) []string {
+	var out []string
+	for _, x := range strings.Split(s, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			out = append(out, x)
+		}
+	}
+	return out
 }

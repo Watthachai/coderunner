@@ -398,3 +398,20 @@ func TestKeepSessionAfterPicturesNamesProjects(t *testing.T) {
 		t.Errorf("a name for a uuid: err = %v", err)
 	}
 }
+
+// The AI Router serves only the sites named (NTC's router, only NTC's apps).
+func TestAIRouterSitesComeFromEnv(t *testing.T) {
+	requiredEnv(t)
+	t.Setenv("CRN_AI_ROUTER_SITES", " ntc, ,ntc-uat ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.AIRouterSites, "|") != "ntc|ntc-uat" {
+		t.Errorf("AIRouterSites = %q", cfg.AIRouterSites)
+	}
+	t.Setenv("CRN_AI_ROUTER_SITES", "")
+	if cfg, _ = Load(); len(cfg.AIRouterSites) != 0 {
+		t.Errorf("empty: AIRouterSites = %q", cfg.AIRouterSites)
+	}
+}

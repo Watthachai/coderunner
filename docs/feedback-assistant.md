@@ -21,6 +21,7 @@ CRN มีตัวเชื่อมให้แล้วที่ `/feedback-a
 - log มีแค่สถานะ ชื่อไซต์ เวลา จำนวนข้อความและจำนวนไฟล์ ไม่มี key และไม่มีสิ่งที่ลูกค้าเขียนหรือแนบ
 - ถาม AI Router แทน Gemini ได้ (26 พ.ย. 2026): AI Router ของออฟฟิศเป็น `/chat/completions` แบบ OpenAI ตั้งใน `.env` ของ CRN แล้ว restart
   - `CRN_AI_ROUTER_URL=http://172.168.1.208:4000/v1` (ไม่ตั้ง = ถาม Gemini เหมือนเดิม), `CRN_AI_ROUTER_MODEL` (ค่าเริ่ม `fittcore-auto-crn`)
+  - `CRN_AI_ROUTER_SITES=ntc`: ไซต์ที่ถาม router (ชื่อไซต์ = ชื่อไฟล์ key ใน `feedback-ai-keys`) ไซต์อื่นถาม Gemini เหมือนเดิม ไม่ตั้ง = ไม่มีไซต์ไหนถาม router · router ของ NTC ใช้ได้เฉพาะแอปของ NTC (Sarunporn 26 พ.ย. 2026) ไม่เกิน 20 คำขอต่อนาที
   - key ของ router อยู่ที่ `~/crn-secrets/ai-router-key` (`CRN_AI_ROUTER_KEY_FILE`) ใส่ด้วย `read -s` ไม่พิมพ์ออกจอ ส่งเป็น `Authorization: Bearer`
   - รูปส่งเป็น `image_url` (data URL), PDF เป็น `file` (`file_data`), ไฟล์ข้อความเป็นข้อความ, Excel กับ Word แปลงเป็นข้อความเหมือนเดิม, คำตอบขอเป็น `response_format: json_schema` และไม่ส่ง `max_tokens` ให้ router เลือกเอง
   - router ตอบ 401/403 log แค่เลขสถานะ ไม่เก็บข้อความของ router เพราะอาจมีบางส่วนของ key

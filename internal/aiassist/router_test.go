@@ -62,6 +62,7 @@ func routerHandler(t *testing.T, router string, withKey bool, logs io.Writer) ht
 		RouterURL:     router + "/v1",
 		RouterModel:   "fittcore-auto-crn",
 		RouterKeyFile: filepath.Join(dir, "ai-router-key"),
+		RouterSites:   []string{"shared"},
 		Logger:        slog.New(slog.NewTextHandler(logs, nil)),
 	}
 	if err := os.WriteFile(c.AppKeyFile, []byte(appKey+"\n"), 0o600); err != nil {
@@ -262,5 +263,77 @@ func TestAnUnreachableRouterIsLoggedWithTheReason(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "ai router unreachable: dial tcp") || !strings.Contains(logs.String(), "connection refused") {
 		t.Errorf("logged %q", logs.String())
+	}
+}
+
+// The router is NTC's and may serve only NTC's apps (Sarunporn, 26 Nov 2026), while
+// /feedback-ai serves every site: CRN asks the router for the sites named in RouterSites
+// and Gemini for the rest, by the key the app sent.
+func TestOnlyTheRoutersOwnSitesAskTheRouter(t *testing.T) {
+	r := newFakeRouter(t)
+	g := newFakeGemini(t)
+	dir := t.TempDir()
+	keys := filepath.Join(dir, "feedback-ai-keys")
+	if err := os.MkdirAll(keys, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		filepath.Join(keys, "ntc"): "ntc-key", filepath.Join(keys, "okr-uat"): "okr-key",
+		filepath.Join(dir, "gemini-key"): "gemini-secret", filepath.Join(dir, "ai-router-key"): "router-secret",
+	} {
+		if err := os.WriteFile(name, []byte(content+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var logs bytes.Buffer
+	h := Handler(Config{
+		GeminiKeyFile: filepath.Join(dir, "gemini-key"),
+		AppKeyDir:     keys,
+		Model:         "gemini-test",
+		Endpoint:      g.URL,
+		RouterURL:     r.URL + "/v1",
+		RouterModel:   "fittcore-auto-crn",
+		RouterKeyFile: filepath.Join(dir, "ai-router-key"),
+		RouterSites:   []string{"ntc"},
+		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if w := call(h, "ntc-key", appCall); w.Code != 200 {
+		t.Fatalf("ntc answered %d %s", w.Code, w.Body)
+	}
+	if a := <-r.auth; a != "Bearer router-secret" {
+		t.Errorf("ntc's call reached the router with %q", a)
+	}
+	<-r.got
+	<-r.path
+	if !strings.Contains(logs.String(), "site=ntc model=fittcore-auto-crn") {
+		t.Errorf("logged %q", logs.String())
+	}
+	logs.Reset()
+	if w := call(h, "okr-key", appCall); w.Code != 200 {
+		t.Fatalf("okr-uat answered %d %s", w.Code, w.Body)
+	}
+	if k := <-g.apiKey; k != "gemini-secret" {
+		t.Errorf("okr-uat's call reached Gemini with %q", k)
+	}
+	<-g.got
+	<-g.path
+	if !strings.Contains(logs.String(), "site=okr-uat model=gemini-test") {
+		t.Errorf("logged %q", logs.String())
+	}
+	select {
+	case <-r.got:
+		t.Error("okr-uat's call reached the router")
+	default:
+	}
+
+	// No sites named: nobody asks the router.
+	h = Handler(Config{GeminiKeyFile: filepath.Join(dir, "gemini-key"), AppKeyDir: keys, Model: "gemini-test", Endpoint: g.URL,
+		RouterURL: r.URL + "/v1", RouterModel: "fittcore-auto-crn", RouterKeyFile: filepath.Join(dir, "ai-router-key"),
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if w := call(h, "ntc-key", appCall); w.Code != 200 {
+		t.Fatalf("answered %d %s", w.Code, w.Body)
+	}
+	if k := <-g.apiKey; k != "gemini-secret" {
+		t.Errorf("with no router sites ntc's call went elsewhere: %q", k)
 	}
 }

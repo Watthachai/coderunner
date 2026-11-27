@@ -214,6 +214,7 @@ func run() error {
 		RouterURL:     cfg.AIRouterURL,
 		RouterModel:   cfg.AIRouterModel,
 		RouterKeyFile: cfg.AIRouterKeyFile,
+		RouterSites:   cfg.AIRouterSites,
 		Logger:        logger,
 	}))
 	mux.Handle("/", handler)

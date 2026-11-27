@@ -44,14 +44,19 @@ type Config struct {
 	RouterURL     string // e.g. http://172.168.1.208:4000/v1; "" asks Gemini
 	RouterModel   string // e.g. fittcore-auto-crn
 	RouterKeyFile string // the router's key, sent as Bearer
-	Client        *http.Client
-	Logger        *slog.Logger
+	// RouterSites are the sites whose apps CRN asks the router for; the rest ask Gemini.
+	// NTC's router may serve only NTC's apps (Sarunporn, 26 Nov 2026). None: no one asks it.
+	RouterSites []string
+	Client      *http.Client
+	Logger      *slog.Logger
 }
 
-func (c Config) viaRouter() bool { return c.RouterURL != "" }
+func (c Config) viaRouter(site string) bool {
+	return c.RouterURL != "" && site != "" && slices.Contains(c.RouterSites, site)
+}
 
-func (c Config) model() string {
-	if c.viaRouter() {
+func (c Config) model(site string) string {
+	if c.viaRouter(site) {
 		return c.RouterModel
 	}
 	return c.Model
@@ -118,7 +123,7 @@ func Handler(c Config) http.Handler {
 		w.Header().Set("cache-control", "no-store")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(body)
-		c.Logger.Info("feedback-ai", "status", status, "site", site, "model", c.model(), "ms", time.Since(start).Milliseconds(), "note", note)
+		c.Logger.Info("feedback-ai", "status", status, "site", site, "model", c.model(site), "ms", time.Since(start).Milliseconds(), "note", note)
 	})
 }
 
@@ -128,19 +133,22 @@ func (c Config) serve(r *http.Request) (int, any, string, string) {
 	if r.Method != http.MethodPost {
 		return http.StatusMethodNotAllowed, fail("method_not_allowed"), "", ""
 	}
-	keyFile := c.GeminiKeyFile
-	if c.viaRouter() {
-		keyFile = c.RouterKeyFile
-	}
-	aiKey, err := readSecret(keyFile)
 	keys := c.appKeys()
-	if err != nil || len(keys) == 0 {
+	if len(keys) == 0 {
 		return http.StatusServiceUnavailable, fail("not_configured"), "", "a key file is missing"
 	}
 	bearer, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	site := siteOf(bearer, keys)
 	if site == "" {
 		return http.StatusUnauthorized, fail("unauthorized"), "", ""
+	}
+	keyFile := c.GeminiKeyFile
+	if c.viaRouter(site) {
+		keyFile = c.RouterKeyFile
+	}
+	aiKey, err := readSecret(keyFile)
+	if err != nil {
+		return http.StatusServiceUnavailable, fail("not_configured"), site, "a key file is missing"
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
 	if err != nil {
@@ -156,7 +164,7 @@ func (c Config) serve(r *http.Request) (int, any, string, string) {
 	}
 	note := fmt.Sprintf("messages=%d files=%d", len(req.Messages), len(req.Files))
 	var text string
-	if c.viaRouter() {
+	if c.viaRouter(site) {
 		text, err = c.askRouter(r.Context(), aiKey, conv)
 	} else {
 		text, err = c.ask(r.Context(), aiKey, geminiBody(conv))
