@@ -114,7 +114,7 @@ UPDATE build_events SET notified_ftcdv = true WHERE id = $1;
 |---|---|
 | `job_id` | uuid ของงาน (ตรงกับ `job_id` ใน response §1) |
 | `event_type` | **`build_started` \| `build_done` \| `build_failed` \| `build_cancelled`** (บังคับด้วย DB CHECK) |
-| `payload` (jsonb) | `build_done` → `{cost_usd, session_id, image_ref, git_remote, git_branch, env}` · `build_failed` → `{error}` · `build_cancelled` → `{reason}` |
+| `payload` (jsonb) | `build_done` → `{job_id, build_no, image_digest, image_ref_canonical, image_platform, revision, git_commit, cost_usd, session_id, image_ref, git_remote, git_branch, env}` · `build_failed` → `{error}` · `build_cancelled` → `{reason}` |
 
 > **`image_ref` (ใน `build_done`)** = docker image tag ที่ pull ได้ เมื่อเปิด image pipeline (`CRN_BUILD_IMAGE`) เช่น `172.168.1.234:5050/fitt/demos/crn-demo-<slug>-<id8>:v<n>` — consumer `docker pull` จากตรงนี้ได้เลย. **status = `event_type`** (`build_started`=กำลัง build · `build_done`=เสร็จ · `build_failed` · `build_cancelled`) — ไม่ต้องรอ HTTP callback
 >
@@ -150,6 +150,10 @@ Content-Type: application/json
   "image_ref": "…:v4",       // ใส่มาถ้ามี docker_tag
   "image_digest": "sha256:<64 hex>",  // เฉพาะ released ที่ push image แล้ว — digest ที่ registry ให้ image_ref นี้ ใช้ pull แบบ <repo>@<digest>
   "git_commit": "<40 hex>",  // เฉพาะ released ที่ push git แล้ว — commit เต็มที่ image นี้ build จาก (เพิ่ม 3 พ.ย. 2026)
+  "revision": "<40 hex>",    // ค่าเดียวกับ git_commit (เพิ่ม 27 พ.ย. 2026)
+  "image_ref_canonical": "<repository>@sha256:<64 hex>",  // เฉพาะเมื่อมี image_digest (เพิ่ม 27 พ.ย. 2026)
+  "image_platform": "linux/amd64",  // คู่กับ image_ref_canonical (เพิ่ม 27 พ.ย. 2026)
+  "inputs_purged_at": "2026-11-27T09:15:40Z",  // เฉพาะ released/failed ของคำขอที่แนบรูป — เวลาที่ CRN ลบรูปแล้ว (เพิ่ม 27 พ.ย. 2026)
   "env": {                    // เฉพาะ released — example runtime env ของ image
     "DATABASE_URL": "postgresql://USER:PASSWORD@HOST:5432/DB?schema=public",
     "PORT": "3000",           // port ที่ app listen ใน container (fixed)
@@ -164,6 +168,8 @@ Content-Type: application/json
   "message": "…" }           // ใส่มาเฉพาะตอน failed
 ```
 - แมปสถานะ: `build_started → building`, `build_done → released`, `build_failed → failed`
+- **ระบุ build (เพิ่ม 27 พ.ย. 2026 ตามที่ DV ขอสำหรับ auto-deploy):** `job_id`, `build_no`, `image_digest`, `image_ref_canonical`, `image_platform`, `revision` มีทั้งใน callback `released` และ payload ของ `build_done` ค่าเดียวกันทั้งสองทาง (มาจากฟังก์ชันเดียว) · `image_ref_canonical` = repository ของ `image_ref` (ตัด tag) + `@` + `image_digest` และมีเฉพาะเมื่อ digest เป็น `sha256:<64 hex>` · `image_platform` คือ platform ที่ CRN build ทุก image (`linux/amd64`) · `revision` มีเฉพาะ commit เต็ม 40 hex · `building` มีแค่ `job_id` กับ `build_no` เพราะยังไม่มี image · `failed` มี `message` เพิ่ม และไม่มีช่อง image
+- **`inputs_purged_at` (ตกลงกับ DV 25 พ.ย. 2026, เพิ่ม 27 พ.ย.):** ISO 8601 UTC · อยู่ใน callback สุดท้าย (`released` หรือ `failed`) ของคำขอที่แนบรูปมา CRN ลบรูปก่อนส่ง callback นั้น · ไม่มี field นี้ = คำขอไม่ได้แนบอะไรมา หรือ CRN ลบไม่สำเร็จ (log `ERROR` "delete the request's pictures failed")
 - **`crn.runtime.json` (ตกลงกับ Fittcore 3 พ.ย. 2026):** image มีไฟล์ `/app/crn.runtime.json` และ label `fitt.crn.runtime_sha256` = SHA-256 ของไฟล์นั้น · ไฟล์บอก `contract`, `migrations_first` (ชื่อ migration แรก ไม่มีถ้าแอปไม่มีฐาน), `port`, `health`, `volumes`, `writable` และ `env` = รายการ `{name, required: always|first_start|no, secret?, min_length?, note?}` ของทุกตัวแปรที่แอปอ่านตอนรัน (ขั้นตรวจก่อนปล่อยไล่โค้ดแอปแล้วไม่ปล่อยถ้าขาดตัวไหน) · ใช้ไฟล์นี้แทน `env` ด้านบน ซึ่งเป็นแค่ค่าตัวอย่าง
 - **`env` (เฉพาะ `released`)** = **example** runtime env ที่ image ต้องใช้ — operator inject ค่าจริงตอนรัน (ไม่มี bake ในภาพ). `DATABASE_URL` บังคับ — image **apply migration ที่ commit ไว้** (`db:deploy` แล้วตามด้วย `db:seed`) ยิงไป DB ภายนอกนี้ตอน start **และ fail ให้เห็นถ้า migration ไม่ผ่าน** (ไม่ start ต่อ); app listen container port `3000`, host เปิด `APP_PORT` (ต่อ-project). ตรงกับ `docker-compose.customer.yml` ที่ CRN เขียน
 - **`AUTH_SECRET` + `BOOTSTRAP_ADMIN_EMAIL` + `BOOTSTRAP_ADMIN_PASSWORD`** = ตัวที่ต้องส่งจริง. บัญชีผู้ดูแลคนแรกถูกสร้าง **ครั้งเดียวต่อฐานข้อมูล** ผ่าน advisory lock + marker ถาวรในตาราง `SystemBootstrap` → รันพร้อมกันหลายตัวได้ admin คนเดียว · ฐานข้อมูลที่มี user อยู่แล้วจะไม่สร้างเพิ่ม · ลบ user ทิ้งแล้ว restart ไม่ฟื้นคืนมา · **ไม่มีรหัส fallback**

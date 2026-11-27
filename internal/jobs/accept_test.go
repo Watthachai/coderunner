@@ -214,10 +214,16 @@ type nopNotifier struct{}
 func (nopNotifier) Notify(context.Context, *domain.BuildEvent) error { return nil }
 
 // recordingNotifier puts each build event in the order of everything else.
-type recordingNotifier struct{ record func(string) }
+type recordingNotifier struct {
+	record func(string)
+	done   func(json.RawMessage) // build_done's payload, when set
+}
 
 func (n recordingNotifier) Notify(_ context.Context, e *domain.BuildEvent) error {
 	n.record("event " + string(e.EventType))
+	if n.done != nil && e.EventType == domain.EventBuildDone {
+		n.done(e.Payload)
+	}
 	return nil
 }
 
@@ -265,7 +271,8 @@ type pipelineRun struct {
 	credentialDir string   // the project's directory for the push credential
 	listSeen      string   // what the gate got on stdin
 	agentRan      bool
-	pictureDir    string // the folder the request's pictures were kept in
+	pictureDir    string         // the folder the request's pictures were kept in
+	done          map[string]any // the build_done event's payload
 }
 
 // head is the commit the remote's branch is on now.
@@ -533,7 +540,11 @@ func runPipelineWith(t *testing.T, o pipelineOpts) pipelineRun {
 	if slots == 0 {
 		slots = 1
 	}
-	mgr = NewManager(st, runner, recordingNotifier{record}, logger, filepath.Join(root, "projects"), remote, "", false, o.agent != nil, "", srv.URL, "", map[uuid.UUID]bool{org: true}, nil, true, "172.168.1.234:5050/fitt/ftcdv-uat", nil, "", "", slots, buildsettings.Defaults{}).(*manager)
+	mgr = NewManager(st, runner, recordingNotifier{record: record, done: func(p json.RawMessage) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.Unmarshal(p, &run.done)
+	}}, logger, filepath.Join(root, "projects"), remote, "", false, o.agent != nil, "", srv.URL, "", map[uuid.UUID]bool{org: true}, nil, true, "172.168.1.234:5050/fitt/ftcdv-uat", nil, "", "", slots, buildsettings.Defaults{}).(*manager)
 	mgr.SetForbiddenValuesDir(forbidden)
 	mgr.SetReviewMinItems(o.reviewMin)
 	credentials := filepath.Join(root, "push-credentials")

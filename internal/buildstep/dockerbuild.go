@@ -298,6 +298,9 @@ func WriteImageBundle(dir, appImage, registry string, port int, logger *slog.Log
 // yet; change here if an arm64 customer target ever appears.
 const imagePlatform = "linux/amd64"
 
+// ImagePlatform is the platform every image CRN builds is for, as the callbacks name it.
+const ImagePlatform = imagePlatform
+
 // BuildImage runs `docker build --platform linux/amd64 -f <dockerfile> -t <tag>
 // <dir>`, streaming combined output to the logger. Requires a Docker daemon +
 // buildx on the host.

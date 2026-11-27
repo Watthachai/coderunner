@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -68,8 +69,22 @@ func (m *manager) dropPictures(job uuid.UUID, log *slog.Logger) {
 		return
 	}
 	if n > 0 {
+		m.purged.Store(job, time.Now().UTC())
 		log.Info("deleted the request's pictures", "job_id", job, "files", n)
 	}
+}
+
+// takePurged is, for a job's final callback ("released" or "failed"), when CRN deleted the
+// pictures its request brought, and forgets it; zero when it brought none, the deletion
+// failed, or the callback is not final.
+func (m *manager) takePurged(job uuid.UUID, status string) time.Time {
+	if status != "released" && status != "failed" {
+		return time.Time{}
+	}
+	if v, ok := m.purged.LoadAndDelete(job); ok {
+		return v.(time.Time)
+	}
+	return time.Time{}
 }
 
 // sweepPictures runs at boot: a folder whose job is not waiting to run is deleted, and so

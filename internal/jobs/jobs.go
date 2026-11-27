@@ -46,6 +46,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -143,6 +144,9 @@ type manager struct {
 	// keepSession are the projects whose builds resume their session even after a build
 	// with pictures (SetKeepSessionAfterPictures, attachments.go).
 	keepSession map[uuid.UUID]bool
+	// purged holds, per job, when CRN deleted the pictures its request brought, for the
+	// job's final callback (inputs_purged_at, attachments.go).
+	purged sync.Map
 	// pushCredentialDir, pushCredentialWait and pushCredentialPoll belong to the push
 	// window (pushwindow.go).
 	pushCredentialDir string
@@ -1036,7 +1040,7 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 	}
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(workDir))
 	if gate.listed() {
-		body, err := callbackBody(job.ID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx)
+		body, err := callbackBody(job.ID, job.BuildNo, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx, time.Time{})
 		if err == nil {
 			err = gate.beforeRelease(body)
 		}
@@ -1073,7 +1077,10 @@ func (m *manager) runJob(ctx context.Context, job *domain.Job) {
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
-	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, envEx))
+	// The request's pictures go before "released" does, which says when (inputs_purged_at).
+	m.dropPictures(job.ID, log)
+	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(result, job.DockerTag, pushRemote, pushBranch, commitSHA,
+		identify(job.ID, job.BuildNo, job.DockerTag, imageDigest, commitSHA), envEx))
 	go m.reportToFTC(job, job.DockerTag, imageDigest, pushRemote, pushBranch, commitSHA, "released", "", envEx)
 
 	// Cache this source → image so an identical resubmission reuses it (skips the AI
@@ -1131,8 +1138,11 @@ func (m *manager) finishReused(ctx context.Context, job *domain.Job, imageRef st
 		Timestamp: time.Now().UTC(),
 	})
 	envEx := buildstep.NewDemoEnvExample(buildstep.ScaffoldPort(filepath.Join(m.projectsDir, job.ProjectID.String())))
-	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, meta.remote, meta.branch, envEx))
-	go m.reportToFTC(job, imageRef, m.reusedDigest(ctx, job, imageRef, log), meta.remote, meta.branch, meta.commit, "released", "", envEx)
+	m.dropPictures(job.ID, log)
+	digest := m.reusedDigest(ctx, job, imageRef, log)
+	m.notify(ctx, job.ID, domain.EventBuildDone, donePayload(domain.RunResult{}, imageRef, meta.remote, meta.branch, meta.commit,
+		identify(job.ID, job.BuildNo, imageRef, digest, meta.commit), envEx))
+	go m.reportToFTC(job, imageRef, digest, meta.remote, meta.branch, meta.commit, "released", "", envEx)
 
 	// A reused build is still a build the operator may need to inspect later.
 	m.saveTrace(ctx, job, meta)
@@ -1160,6 +1170,7 @@ func (m *manager) finishFailed(ctx context.Context, job *domain.Job, errMsg stri
 		JobID:     job.ID.String(),
 		Timestamp: time.Now().UTC(),
 	})
+	m.dropPictures(job.ID, m.logger)
 	m.notify(ctx, job.ID, domain.EventBuildFailed, failedPayload(errMsg))
 	go m.reportToFTC(job, job.DockerTag, "", "", "", "", "failed", errMsg, nil)
 
@@ -1198,6 +1209,7 @@ func (m *manager) finishCancelled(ctx context.Context, job *domain.Job, meta tra
 	// build_events gets the distinct 'build_cancelled' (dashboard shows
 	// "cancelled" not "failed"); the FTC HTTP callback maps to "failed" since its
 	// vocabulary is only building/released/failed.
+	m.dropPictures(job.ID, m.logger)
 	m.notify(ctx, job.ID, domain.EventBuildCancelled, cancelledPayload(msg))
 	go m.reportToFTC(job, job.DockerTag, "", "", "", "", "failed", msg, nil)
 
@@ -1750,6 +1762,7 @@ func (m *manager) ReconcileOrphans(ctx context.Context) {
 		return
 	}
 	for _, o := range orphans {
+		m.dropPictures(o.ID, m.logger)
 		m.notify(ctx, o.ID, domain.EventBuildFailed, failedPayload(msg))
 		go m.reportToFTC(o, o.DockerTag, "", "", "", "", "failed", msg, nil)
 	}
@@ -1978,6 +1991,7 @@ func (m *manager) commitAndPush(ctx context.Context, workDir, remote, branch, me
 // so its outbound record shows zero callback attempts.
 func (m *manager) reportToFTC(job *domain.Job, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message string, env any) {
 	if job.Rehearsal {
+		m.takePurged(job.ID, status)
 		m.logger.Info("ftc callback withheld: rehearsal job",
 			"job_id", job.ID, "build_no", job.BuildNo, "status", status)
 		return
@@ -1986,10 +2000,11 @@ func (m *manager) reportToFTC(job *domain.Job, imageRef, imageDigest, gitRemote,
 }
 
 func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message string, env any) {
+	purged := m.takePurged(jobID, status)
 	if m.ftcdvCallbackURL == "" || !m.ftcdvCallbackOrgs[orgID] {
 		return
 	}
-	body, err := callbackBody(jobID, buildNo, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message, env)
+	body, err := callbackBody(jobID, buildNo, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message, env, purged)
 	if err != nil {
 		m.logger.Warn("ftc callback marshal failed", "err", err, "job_id", jobID)
 		return
@@ -2016,8 +2031,9 @@ func (m *manager) ftcCallback(jobID, orgID uuid.UUID, buildNo int, imageRef, ima
 	}
 }
 
-// callbackBody is one callback's payload, as it goes out.
-func callbackBody(jobID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message string, env any) ([]byte, error) {
+// callbackBody is one callback's payload, as it goes out. purged is when CRN deleted
+// what the request brought (pictures), zero when it brought nothing or is not yet done.
+func callbackBody(jobID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote, gitBranch, gitCommit, status, message string, env any, purged time.Time) ([]byte, error) {
 	payload := map[string]any{
 		"status":   status,
 		"job_id":   jobID,
@@ -2032,6 +2048,18 @@ func callbackBody(jobID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote
 	// The registry's manifest digest for image_ref: FTC DV pulls by digest only.
 	if imageDigest != "" {
 		payload["image_digest"] = imageDigest
+	}
+	// The same names for the build as build_done gives (identify).
+	id := identify(jobID, buildNo, imageRef, imageDigest, gitCommit)
+	if id.ImageRefCanonical != "" {
+		payload["image_ref_canonical"] = id.ImageRefCanonical
+		payload["image_platform"] = id.ImagePlatform
+	}
+	if id.Revision != "" {
+		payload["revision"] = id.Revision
+	}
+	if !purged.IsZero() {
+		payload["inputs_purged_at"] = purged.UTC().Format(time.RFC3339)
 	}
 	// On "released", the example runtime env contract for the delivered image
 	// (DATABASE_URL + ports) so FTC DV knows what to inject to run it.
@@ -2054,6 +2082,54 @@ func callbackBody(jobID uuid.UUID, buildNo int, imageRef, imageDigest, gitRemote
 		payload["git_commit"] = gitCommit
 	}
 	return json.Marshal(payload)
+}
+
+// buildIdentity names a build the same way in its released callback and in build_done,
+// so FTC DV's auto-deploy can match the two field by field (asked 27 Nov 2026). The image
+// fields are there only for an image in a registry with a sha256 digest, and revision only
+// for a full commit.
+type buildIdentity struct {
+	JobID             uuid.UUID `json:"job_id"`
+	BuildNo           int       `json:"build_no"`
+	ImageDigest       string    `json:"image_digest,omitempty"`
+	ImageRefCanonical string    `json:"image_ref_canonical,omitempty"`
+	ImagePlatform     string    `json:"image_platform,omitempty"`
+	Revision          string    `json:"revision,omitempty"`
+}
+
+var (
+	sha256Digest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	fullCommit   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
+
+func identify(jobID uuid.UUID, buildNo int, imageRef, digest, commit string) buildIdentity {
+	id := buildIdentity{JobID: jobID, BuildNo: buildNo, ImageDigest: digest}
+	if repo := imageRepository(imageRef); repo != "" && sha256Digest.MatchString(digest) {
+		id.ImageRefCanonical = repo + "@" + digest
+		id.ImagePlatform = buildstep.ImagePlatform
+	}
+	if fullCommit.MatchString(commit) {
+		id.Revision = commit
+	}
+	return id
+}
+
+// imageRepository is ref without its tag or digest: "reg:5050/fitt/app:v3" is
+// "reg:5050/fitt/app". A placeholder such as "branch:crn/x" is no repository.
+func imageRepository(ref string) string {
+	if ref == "" || strings.HasPrefix(ref, "branch:") {
+		return ""
+	}
+	if i := strings.Index(ref, "@"); i >= 0 {
+		ref = ref[:i]
+	}
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		ref = ref[:i]
+	}
+	if !strings.Contains(ref, "/") {
+		return ""
+	}
+	return ref
 }
 
 // callbackLane serializes one job's callbacks, so "released" never overtakes a
@@ -2890,8 +2966,11 @@ func truncateOneLine(s string, max int) string {
 
 // donePayload builds the build_done event payload (cost + session) for the
 // central DB.
-func donePayload(r domain.RunResult, imageRef, gitRemote, gitBranch string, env any) json.RawMessage {
+func donePayload(r domain.RunResult, imageRef, gitRemote, gitBranch, gitCommit string, id buildIdentity, env any) json.RawMessage {
 	b, err := json.Marshal(struct {
+		// The same names for the build as its released callback gives.
+		buildIdentity
+		GitCommit string  `json:"git_commit,omitempty"`
 		CostUSD   float64 `json:"cost_usd"`
 		SessionID string  `json:"session_id,omitempty"`
 		// ImageRef is the pullable docker image tag when the image pipeline is on
@@ -2904,12 +2983,14 @@ func donePayload(r domain.RunResult, imageRef, gitRemote, gitBranch string, env 
 		// DATABASE_URL + ports) so a consumer knows what to inject at run time.
 		Env any `json:"env,omitempty"`
 	}{
-		CostUSD:   r.CostUSD,
-		SessionID: r.SessionID,
-		ImageRef:  imageRef,
-		GitRemote: gitRemote,
-		GitBranch: gitBranch,
-		Env:       env,
+		buildIdentity: id,
+		GitCommit:     gitCommit,
+		CostUSD:       r.CostUSD,
+		SessionID:     r.SessionID,
+		ImageRef:      imageRef,
+		GitRemote:     gitRemote,
+		GitBranch:     gitBranch,
+		Env:           env,
 	})
 	if err != nil {
 		return nil
