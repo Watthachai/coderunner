@@ -22,3 +22,15 @@ func TestTheAgentIsToldWhichCookieTheRouteSendsOut(t *testing.T) {
 		}
 	}
 }
+
+// Since 431eafb (27 Nov 2026) the route takes a POST only with X-Fitt-Feedback: 1, as the
+// widget sends it; CRN's own checker lacked it and NTC Film Job #11 failed on a 403. An
+// app test that posts to the route needs it too.
+func TestTheAgentIsToldAPostToTheRouteCarriesTheWidgetsMark(t *testing.T) {
+	p := widgetPrompt()
+	for _, want := range []string{"X-Fitt-Feedback: 1", "403"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the widget prompt lacks %q", want)
+		}
+	}
+}

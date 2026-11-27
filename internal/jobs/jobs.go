@@ -1602,7 +1602,9 @@ func widgetPrompt() string {
 		"the app must hand the route the user's fittcore cookie on every one of those requests, and never its own cookie or any other. " +
 		"With a 💬 report from a user the fittcore knows, the route also sends that user's fittcore cookies, and no other cookie, on to FITT_FEEDBACK_URL (the same fittcore), " +
 		"which asks for itself who sent the report. Every fittcore names them paperclip-<instance id>.session_token, .session_data and .dont_remember (with __Secure- in front over https): " +
-		"hand the fittcore cookie on under the names the fittcore set (for example paperclip-default.session_token), never renamed. "
+		"hand the fittcore cookie on under the names the fittcore set (for example paperclip-default.session_token), never renamed. " +
+		"The route takes a POST only with the header X-Fitt-Feedback: 1, which the widget sends, and answers 403 to one without it or from another site's page: " +
+		"an app test that posts to /api/fitt-feedback must send that header. "
 }
 
 // ownInstructions: a team that hands its part of a repository to CRN leaves its rules in
